@@ -1,6 +1,6 @@
 const SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/lang/example/",
+    "/lang/tests/",
     "you_stupid.txt"
 ));
 

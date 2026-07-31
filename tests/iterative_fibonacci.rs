@@ -1,11 +1,11 @@
 const SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/lang/example/",
+    "/lang/tests/",
     "iterative_fibonacci.txt"
 ));
 
 #[test]
-fn you_stupid() {
+fn iterative_fibonacci() {
     let mut out = vec![];
 
     let _ =

@@ -1,11 +1,11 @@
 const SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/lang/example/",
+    "/lang/tests/",
     "or.txt"
 ));
 
 #[test]
-fn you_stupid() {
+fn or() {
     let mut out = vec![];
 
     let _ =
