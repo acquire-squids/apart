@@ -1,0 +1,7 @@
+funky main() {
+	print_21(21, print_i64);
+}
+
+funky print_21(twenty_one <- i64, fn <- funky(i64)) {
+	fn(twenty_one);
+}

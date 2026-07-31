@@ -332,11 +332,29 @@ impl TypeChecker {
                 parameters,
                 return_type,
             } => {
+                let mut parameter_types = vec![];
+
                 for parameter in parameters {
                     self.check_type_signature(names, parameter);
+
+                    parameter_types.push(
+                        self.get_type_index(parameter.span())
+                            .expect("the parameter was already checked"),
+                    );
                 }
 
                 self.check_type_signature(names, return_type);
+
+                let function_ty = Type::Fn {
+                    parameters: parameter_types,
+                    return_type: self
+                        .get_type_index(return_type.span())
+                        .expect("the return type was already checked"),
+                };
+
+                let type_index = self.push_type(function_ty);
+
+                self.type_map.insert(ty.span(), type_index);
             }
         }
     }
