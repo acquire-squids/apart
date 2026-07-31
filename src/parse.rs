@@ -1635,11 +1635,7 @@ impl Parser {
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let expr = if let Some(token) = self.match_keyword_next(lexer, "return") {
-            self.return_expr(lexer, ast, 0, token.span())
-        } else {
-            self.parse_expression(lexer, ast, 0)
-        }?;
+        let expr = self.parse_expression(lexer, ast, 0)?;
 
         let span = span
             .combine_with(
