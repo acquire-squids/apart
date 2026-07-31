@@ -11,6 +11,9 @@ pub fn resolve_names(ast: &Ast) -> Result<HashMap<Span, Span>, Vec<Spanned<Error
     // primitives should be resolved before anything else
     resolver.resolve_primitives(ast);
 
+    // now that all the types are resolved, resolve their uses
+    resolver.resolve_types(ast);
+
     resolver.resolve_native_functions(ast);
 
     // we need to resolve all functions before their bodies
@@ -209,13 +212,12 @@ impl NameResolver {
         }
     }
 
-    fn resolve_functions(&mut self, ast: &Ast) {
+    fn resolve_types(&mut self, ast: &Ast) {
         for root in ast.roots() {
             match ast.get_item(*root).map(Spanned::kind) {
                 None => unreachable!("the ast should be valid since we succeeded in parsing"),
-                Some(Item::NativeFn { .. } | Item::Primitive(_)) => {}
+                Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
                 Some(Item::Fn {
-                    name,
                     parameters,
                     return_type,
                     ..
@@ -225,7 +227,17 @@ impl NameResolver {
                     }
 
                     self.resolve_type_signature(return_type);
+                }
+            }
+        }
+    }
 
+    fn resolve_functions(&mut self, ast: &Ast) {
+        for root in ast.roots() {
+            match ast.get_item(*root).map(Spanned::kind) {
+                None => unreachable!("the ast should be valid since we succeeded in parsing"),
+                Some(Item::NativeFn { .. } | Item::Primitive(_)) => {}
+                Some(Item::Fn { name, .. }) => {
                     if self.resolve_name(name.kind()).is_some() {
                         self.errors
                             .push(Spanned::new(Error::DuplicateFnName, name.span()));
