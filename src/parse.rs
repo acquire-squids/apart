@@ -719,20 +719,20 @@ impl Parser {
 
 impl Parser {
     fn parse(&mut self, lexer: &mut Lexer, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
-        let mut succeeded = false;
+        let mut succeeded = None;
 
         while self.peek(lexer).is_some() {
             match self.parse_item(lexer, ast) {
                 Err(error) => {
-                    if succeeded {
+                    if succeeded.is_none_or(|succeeded| succeeded) {
                         self.errors.push(error);
-                        succeeded = false;
+                        succeeded = Some(false);
                     }
 
                     self.advance(lexer);
                 }
                 Ok(item) => {
-                    succeeded = true;
+                    succeeded = Some(true);
                     ast.roots.push(item);
                 }
             }
