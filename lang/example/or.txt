@@ -1,0 +1,8 @@
+funky main() {
+	print_bool(might_be_bart(true));
+	print_bool(might_be_bart(false))
+}
+
+funky might_be_bart(true_and_real <- bool) -> bool {
+	false || true_and_real
+}

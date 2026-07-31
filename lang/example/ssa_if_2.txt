@@ -1,0 +1,15 @@
+funky main() {
+	let x = 19, result = 0 in {
+		if x == 19 {
+			if false {
+				result = 19;
+			} else {
+				result = 38;
+			}
+		} else {
+			result = 21;
+		}
+
+		print_i64(result);
+	}
+}

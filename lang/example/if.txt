@@ -1,0 +1,9 @@
+funky main() {
+	if 0s9 + 0s10 == 19 {
+		false;
+	} else {
+		true;
+	}
+
+	print_f64(21.0);
+}

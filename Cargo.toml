@@ -1,0 +1,26 @@
+[package]
+name = "apart"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[lints.clippy]
+pedantic    = { level = "deny", priority = -1 }
+nursery     = { level = "deny", priority = -1 }
+all         = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+
+[profile.release]
+lto = true
+
+[dependencies]
+reporting = { path = "./reporting" }
+
+[features]
+optimized = []
+print_blocks = []
+print_ssa = []
+print_optimized = ["optimized"]
+
+[[bin]]
+name = "cool"

@@ -1,0 +1,1002 @@
+use crate::{
+    Span, Spanned,
+    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, UnaryOp},
+};
+
+use std::{collections::HashMap, fmt};
+
+pub fn translate(ast: &Ast, names: &HashMap<Span, Span>) -> BasicBlocks {
+    let mut translator = Translator::new();
+
+    if let Some(root) = ast.roots().iter().find(|root| {
+        if let Some(Item::Fn { name, .. }) = ast.get_item(**root).map(Spanned::kind)
+            && name.kind() == "main"
+        {
+            true
+        } else {
+            false
+        }
+    }) {
+        translator.label_function(ast, *root);
+    }
+
+    for root in ast.roots() {
+        if let Some(Item::Fn { name, .. } | Item::NativeFn { name, .. }) =
+            ast.get_item(*root).map(Spanned::kind)
+            && name.kind() != "main"
+        {
+            translator.label_function(ast, *root);
+        }
+    }
+
+    for root in ast.roots() {
+        if let Some(Item::Fn {
+            name,
+            parameters,
+            body,
+            ..
+        }) = ast.get_item(*root).map(Spanned::kind)
+            && let Some(block_index) = translator
+                .addresses
+                .get(&name.span())
+                .and_then(|address| {
+                    if let Addresslike::Block(block_index) = address {
+                        Some(block_index)
+                    } else {
+                        None
+                    }
+                })
+                .copied()
+        {
+            translator.switch_to_block(block_index);
+
+            for (p, parameter) in parameters.iter().enumerate() {
+                translator.push_instruction(Instruction::Pop);
+
+                translator
+                    .addresses
+                    .insert(parameter.name().span(), Addresslike::Argument(p));
+            }
+
+            let last_in_fn = translator.last_in_fn;
+
+            translator.last_in_fn = true;
+
+            translator.translate_expr(ast, names, *body);
+
+            translator.last_in_fn = last_in_fn;
+
+            assert_eq!(translator.values.as_slice(), &[]);
+        }
+    }
+
+    for (b, block) in translator.blocks.iter_mut().enumerate() {
+        if block.terminator.is_none() {
+            block.terminator = Some(BlockTerminator::Jump(BlockIndex(b + 1)));
+        }
+    }
+
+    BasicBlocks {
+        blocks: translator.blocks,
+    }
+}
+
+pub struct BasicBlocks {
+    blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BlockIndex(pub usize);
+
+impl From<BlockIndex> for usize {
+    fn from(value: BlockIndex) -> Self {
+        value.0
+    }
+}
+
+pub struct Block {
+    instructions: Vec<Instruction>,
+    terminator: Option<BlockTerminator>,
+}
+
+impl fmt::Display for BasicBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (b, block) in self.blocks().iter().enumerate() {
+            writeln!(f, "{b}:")?;
+            write!(f, "{block}")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for instruction in self.instructions() {
+            writeln!(f, "    {instruction:?}")?;
+        }
+
+        writeln!(f, "    {:?}", self.terminator())
+    }
+}
+
+impl Block {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn instructions(&self) -> &[Instruction] {
+        self.instructions.as_slice()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn instructions_mut(&mut self) -> &mut Vec<Instruction> {
+        &mut self.instructions
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn terminator(&self) -> &BlockTerminator {
+        self.terminator
+            .as_ref()
+            .expect("block terminators should exist if the blocks do")
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn terminator_mut(&mut self) -> &mut BlockTerminator {
+        self.terminator
+            .as_mut()
+            .expect("block terminators should exist if the blocks do")
+    }
+}
+
+impl BasicBlocks {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn blocks(&self) -> &[Block] {
+        self.blocks.as_slice()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn blocks_mut(&mut self) -> &mut [Block] {
+        self.blocks.as_mut_slice()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
+        self.blocks.get(usize::from(block_index))
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
+        self.blocks.get_mut(usize::from(block_index))
+    }
+
+    #[allow(dead_code)]
+    pub fn for_children<F>(&self, block_index: BlockIndex, mut f: F)
+    where
+        F: FnMut(&Self, BlockIndex),
+    {
+        let Some(block) = self.get_block(block_index) else {
+            return;
+        };
+
+        match block.terminator() {
+            BlockTerminator::Jump(b) => {
+                f(self, *b);
+            }
+            BlockTerminator::Branch {
+                when_true,
+                otherwise,
+                ..
+            } => {
+                f(self, *when_true);
+                f(self, *otherwise);
+            }
+            BlockTerminator::Return(_) => {}
+        }
+    }
+}
+
+struct Translator {
+    blocks: Vec<Block>,
+    current_block: Option<BlockIndex>,
+    values: Vec<Value>,
+    addresses: HashMap<Span, Addresslike>,
+    last_in_fn: bool,
+}
+
+impl Translator {
+    fn new() -> Self {
+        Self {
+            blocks: vec![],
+            current_block: None,
+            values: vec![],
+            addresses: HashMap::new(),
+            last_in_fn: false,
+        }
+    }
+
+    const fn switch_to_block(&mut self, block_index: BlockIndex) {
+        self.current_block = Some(block_index);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Addresslike {
+    Address(Address),
+    Block(BlockIndex),
+    Argument(usize),
+    NativeFn(Span),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    Unit,
+    FnBlock(BlockIndex),
+    Address(Address),
+    NativeFn(Span),
+    #[allow(dead_code)]
+    Runtime,
+    Argument(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Instruction {
+    #[allow(dead_code)]
+    NoOp,
+    Unary {
+        op: UnaryOp,
+        operand: Value,
+    },
+    Binary {
+        op: BinaryOp,
+        lhs: Value,
+        rhs: Value,
+    },
+    Assign {
+        value: Value,
+        to: Address,
+    },
+    Push(Value),
+    Pop,
+    Call(Value),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlockTerminator {
+    Jump(BlockIndex),
+    Branch {
+        condition: Value,
+        when_true: BlockIndex,
+        otherwise: BlockIndex,
+    },
+    Return(Value),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Address {
+    pub block_index: BlockIndex,
+    pub offset: usize,
+    pub version: u64,
+}
+
+impl Translator {
+    fn label_function(&mut self, ast: &Ast, f: ItemIndex) {
+        match ast.get_item(f).map(Spanned::kind) {
+            None => {
+                unreachable!("all roots should exist");
+            }
+            Some(Item::Fn { name, .. }) => {
+                self.addresses.insert(
+                    name.span(),
+                    Addresslike::Block(BlockIndex(self.blocks.len())),
+                );
+
+                self.next_block();
+            }
+            Some(Item::Primitive(_)) => {}
+            Some(Item::NativeFn { name, .. }) => {
+                self.addresses
+                    .insert(name.span(), Addresslike::NativeFn(name.span()));
+            }
+        }
+    }
+
+    fn next_block(&mut self) -> BlockIndex {
+        let block_index = BlockIndex(self.blocks.len());
+
+        self.blocks.push(Block {
+            instructions: vec![],
+            terminator: None,
+        });
+
+        self.switch_to_block(block_index);
+
+        block_index
+    }
+
+    fn push_instruction(&mut self, instruction: Instruction) {
+        let block = self
+            .current_block
+            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+            .expect("instructions only get pushed within blocks");
+
+        block.instructions.push(instruction);
+    }
+
+    fn instructions_len(&self) -> usize {
+        self.current_block
+            .and_then(|block_index| self.blocks.get(usize::from(block_index)))
+            .expect("instructions only get checked within blocks")
+            .instructions
+            .len()
+    }
+}
+
+impl Translator {
+    #[allow(clippy::too_many_lines)]
+    fn translate_expr(&mut self, ast: &Ast, names: &HashMap<Span, Span>, expr: ExprIndex) {
+        match ast.get_expr(expr).map(Spanned::kind) {
+            None | Some(Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue) => {
+                unreachable!("the ast should be valid since we succeeded in parsing");
+            }
+            Some(Expr::Integer(value)) => {
+                self.values.push(Value::Integer(*value));
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Some(Expr::Float(value)) => {
+                self.values.push(Value::Float(*value));
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Some(Expr::Boolean(value)) => {
+                self.values.push(Value::Boolean(*value));
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Some(Expr::Unit) => {
+                self.values.push(Value::Unit);
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Some(Expr::Name(_)) => {
+                self.translate_name(ast, names, expr);
+            }
+            Some(Expr::Unary { op, .. }) => {
+                self.translate_unary(ast, names, expr, *op);
+            }
+            Some(Expr::Block(exprs)) if exprs.is_empty() => {
+                self.values.push(Value::Unit);
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Some(Expr::Block(exprs)) => {
+                self.translate_block(ast, names, exprs.as_slice());
+            }
+            Some(Expr::Group(_)) => {
+                ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+            }
+            Some(Expr::Let { value, .. }) => {
+                self.translate_assign(ast, names, expr, *value);
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::Assign,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_assign(ast, names, *lhs, *rhs);
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_and(ast, names, *lhs, *rhs);
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::Or,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_or(ast, names, *lhs, *rhs);
+            }
+            Some(Expr::Binary { op, .. }) => {
+                self.translate_binary(ast, names, expr, *op);
+            }
+            Some(Expr::If {
+                condition,
+                when_true,
+                otherwise,
+            }) => {
+                self.translate_if(ast, names, (*condition, *when_true, *otherwise));
+            }
+            Some(Expr::Call { callee, arguments }) => {
+                self.translate_call(ast, names, (*callee, arguments.as_slice()));
+            }
+            Some(Expr::While {
+                condition,
+                when_true,
+            }) => {
+                self.translate_while(ast, names, (*condition, *when_true));
+            }
+            Some(Expr::Return(value)) => {
+                let last_in_fn = self.last_in_fn;
+
+                self.last_in_fn = true;
+
+                self.translate_expr(ast, names, *value);
+
+                self.last_in_fn = last_in_fn;
+            }
+            Some(Expr::AsUnit(value)) => {
+                let last_in_fn = self.last_in_fn;
+
+                self.last_in_fn = false;
+
+                self.translate_expr(ast, names, *value);
+
+                self.values.pop();
+
+                self.last_in_fn = last_in_fn;
+
+                self.values.push(Value::Unit);
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+        }
+    }
+
+    fn emit_return(&mut self) {
+        let value = self
+            .values
+            .pop()
+            .expect("there should always be a return value if parsing succeeded");
+
+        let current_block = self
+            .current_block
+            .expect("there will be a block by this point");
+
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Return(value));
+        }
+    }
+
+    fn translate_name(&mut self, ast: &Ast, names: &HashMap<Span, Span>, expr: ExprIndex) {
+        let name = names
+            .get(
+                &ast.get_expr(expr)
+                    .map(Spanned::span)
+                    .expect("`translate_name` is only called from `translate`, which only uses existing expressions"),
+            )
+            .and_then(|name| self.addresses.get(name))
+            .expect("the name should be valid since we succeeded in name resolution");
+
+        match name {
+            Addresslike::Block(block_index) => {
+                self.values.push(Value::FnBlock(*block_index));
+            }
+            Addresslike::Address(address) => {
+                self.values.push(Value::Address(*address));
+            }
+            Addresslike::Argument(offset) => {
+                self.values.push(Value::Argument(*offset));
+            }
+            Addresslike::NativeFn(span) => {
+                self.values.push(Value::NativeFn(*span));
+            }
+        }
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_block(&mut self, ast: &Ast, names: &HashMap<Span, Span>, exprs: &[ExprIndex]) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        for expr in exprs.iter().rev().skip(1).rev() {
+            self.translate_expr(ast, names, *expr);
+
+            self.values
+                .pop()
+                .expect("every expression produces a value");
+        }
+
+        self.last_in_fn = last_in_fn;
+
+        self.translate_expr(
+            ast,
+            names,
+            *exprs
+                .last()
+                .expect("`translate_block` in only called on blocks that aren't empty"),
+        );
+    }
+
+    fn translate_unary(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        expr: ExprIndex,
+        op: UnaryOp,
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+
+        let operand = self
+            .values
+            .pop()
+            .expect("all unary operands should produce a value");
+
+        self.push_instruction(Instruction::Unary { op, operand });
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("unary expressions only exist in blocks"),
+            offset: self.instructions_len() - 1,
+            version: 0,
+        };
+
+        self.values.push(Value::Address(address));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_binary(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        expr: ExprIndex,
+        op: BinaryOp,
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+
+        let rhs = self
+            .values
+            .pop()
+            .expect("all binary right operands should produce a value");
+
+        let lhs = self
+            .values
+            .pop()
+            .expect("all binary left operands should produce a value");
+
+        self.push_instruction(Instruction::Binary { op, lhs, rhs });
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("binary expressions only exist in blocks"),
+            offset: self.instructions_len() - 1,
+            version: 0,
+        };
+
+        self.values.push(Value::Address(address));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_assign(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        expr: ExprIndex,
+        value: ExprIndex,
+    ) {
+        self.translate_expr(ast, names, value);
+
+        let value = self
+            .values
+            .pop()
+            .expect("assignments can only occur with a value");
+
+        let expr_span = ast
+            .get_expr(expr)
+            .expect("`translate_assign` is only called on existing assignments from `translate`")
+            .span();
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("assignments only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        let address = names
+            .get(&expr_span)
+            .and_then(|name_span| self.addresses.get_mut(name_span))
+            .and_then(|address| {
+                if let Addresslike::Address(address) = address {
+                    address.version += 1;
+
+                    Some(*address)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(address);
+
+        self.push_instruction(Instruction::Assign { value, to: address });
+
+        self.addresses
+            .insert(expr_span, Addresslike::Address(address));
+
+        self.values.push(Value::Address(address));
+    }
+
+    fn translate_and(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        lhs: ExprIndex,
+        rhs: ExprIndex,
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.translate_expr(ast, names, lhs);
+
+        let lhs = self
+            .values
+            .pop()
+            .expect("every binary left operand should produce a value");
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("binary expressions only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.values.push(Value::Address(address));
+
+        self.push_instruction(Instruction::Assign {
+            value: lhs,
+            to: address,
+        });
+
+        let current_block = self
+            .current_block
+            .expect("a block will exist if we're translating expressions");
+
+        let when_true = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+            block.terminator = Some(BlockTerminator::Branch {
+                condition: Value::Address(address),
+                when_true,
+                otherwise: BlockIndex(usize::MAX),
+            });
+        }
+
+        self.next_block();
+
+        self.translate_expr(ast, names, rhs);
+
+        if last_in_fn {
+            self.emit_return();
+        }
+
+        let after_all = self.next_block();
+
+        if last_in_fn {
+            self.emit_return();
+        }
+
+        if let BlockTerminator::Branch { otherwise, .. } = self
+            .blocks
+            .get_mut(usize::from(current_block))
+            .and_then(|block| block.terminator.as_mut())
+            .expect("the destination to backpatch was set just before")
+        {
+            *otherwise = after_all;
+        }
+
+        self.last_in_fn = last_in_fn;
+    }
+
+    fn translate_or(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        lhs: ExprIndex,
+        rhs: ExprIndex,
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.translate_expr(ast, names, lhs);
+
+        let lhs = self
+            .values
+            .pop()
+            .expect("every binary left operand should produce a value");
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("binary expressions only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.values.push(Value::Address(address));
+
+        self.push_instruction(Instruction::Assign {
+            value: lhs,
+            to: address,
+        });
+
+        let current_block = self
+            .current_block
+            .expect("a block will exist if we're translating expressions");
+
+        let otherwise = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+            block.terminator = Some(BlockTerminator::Branch {
+                condition: Value::Address(address),
+                when_true: BlockIndex(usize::MAX),
+                otherwise,
+            });
+        }
+
+        self.next_block();
+
+        self.translate_expr(ast, names, rhs);
+
+        if last_in_fn {
+            self.emit_return();
+        }
+
+        let after_all = self.next_block();
+
+        if last_in_fn {
+            self.emit_return();
+        }
+
+        if let BlockTerminator::Branch { when_true, .. } = self
+            .blocks
+            .get_mut(usize::from(current_block))
+            .and_then(|block| block.terminator.as_mut())
+            .expect("the destination to backpatch was set just before")
+        {
+            *when_true = after_all;
+        }
+
+        self.last_in_fn = last_in_fn;
+    }
+
+    fn translate_if(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        (condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.translate_expr(ast, names, condition);
+
+        let condition = self
+            .values
+            .pop()
+            .expect("if expressions are enforced to have conditions by an earlier stage");
+
+        let current_block = self
+            .current_block
+            .expect("a block will exist if we're translating expressions");
+
+        let then_branch = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Branch {
+                condition,
+                when_true: then_branch,
+                otherwise: BlockIndex(usize::MAX),
+            });
+        }
+
+        self.next_block();
+
+        self.last_in_fn = last_in_fn;
+
+        self.translate_expr(ast, names, when_true);
+
+        let then_branch = BlockIndex(self.blocks.len() - 1);
+
+        let else_branch = BlockIndex(self.blocks.len());
+
+        self.next_block();
+
+        self.translate_expr(ast, names, otherwise);
+
+        let after_all = self.next_block();
+
+        if let Some(block) = self.blocks.get_mut(usize::from(then_branch))
+            && matches!(block.terminator, Some(BlockTerminator::Jump(_)) | None)
+        {
+            block.terminator = Some(BlockTerminator::Jump(after_all));
+        }
+
+        if let BlockTerminator::Branch { otherwise, .. } = self
+            .blocks
+            .get_mut(usize::from(current_block))
+            .and_then(|block| block.terminator.as_mut())
+            .expect("the destination to backpatch was set just before")
+        {
+            *otherwise = else_branch;
+        }
+
+        if !self.last_in_fn {
+            self.values.pop();
+            self.values.pop();
+
+            self.values.push(Value::Runtime);
+        }
+    }
+
+    fn translate_call(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        (callee, arguments): (ExprIndex, &[ExprIndex]),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.translate_expr(ast, names, callee);
+
+        let callee_value = self
+            .values
+            .pop()
+            .expect("parsing ensures a call expression has a callee");
+
+        let arguments = arguments
+            .iter()
+            .copied()
+            .map(|argument| {
+                self.translate_expr(ast, names, argument);
+
+                self.values
+                    .pop()
+                    .expect("each call argument should produce a value")
+            })
+            .collect::<Vec<_>>();
+
+        for argument in arguments.into_iter().rev() {
+            self.push_instruction(Instruction::Push(argument));
+        }
+
+        self.push_instruction(Instruction::Call(callee_value));
+
+        let address = Address {
+            block_index: self.current_block.expect("calls only exist in blocks"),
+            offset: self.instructions_len() - 1,
+            version: 0,
+        };
+
+        self.values.push(Value::Address(address));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_while(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        (condition, when_true): (ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let condition_block = self.next_block();
+
+        self.translate_expr(ast, names, condition);
+
+        let condition = self
+            .values
+            .pop()
+            .expect("if expressions are enforced to have conditions by an earlier stage");
+
+        let current_block = self
+            .current_block
+            .expect("a block will exist if we're translating expressions");
+
+        let then_branch = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Branch {
+                condition,
+                when_true: then_branch,
+                otherwise: BlockIndex(usize::MAX),
+            });
+        }
+
+        self.next_block();
+
+        self.translate_expr(ast, names, when_true);
+
+        if let Some(block) = self.blocks.get_mut(usize::from(then_branch))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Jump(condition_block));
+        }
+
+        let after_all = self.next_block();
+
+        if let BlockTerminator::Branch { otherwise, .. } = self
+            .blocks
+            .get_mut(usize::from(current_block))
+            .and_then(|block| block.terminator.as_mut())
+            .expect("the destination to backpatch was set just before")
+        {
+            *otherwise = after_all;
+        }
+
+        self.values.pop();
+
+        self.values.push(Value::Unit);
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+}

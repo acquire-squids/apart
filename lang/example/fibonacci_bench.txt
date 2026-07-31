@@ -1,0 +1,15 @@
+funky main() {
+	let n = 40 in {
+		print_i64(fib(n))
+	}
+}
+
+funky fib(n <- i64) -> i64 {
+	if n <= 1 {
+		return n
+	}
+
+	true;
+
+	fib(n - 2) + fib(n - 1)
+}

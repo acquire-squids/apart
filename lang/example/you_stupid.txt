@@ -1,0 +1,20 @@
+funky main() {
+	let you_stupid = 0s9 + 0s10 in {
+		print_bool(quick_math(you_stupid))
+	}
+
+	print_bool(quick_math(19))
+}
+
+funky quick_math(your_answer <- i64) -> bool {
+	if your_answer == 9 + 10 {
+		let no_i_not = false in {
+			no_i_not && {
+				print_f64(3.14);
+				true
+			}
+		}
+	} else {
+		true
+	}
+}

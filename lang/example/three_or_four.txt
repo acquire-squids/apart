@@ -1,0 +1,8 @@
+funky main() {
+	let a = 1 in {
+		print_i64(a + {
+			a = a + 1;
+			a
+		})
+	}
+}

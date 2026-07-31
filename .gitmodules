@@ -1,0 +1,3 @@
+[submodule "reporting"]
+	path = reporting
+	url = git@github.com:acquire-squids/reporting

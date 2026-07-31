@@ -1,0 +1,10 @@
+primitive i64;
+primitive f64;
+primitive bool;
+primitive unit;
+
+native funky print_i64 = funky(i64) -> unit;
+native funky print_f64 = funky(f64) -> unit;
+native funky print_bool = funky(bool) -> unit;
+native funky print_unit = funky(unit) -> unit;
+
