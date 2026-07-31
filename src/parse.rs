@@ -241,7 +241,7 @@ pub enum Expr {
     Block(Vec<ExprIndex>),
     Name(String),
     Let {
-        name: String,
+        name: Spanned<String>,
         type_signature: Option<Spanned<TypeSignature>>,
         value: ExprIndex,
     },
@@ -1771,7 +1771,7 @@ impl Parser {
             exprs.push(
                 ast.push_expr(Spanned::new(
                     Expr::Let {
-                        name,
+                        name: Spanned::new(name, name_span),
                         type_signature,
                         value,
                     },

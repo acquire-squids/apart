@@ -616,11 +616,16 @@ impl TypeChecker {
                 }
             }
             Some(Expr::Let {
+                name,
                 type_signature,
                 value,
-                ..
             }) => {
-                self.type_check_let(ast, names, expr, (type_signature.as_ref(), *value));
+                self.type_check_let(
+                    ast,
+                    names,
+                    expr,
+                    (name.span(), type_signature.as_ref(), *value),
+                );
             }
             Some(Expr::Unary { op, expr: operand }) => {
                 self.type_check_unary(ast, names, expr, (*op, *operand));
@@ -803,13 +808,8 @@ impl TypeChecker {
         ast: &Ast,
         names: &HashMap<Span, Span>,
         expr: ExprIndex,
-        (type_signature, value): (Option<&Spanned<TypeSignature>>, ExprIndex),
+        (span, type_signature, value): (Span, Option<&Spanned<TypeSignature>>, ExprIndex),
     ) {
-        let span = ast
-            .get_expr(expr)
-            .map(Spanned::span)
-            .expect("if the expression exists, the span does too");
-
         ast.for_children_exprs(expr, |ast, expr| self.type_check_expr(ast, names, expr));
 
         let value_span = ast

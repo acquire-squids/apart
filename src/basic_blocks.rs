@@ -394,8 +394,8 @@ impl Translator {
             Some(Expr::Group(_)) => {
                 ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
             }
-            Some(Expr::Let { value, .. }) => {
-                self.translate_assign(ast, names, expr, *value);
+            Some(Expr::Let { name, value, .. }) => {
+                self.translate_assign_name(ast, names, name.span(), *value);
             }
             Some(Expr::Binary {
                 op: BinaryOp::Assign,
@@ -623,17 +623,31 @@ impl Translator {
         expr: ExprIndex,
         value: ExprIndex,
     ) {
+        let expr_span = ast
+            .get_expr(expr)
+            .expect("`translate_assign` is only called on existing assignments from `translate`")
+            .span();
+
+        if let Some(Expr::Name(_)) = ast.get_expr(expr).map(Spanned::kind) {
+            self.translate_assign_name(ast, names, expr_span, value);
+        } else {
+            unreachable!("for now, only names can be assigned to");
+        }
+    }
+
+    fn translate_assign_name(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        span: Span,
+        value: ExprIndex,
+    ) {
         self.translate_expr(ast, names, value);
 
         let value = self
             .values
             .pop()
             .expect("assignments can only occur with a value");
-
-        let expr_span = ast
-            .get_expr(expr)
-            .expect("`translate_assign` is only called on existing assignments from `translate`")
-            .span();
 
         let address = Address {
             block_index: self
@@ -644,7 +658,7 @@ impl Translator {
         };
 
         let address = names
-            .get(&expr_span)
+            .get(&span)
             .and_then(|name_span| self.addresses.get_mut(name_span))
             .and_then(|address| {
                 if let Addresslike::Address(address) = address {
@@ -659,8 +673,7 @@ impl Translator {
 
         self.push_instruction(Instruction::Assign { value, to: address });
 
-        self.addresses
-            .insert(expr_span, Addresslike::Address(address));
+        self.addresses.insert(span, Addresslike::Address(address));
 
         self.values.push(Value::Address(address));
     }

@@ -299,12 +299,7 @@ impl NameResolver {
                     self.resolve_type_signature(type_signature);
                 }
 
-                self.declare_name(
-                    name.clone(),
-                    ast.get_expr(expr)
-                        .map(Spanned::span)
-                        .expect("if the expression exists, the span does too"),
-                );
+                self.declare_name(name.kind().clone(), name.span());
             }
             Some(Expr::Block(_)) => {
                 self.scopes.push(HashMap::new());
@@ -316,7 +311,7 @@ impl NameResolver {
 
         match ast.get_expr(expr).map(Spanned::kind) {
             Some(Expr::Let { name, .. }) => {
-                self.define_name(name);
+                self.define_name(name.kind());
             }
             Some(Expr::Block(_)) => {
                 self.scopes.pop();
