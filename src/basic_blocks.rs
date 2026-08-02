@@ -239,7 +239,7 @@ pub enum Value {
     Float(f64),
     Boolean(bool),
     Unit,
-    FnBlock(BlockIndex),
+    Fn(BlockIndex),
     Address(Address),
     NativeFn(Span),
     #[allow(dead_code)]
@@ -495,7 +495,7 @@ impl Translator {
 
         match name {
             Addresslike::Block(block_index) => {
-                self.values.push(Value::FnBlock(*block_index));
+                self.values.push(Value::Fn(*block_index));
             }
             Addresslike::Address(address) => {
                 self.values.push(Value::Address(*address));

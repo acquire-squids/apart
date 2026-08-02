@@ -350,7 +350,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Equal, Value::FnBlock(lhs), Value::FnBlock(rhs)) => {
+            (BinaryOp::Equal, Value::Fn(lhs), Value::Fn(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs == rhs),
                     to: Address {
@@ -422,7 +422,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::NotEqual, Value::FnBlock(lhs), Value::FnBlock(rhs)) => {
+            (BinaryOp::NotEqual, Value::Fn(lhs), Value::Fn(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs != rhs),
                     to: Address {

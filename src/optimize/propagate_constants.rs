@@ -112,7 +112,7 @@ fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
         | Value::Float(_)
         | Value::Boolean(_)
         | Value::Unit
-        | Value::FnBlock(_)
+        | Value::Fn(_)
         | Value::NativeFn(_)
         | Value::Argument(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address),

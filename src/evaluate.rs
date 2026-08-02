@@ -80,7 +80,7 @@ where
                 }
                 Instruction::Call(callee) => {
                     match dereference_value(&variables, call_frames.as_slice(), callee) {
-                        Value::FnBlock(callee) => {
+                        Value::Fn(callee) => {
                             let callee = *callee;
 
                             call_frames.push(CallFrame {
@@ -508,10 +508,10 @@ fn evaluate_binary(
         (BinaryOp::NotEqual, Value::Unit, Value::Unit) => {
             variables.insert((call_depth, b, i), Value::Boolean(false));
         }
-        (BinaryOp::Equal, Value::FnBlock(lhs), Value::FnBlock(rhs)) => {
+        (BinaryOp::Equal, Value::Fn(lhs), Value::Fn(rhs)) => {
             variables.insert((call_depth, b, i), Value::Boolean(lhs == rhs));
         }
-        (BinaryOp::NotEqual, Value::FnBlock(lhs), Value::FnBlock(rhs)) => {
+        (BinaryOp::NotEqual, Value::Fn(lhs), Value::Fn(rhs)) => {
             variables.insert((call_depth, b, i), Value::Boolean(lhs != rhs));
         }
         (BinaryOp::Equal, Value::NativeFn(lhs), Value::NativeFn(rhs)) => {

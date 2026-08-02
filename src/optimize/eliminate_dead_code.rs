@@ -47,16 +47,16 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
                 | Instruction::Assign { value, .. }
                 | Instruction::Push(value)
                 | Instruction::Call(value) => {
-                    if let Value::FnBlock(block_index) = value {
+                    if let Value::Fn(block_index) = value {
                         blocks_used[usize::from(*block_index)] = true;
                     }
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
-                    if let Value::FnBlock(block_index) = lhs {
+                    if let Value::Fn(block_index) = lhs {
                         blocks_used[usize::from(*block_index)] = true;
                     }
 
-                    if let Value::FnBlock(block_index) = rhs {
+                    if let Value::Fn(block_index) = rhs {
                         blocks_used[usize::from(*block_index)] = true;
                     }
                 }
