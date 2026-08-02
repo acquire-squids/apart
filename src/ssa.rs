@@ -93,9 +93,9 @@ impl Ssa {
     }
 
     #[allow(dead_code)]
-    pub fn for_children_mut<F>(&mut self, block_index: BlockIndex, mut f: F)
+    pub fn for_children<F>(&self, block_index: BlockIndex, mut f: F)
     where
-        F: FnMut(&mut Self, BlockIndex),
+        F: FnMut(&Self, BlockIndex),
     {
         let Some(block) = self.get_block(block_index) else {
             return;
@@ -223,13 +223,12 @@ impl Block {
 
 impl Ssa {
     fn liveliness(&mut self) {
-        let mut seen = HashSet::new();
         let mut living = vec![];
 
         let mut addresses = vec![];
 
         for b in (0..(self.blocks.len())).rev() {
-            addresses.append(&mut self.liveliness_recursive(BlockIndex(b), &mut living, &mut seen));
+            addresses.append(&mut self.liveliness_recursive(BlockIndex(b), &mut living));
         }
 
         for b in 0..(self.blocks.len()) {
@@ -310,101 +309,95 @@ impl Ssa {
         &mut self,
         block_index: BlockIndex,
         living: &mut Vec<Address>,
-        seen: &mut HashSet<BlockIndex>,
     ) -> Vec<(Address, Address)> {
-        if seen.insert(block_index) {
-            let mut addresses = vec![];
+        let mut addresses = vec![];
 
-            if let Some(block) = self.get_block_mut(block_index) {
-                for (i, instruction) in block.instructions_mut().iter_mut().enumerate().rev() {
-                    match instruction {
-                        Instruction::NoOp | Instruction::Pop => {}
-                        Instruction::Unary { operand: value, .. }
-                        | Instruction::Push(value)
-                        | Instruction::Call(value) => {
-                            Self::accumulate_live_value(block_index, living, value);
-                        }
-                        Instruction::Binary { lhs, rhs, .. } => {
-                            Self::accumulate_live_value(block_index, living, lhs);
-                            Self::accumulate_live_value(block_index, living, rhs);
-                        }
-                        Instruction::Assign { value, to } => {
-                            Self::accumulate_live_value(block_index, living, value);
+        if let Some(block) = self.get_block_mut(block_index) {
+            Self::accumulate_live_values(block_index, block, living, &mut addresses);
 
-                            let old_address = *to;
+            let mut parameters: Vec<Address> = vec![];
 
-                            let new_address = Address {
-                                block_index,
-                                offset: i,
-                                version: 0,
-                            };
+            for live_from_elsewhere in &*living {
+                let live_from_elsewhere = *live_from_elsewhere;
 
-                            addresses.push((*to, new_address));
-
-                            *to = new_address;
-
-                            if old_address.block_index == block_index {
-                                living.retain(|address| {
-                                    address.block_index != old_address.block_index
-                                        || address.offset != old_address.offset
-                                });
-                            }
-                        }
-                    }
-                }
-
-                match &mut block.terminator {
-                    BlockTerminator::Jump(_) => {}
-                    BlockTerminator::Branch {
-                        condition: value, ..
-                    }
-                    | BlockTerminator::Return(value) => {
-                        Self::accumulate_live_value(block_index, living, value);
-                    }
-                }
-
-                for live_from_elsewhere in &*living {
-                    let live_from_elsewhere = *live_from_elsewhere;
-
-                    if !block.parameters.iter().any(|parameter| {
-                        parameter.block_index == live_from_elsewhere.block_index
-                            && parameter.offset == live_from_elsewhere.offset
-                    }) && live_from_elsewhere.block_index != block_index
-                    {
-                        block.parameters.push(live_from_elsewhere);
-                    }
-                }
-
-                for instruction in block.instructions_mut().iter_mut().rev() {
-                    match instruction {
-                        Instruction::NoOp | Instruction::Pop => {}
-                        Instruction::Unary { operand: value, .. }
-                        | Instruction::Push(value)
-                        | Instruction::Call(value)
-                        | Instruction::Assign { value, .. } => {
-                            Self::value_to_argument(living.as_slice(), addresses.as_slice(), value);
-                        }
-                        Instruction::Binary { lhs, rhs, .. } => {
-                            Self::value_to_argument(living.as_slice(), addresses.as_slice(), lhs);
-                            Self::value_to_argument(living.as_slice(), addresses.as_slice(), rhs);
-                        }
-                    }
-                }
-
-                match &mut block.terminator {
-                    BlockTerminator::Jump(_) => {}
-                    BlockTerminator::Branch {
-                        condition: value, ..
-                    }
-                    | BlockTerminator::Return(value) => {
-                        Self::value_to_argument(living.as_slice(), addresses.as_slice(), value);
-                    }
+                if !parameters.iter().any(|parameter| {
+                    parameter.block_index == live_from_elsewhere.block_index
+                        && parameter.offset == live_from_elsewhere.offset
+                }) && live_from_elsewhere.block_index != block_index
+                    && self.parameter_in_use(block_index, &live_from_elsewhere, &mut HashSet::new())
+                {
+                    parameters.push(live_from_elsewhere);
                 }
             }
 
-            addresses
-        } else {
-            vec![]
+            if let Some(block) = self.get_block_mut(block_index) {
+                let parameter_count = parameters.len();
+
+                block.parameters = parameters;
+
+                Self::values_to_arguments(
+                    parameter_count,
+                    block,
+                    living.as_slice(),
+                    addresses.as_slice(),
+                );
+            }
+        }
+
+        addresses
+    }
+
+    fn accumulate_live_values(
+        block_index: BlockIndex,
+        block: &mut Block,
+        living: &mut Vec<Address>,
+        addresses: &mut Vec<(Address, Address)>,
+    ) {
+        for (i, instruction) in block.instructions_mut().iter_mut().enumerate().rev() {
+            match instruction {
+                Instruction::NoOp | Instruction::Pop => {}
+                Instruction::Unary { operand: value, .. }
+                | Instruction::Push(value)
+                | Instruction::Call(value) => {
+                    Self::accumulate_live_value(block_index, living, value);
+                }
+                Instruction::Binary { lhs, rhs, .. } => {
+                    Self::accumulate_live_value(block_index, living, lhs);
+                    Self::accumulate_live_value(block_index, living, rhs);
+                }
+                Instruction::Assign { value, to } => {
+                    Self::accumulate_live_value(block_index, living, value);
+
+                    let old_address = *to;
+
+                    let new_address = Address {
+                        block_index,
+                        offset: i,
+                        version: 0,
+                    };
+
+                    addresses.push((*to, new_address));
+
+                    *to = new_address;
+
+                    if old_address.block_index == block_index {
+                        living.retain(|address| {
+                            address.block_index != old_address.block_index
+                                || address.offset != old_address.offset
+                        });
+                    }
+                }
+            }
+        }
+
+        match &mut block.terminator {
+            BlockTerminator::Jump(_) => {}
+            BlockTerminator::Branch {
+                condition: value, ..
+            }
+            | BlockTerminator::Return(value) => {
+                Self::accumulate_live_value(block_index, living, value);
+            }
         }
     }
 
@@ -423,7 +416,122 @@ impl Ssa {
         }
     }
 
-    fn value_to_argument(living: &[Address], addresses: &[(Address, Address)], value: &mut Value) {
+    fn parameter_in_use(
+        &self,
+        block_index: BlockIndex,
+        parameter: &Address,
+        seen: &mut HashSet<BlockIndex>,
+    ) -> bool {
+        if seen.insert(block_index)
+            && let Some(block) = self.get_block(block_index)
+        {
+            match &block.terminator {
+                BlockTerminator::Jump(_) => {}
+                BlockTerminator::Branch {
+                    condition: value, ..
+                }
+                | BlockTerminator::Return(value) => {
+                    if let Value::Address(address) = value
+                        && address.block_index == parameter.block_index
+                        && address.offset == parameter.offset
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if block.parameters.iter().any(|block_parameter| {
+                block_parameter.block_index == parameter.block_index
+                    && block_parameter.offset == parameter.offset
+            }) {
+                return true;
+            }
+
+            for instruction in &block.instructions {
+                match instruction {
+                    Instruction::NoOp | Instruction::Pop => {}
+                    Instruction::Unary { operand: value, .. }
+                    | Instruction::Assign { value, .. }
+                    | Instruction::Push(value)
+                    | Instruction::Call(value) => {
+                        if let Value::Address(address) = value
+                            && address.block_index == parameter.block_index
+                            && address.offset == parameter.offset
+                        {
+                            return true;
+                        }
+                    }
+                    Instruction::Binary { lhs, rhs, .. } => {
+                        if let Value::Address(address) = lhs
+                            && address.block_index == parameter.block_index
+                            && address.offset == parameter.offset
+                        {
+                            return true;
+                        }
+
+                        if let Value::Address(address) = rhs
+                            && address.block_index == parameter.block_index
+                            && address.offset == parameter.offset
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            let mut in_use = false;
+
+            self.for_children(block_index, |ssa, block_index| {
+                if !in_use {
+                    in_use = ssa.parameter_in_use(block_index, parameter, seen);
+                }
+            });
+
+            in_use
+        } else {
+            false
+        }
+    }
+
+    fn values_to_arguments(
+        parameter_count: usize,
+        block: &mut Block,
+        living: &[Address],
+        addresses: &[(Address, Address)],
+    ) {
+        for instruction in block.instructions_mut().iter_mut().rev() {
+            match instruction {
+                Instruction::NoOp | Instruction::Pop => {}
+                Instruction::Unary { operand: value, .. }
+                | Instruction::Push(value)
+                | Instruction::Call(value)
+                | Instruction::Assign { value, .. } => {
+                    Self::value_to_argument(parameter_count, living, addresses, value);
+                }
+                Instruction::Binary { lhs, rhs, .. } => {
+                    Self::value_to_argument(parameter_count, living, addresses, lhs);
+                    Self::value_to_argument(parameter_count, living, addresses, rhs);
+                }
+            }
+        }
+
+        match &mut block.terminator {
+            BlockTerminator::Jump(_) => {}
+            BlockTerminator::Branch {
+                condition: value, ..
+            }
+            | BlockTerminator::Return(value) => {
+                Self::value_to_argument(parameter_count, living, addresses, value);
+            }
+        }
+    }
+
+    fn value_to_argument(
+        parameter_count: usize,
+        living: &[Address],
+        addresses: &[(Address, Address)],
+        value: &mut Value,
+    ) {
         match value {
             Value::Address(address)
                 if let Some(i) = living.iter().position(|live_from_elsewhere| {
@@ -446,7 +554,7 @@ impl Ssa {
                 *address = new_address;
             }
             Value::Argument(i) if *i < living.len() => {
-                *i += living.len();
+                *i += parameter_count;
             }
             _ => {}
         }
