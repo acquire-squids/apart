@@ -211,84 +211,70 @@ impl NameResolver {
 impl NameResolver {
     fn resolve_primitives(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                None => unreachable!("the ast should be valid since we succeeded in parsing"),
-                Some(Item::Primitive(name)) => {
-                    if self.resolve_name(name.kind()).is_some() {
-                        self.errors
-                            .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
-                    } else {
-                        self.declare_name(name.kind().clone(), name.span());
+            if let Some(Item::Primitive(name)) = ast.get_item(*root).map(Spanned::kind) {
+                if self.resolve_name(name.kind()).is_some() {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
+                } else {
+                    self.declare_name(name.kind().clone(), name.span());
 
-                        self.define_name(name.kind());
-                    }
+                    self.define_name(name.kind());
                 }
-                Some(Item::NativeFn { .. } | Item::Fn { .. }) => {}
             }
         }
     }
 
     fn resolve_native_functions(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                None => unreachable!("the ast should be valid since we succeeded in parsing"),
-                Some(Item::NativeFn { name, signature }) => {
-                    self.resolve_type_signature(None, signature);
+            if let Some(Item::NativeFn { name, signature }) = ast.get_item(*root).map(Spanned::kind)
+            {
+                self.resolve_type_signature(None, signature);
 
-                    if self.resolve_name(name.kind()).is_some() {
-                        self.errors
-                            .push(Spanned::new(Error::DuplicateNativeFnName, name.span()));
-                    } else {
-                        self.declare_name(name.kind().clone(), name.span());
+                if self.resolve_name(name.kind()).is_some() {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicateNativeFnName, name.span()));
+                } else {
+                    self.declare_name(name.kind().clone(), name.span());
 
-                        self.define_name(name.kind());
-                    }
+                    self.define_name(name.kind());
                 }
-                Some(Item::Primitive(_) | Item::Fn { .. }) => {}
             }
         }
     }
 
     fn resolve_types(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                None => unreachable!("the ast should be valid since we succeeded in parsing"),
-                Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
-                Some(Item::Fn {
-                    name,
-                    parameters,
-                    return_type,
-                    generics,
-                    ..
-                }) => {
-                    for generic in generics {
-                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                    }
-
-                    for parameter in parameters {
-                        self.resolve_type_signature(Some(name.span()), parameter.ty());
-                    }
-
-                    self.resolve_type_signature(Some(name.span()), return_type);
+            if let Some(Item::Fn {
+                name,
+                parameters,
+                return_type,
+                generics,
+                ..
+            }) = ast.get_item(*root).map(Spanned::kind)
+            {
+                for generic in generics {
+                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
                 }
+
+                for parameter in parameters {
+                    self.resolve_type_signature(Some(name.span()), parameter.ty());
+                }
+
+                self.resolve_type_signature(Some(name.span()), return_type);
             }
         }
     }
 
     fn resolve_functions(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                None => unreachable!("the ast should be valid since we succeeded in parsing"),
-                Some(Item::NativeFn { .. } | Item::Primitive(_)) => {}
-                Some(Item::Fn { name, .. }) => {
-                    if self.resolve_name(name.kind()).is_some() {
-                        self.errors
-                            .push(Spanned::new(Error::DuplicateFnName, name.span()));
-                    } else {
-                        self.declare_name(name.kind().clone(), name.span());
+            if let Some(Item::Fn { name, .. }) = ast.get_item(*root).map(Spanned::kind) {
+                if self.resolve_name(name.kind()).is_some() {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicateFnName, name.span()));
+                } else {
+                    self.declare_name(name.kind().clone(), name.span());
 
-                        self.define_name(name.kind());
-                    }
+                    self.define_name(name.kind());
                 }
             }
         }
