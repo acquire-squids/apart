@@ -29,7 +29,8 @@ pub fn resolve_names(ast: &Ast) -> Result<HashMap<Span, Span>, Vec<Spanned<Error
 }
 
 struct NameResolver {
-    scopes: Vec<HashMap<String, (Span, Defined)>>,
+    variable_scopes: Vec<HashMap<String, (Span, Defined)>>,
+    persistent_scopes: HashMap<Span, HashMap<String, Span>>,
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
 }
@@ -82,14 +83,37 @@ enum Defined {
 impl NameResolver {
     fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            variable_scopes: vec![HashMap::new()],
+            persistent_scopes: HashMap::new(),
             errors: vec![],
             names: HashMap::new(),
         }
     }
 
+    fn associate_name(&mut self, of: Span, name: String, span: Span) {
+        self.persistent_scopes
+            .entry(of)
+            .and_modify(|associated_with| {
+                associated_with.insert(name.clone(), span);
+            })
+            .or_insert_with(|| {
+                let mut hash_map = HashMap::new();
+
+                hash_map.insert(name, span);
+
+                hash_map
+            });
+    }
+
+    fn resolve_associated_name(&self, of: Span, name: &str) -> Option<Span> {
+        self.persistent_scopes
+            .get(&self.names.get(&of).map_or(of, |span| *span))
+            .and_then(|associated_with| associated_with.get(name))
+            .copied()
+    }
+
     fn declare_name(&mut self, name: String, span: Span) {
-        let Some(scope) = self.scopes.last_mut() else {
+        let Some(scope) = self.variable_scopes.last_mut() else {
             unreachable!("there will always be at least one scope");
         };
 
@@ -98,7 +122,7 @@ impl NameResolver {
 
     fn define_name(&mut self, name: &str) {
         if let Some((_, defined)) = self
-            .scopes
+            .variable_scopes
             .iter_mut()
             .filter_map(|scope| scope.get_mut(name))
             .next_back()
@@ -110,7 +134,12 @@ impl NameResolver {
     fn resolve_name(&self, name: &str) -> Option<(Span, Defined)> {
         let mut found = None;
 
-        for (span, defined) in self.scopes.iter().rev().filter_map(|scope| scope.get(name)) {
+        for (span, defined) in self
+            .variable_scopes
+            .iter()
+            .rev()
+            .filter_map(|scope| scope.get(name))
+        {
             if found.is_none() {
                 found = Some(span);
             }
@@ -126,7 +155,7 @@ impl NameResolver {
     fn assign_name(&mut self, target: Span, span: Span) {
         // if let Some((name, _)) = self
         if let Some((_, _)) = self
-            .scopes
+            .variable_scopes
             .iter_mut()
             .rev()
             .find_map(|scope| scope.values_mut().find(|(name, _)| *name == target))
@@ -139,7 +168,7 @@ impl NameResolver {
         self.errors.push(Spanned::new(Error::NameNotDeclared, span));
     }
 
-    fn resolve_and_insert_name(&mut self, name: &str, span: Span) {
+    fn resolve_and_insert_name(&mut self, associated_with: Option<Span>, name: &str, span: Span) {
         if let Some((name_span, defined)) = self.resolve_name(name) {
             if defined == Defined::No {
                 self.errors
@@ -147,25 +176,33 @@ impl NameResolver {
             } else {
                 self.names.insert(span, name_span);
             }
+        } else if let Some(name_span) = associated_with
+            .and_then(|associated_with| self.resolve_associated_name(associated_with, name))
+        {
+            self.names.insert(span, name_span);
         } else {
             self.errors.push(Spanned::new(Error::NameNotDeclared, span));
         }
     }
 
-    fn resolve_type_signature(&mut self, ty: &Spanned<TypeSignature>) {
+    fn resolve_type_signature(
+        &mut self,
+        associated_with: Option<Span>,
+        ty: &Spanned<TypeSignature>,
+    ) {
         match ty.kind() {
             TypeSignature::Name(name) => {
-                self.resolve_and_insert_name(name, ty.span());
+                self.resolve_and_insert_name(associated_with, name, ty.span());
             }
             TypeSignature::Fn {
                 parameters,
                 return_type,
             } => {
                 for parameter in parameters {
-                    self.resolve_type_signature(parameter);
+                    self.resolve_type_signature(associated_with, parameter);
                 }
 
-                self.resolve_type_signature(return_type);
+                self.resolve_type_signature(associated_with, return_type);
             }
         }
     }
@@ -196,7 +233,7 @@ impl NameResolver {
             match ast.get_item(*root).map(Spanned::kind) {
                 None => unreachable!("the ast should be valid since we succeeded in parsing"),
                 Some(Item::NativeFn { name, signature }) => {
-                    self.resolve_type_signature(signature);
+                    self.resolve_type_signature(None, signature);
 
                     if self.resolve_name(name.kind()).is_some() {
                         self.errors
@@ -218,15 +255,21 @@ impl NameResolver {
                 None => unreachable!("the ast should be valid since we succeeded in parsing"),
                 Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
                 Some(Item::Fn {
+                    name,
                     parameters,
                     return_type,
+                    generics,
                     ..
                 }) => {
-                    for parameter in parameters {
-                        self.resolve_type_signature(parameter.ty());
+                    for generic in generics {
+                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
                     }
 
-                    self.resolve_type_signature(return_type);
+                    for parameter in parameters {
+                        self.resolve_type_signature(Some(name.span()), parameter.ty());
+                    }
+
+                    self.resolve_type_signature(Some(name.span()), return_type);
                 }
             }
         }
@@ -254,10 +297,13 @@ impl NameResolver {
     fn resolve(&mut self, ast: &Ast) {
         for root in ast.roots() {
             if let Some(Item::Fn {
-                body, parameters, ..
+                name,
+                body,
+                parameters,
+                ..
             }) = ast.get_item(*root).map(Spanned::kind)
             {
-                self.scopes.push(HashMap::new());
+                self.variable_scopes.push(HashMap::new());
 
                 for (p, parameter) in parameters.iter().enumerate() {
                     if parameters
@@ -279,16 +325,16 @@ impl NameResolver {
                     }
                 }
 
-                self.resolve_names(ast, *body);
+                self.resolve_names(ast, *body, Some(name.span()));
 
-                self.scopes.pop();
+                self.variable_scopes.pop();
             }
         }
     }
 }
 
 impl NameResolver {
-    fn resolve_names(&mut self, ast: &Ast, expr: ExprIndex) {
+    fn resolve_names(&mut self, ast: &Ast, expr: ExprIndex, associated_with: Option<Span>) {
         match ast.get_expr(expr).map(Spanned::kind) {
             Some(Expr::Let {
                 name,
@@ -296,25 +342,27 @@ impl NameResolver {
                 ..
             }) => {
                 if let Some(type_signature) = type_signature {
-                    self.resolve_type_signature(type_signature);
+                    self.resolve_type_signature(associated_with, type_signature);
                 }
 
                 self.declare_name(name.kind().clone(), name.span());
             }
             Some(Expr::Block(_)) => {
-                self.scopes.push(HashMap::new());
+                self.variable_scopes.push(HashMap::new());
             }
             _ => {}
         }
 
-        ast.for_children_exprs(expr, |ast, expr| self.resolve_names(ast, expr));
+        ast.for_children_exprs(expr, |ast, expr| {
+            self.resolve_names(ast, expr, associated_with);
+        });
 
         match ast.get_expr(expr).map(Spanned::kind) {
             Some(Expr::Let { name, .. }) => {
                 self.define_name(name.kind());
             }
             Some(Expr::Block(_)) => {
-                self.scopes.pop();
+                self.variable_scopes.pop();
             }
             Some(Expr::Binary {
                 op: BinaryOp::Assign,
@@ -344,7 +392,7 @@ impl NameResolver {
                     .map(Spanned::span)
                     .expect("if the expression exists, the span does too");
 
-                self.resolve_and_insert_name(name, span);
+                self.resolve_and_insert_name(associated_with, name, span);
             }
             _ => {}
         }

@@ -1,0 +1,7 @@
+funky main() {
+	print_i64(identity(21));
+}
+
+funky identity[T](value <- T) -> T {
+	value
+}

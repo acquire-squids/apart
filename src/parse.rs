@@ -60,6 +60,9 @@ pub enum Error {
     IfWithoutCondition,
     WhileWithoutCondition,
     ReturnWithoutValue,
+    UnnamedGeneric,
+    GenericsWithoutComma,
+    UnclosedGenerics,
 }
 
 impl fmt::Display for Error {
@@ -186,6 +189,18 @@ impl fmt::Display for Error {
             Self::ReturnWithoutValue => {
                 write!(f, "there must be a value to return")
             }
+            Self::UnnamedGeneric => {
+                write!(f, "expected the name of a generic")
+            }
+            Self::GenericsWithoutComma => {
+                write!(
+                    f,
+                    "if there is another generic here, a comma should be between it and the previous generic"
+                )
+            }
+            Self::UnclosedGenerics => {
+                write!(f, "this list of generics was never closed")
+            }
         }
     }
 }
@@ -275,6 +290,7 @@ pub enum Item {
         name: Spanned<String>,
         parameters: Vec<Parameter>,
         return_type: Spanned<TypeSignature>,
+        generics: Vec<Spanned<String>>,
         body: ExprIndex,
     },
 }
@@ -842,6 +858,7 @@ impl Parser {
         Ok(ast.push_item(Spanned::new(Item::NativeFn { name, signature }, span)))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_fn(
         &mut self,
         lexer: &mut Lexer,
@@ -852,6 +869,35 @@ impl Parser {
             .name_lexeme(lexer)
             .map_err(|error| error.transmute(|_| Error::FnWithoutName))
             .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+        let mut generics = vec![];
+
+        if let Some(span) = self
+            .match_next(lexer, Token::OpenSquareBracket)
+            .map(|token| token.span())
+        {
+            while self.peek(lexer).is_some()
+                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
+            {
+                let generic_name = self
+                    .name_lexeme(lexer)
+                    .map_err(|error| error.transmute(|_| Error::UnnamedGeneric))
+                    .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+                generics.push(generic_name);
+
+                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
+                    self.consume_next(lexer, Token::Comma, Error::GenericsWithoutComma)?;
+                }
+            }
+
+            self.consume_next_with_span(
+                lexer,
+                Token::CloseSquareBracket,
+                Error::UnclosedGenerics,
+                span,
+            )?;
+        }
 
         let parameters_span = self
             .consume_next(lexer, Token::OpenParenthesis, Error::FnWithoutParameters)?
@@ -941,6 +987,7 @@ impl Parser {
                 name,
                 parameters,
                 return_type,
+                generics,
                 body,
             },
             span.combine_with(fn_end).unwrap_or(span),

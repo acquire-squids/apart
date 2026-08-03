@@ -52,6 +52,7 @@ pub enum Type {
         parameters: Vec<TypeIndex>,
         return_type: TypeIndex,
     },
+    Generic(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,6 +75,7 @@ impl Type {
             }
             .to_string(),
             Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
+            Self::Generic(name) => name.clone(),
             Self::Fn {
                 parameters,
                 return_type,
@@ -365,9 +367,16 @@ impl TypeChecker {
                 name,
                 parameters,
                 return_type,
+                generics,
                 ..
             }) = ast.get_item(*root).map(Spanned::kind)
             {
+                for generic in generics {
+                    let type_index = self.push_type(Type::Generic(generic.kind().clone()));
+
+                    self.type_map.insert(generic.span(), type_index);
+                }
+
                 let parameters = parameters
                     .iter()
                     .map(|parameter| {
@@ -1079,7 +1088,7 @@ impl TypeChecker {
         if let Some(callee) = names.get(&callee_span)
             && let Some(Type::Fn {
                 parameters,
-                return_type,
+                return_type: return_type_index,
             }) = self
                 .type_map
                 .get(callee)
@@ -1097,39 +1106,71 @@ impl TypeChecker {
                 ));
             }
 
+            let (parameters, arguments) = (
+                parameters
+                    .iter()
+                    .filter_map(|type_index| {
+                        self.types
+                            .get(usize::from(*type_index))
+                            .map(|parameter| (type_index, parameter))
+                    })
+                    .collect::<Vec<_>>(),
+                arguments
+                    .iter()
+                    .filter_map(|argument| {
+                        ast.get_expr(*argument)
+                            .map(Spanned::span)
+                            .and_then(|argument_span| {
+                                self.type_map.get(&argument_span).and_then(|type_index| {
+                                    self.types
+                                        .get(usize::from(*type_index))
+                                        .map(|argument_type| {
+                                            (argument_span, (type_index, argument_type))
+                                        })
+                                })
+                            })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+
             let errors = parameters
                 .iter()
-                .zip(arguments)
-                .map(|(parameter, argument)| (*parameter, *argument))
-                .filter_map(|(parameter, argument)| {
-                    if let Some(parameter_type) = self.types.get(usize::from(parameter))
-                        && let Some(argument_span) = ast.get_expr(argument).map(Spanned::span)
-                        && let Some(argument_type) = self
-                            .type_map
-                            .get(&argument_span)
-                            .and_then(|type_index| self.types.get(usize::from(*type_index)))
-                        && parameter_type != argument_type
-                    {
-                        Some(Spanned::new(
-                            Error::TypeMismatch {
-                                expected: parameter_type.to_string(self.types.as_slice()),
-                                got: argument_type.to_string(self.types.as_slice()),
-                            },
-                            ast.get_expr(argument)
-                                .map(Spanned::span)
-                                .expect("the argument exists because we're iterating it right now"),
-                        ))
-                    } else {
-                        None
-                    }
-                })
+                .zip(arguments.iter())
+                .filter_map(
+                    |((_, parameter_type), (argument_span, (_, argument_type)))| {
+                        if parameter_type == argument_type {
+                            None
+                        } else if let Type::Generic(_) = parameter_type {
+                            None
+                        } else {
+                            Some(Spanned::new(
+                                Error::TypeMismatch {
+                                    expected: parameter_type.to_string(self.types.as_slice()),
+                                    got: argument_type.to_string(self.types.as_slice()),
+                                },
+                                *argument_span,
+                            ))
+                        }
+                    },
+                )
                 .collect::<Vec<_>>();
 
             for error in errors {
                 self.errors.push(error);
             }
 
-            self.type_map.insert(span, *return_type);
+            if let Some(return_type) = self.get_type(*return_type_index)
+                && let Some((i, (_, return_type))) = parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (_, parameter))| parameter == &return_type)
+                && let Type::Generic(_) = return_type
+                && let Some((_, (argument_type_index, _))) = arguments.get(i)
+            {
+                self.type_map.insert(span, **argument_type_index);
+            } else {
+                self.type_map.insert(span, *return_type_index);
+            }
         } else if !matches!(self.expr_type(ast, callee), Type::Unknown) {
             self.errors.push(Spanned::new(
                 Error::CalledUncallable,
