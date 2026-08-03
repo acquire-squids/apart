@@ -395,28 +395,28 @@ impl Translator {
                 ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
             }
             Some(Expr::Let { name, value, .. }) => {
-                self.translate_assign_name(ast, names, name.span(), *value);
+                self.translate_assign_name(ast, names, (name.span(), *value));
             }
             Some(Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
             }) => {
-                self.translate_assign(ast, names, *lhs, *rhs);
+                self.translate_assign(ast, names, (*lhs, *rhs));
             }
             Some(Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
             }) => {
-                self.translate_and(ast, names, *lhs, *rhs);
+                self.translate_and(ast, names, (*lhs, *rhs));
             }
             Some(Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
             }) => {
-                self.translate_or(ast, names, *lhs, *rhs);
+                self.translate_or(ast, names, (*lhs, *rhs));
             }
             Some(Expr::Binary { op, .. }) => {
                 self.translate_binary(ast, names, expr, *op);
@@ -620,16 +620,15 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
-        expr: ExprIndex,
-        value: ExprIndex,
+        (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
-        let expr_span = ast
-            .get_expr(expr)
+        let lhs_span = ast
+            .get_expr(lhs)
             .expect("`translate_assign` is only called on existing assignments from `translate`")
             .span();
 
-        if let Some(Expr::Name(_)) = ast.get_expr(expr).map(Spanned::kind) {
-            self.translate_assign_name(ast, names, expr_span, value);
+        if let Some(Expr::Name(_)) = ast.get_expr(lhs).map(Spanned::kind) {
+            self.translate_assign_name(ast, names, (lhs_span, rhs));
         } else {
             unreachable!("for now, only names can be assigned to");
         }
@@ -639,8 +638,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
-        span: Span,
-        value: ExprIndex,
+        (span, value): (Span, ExprIndex),
     ) {
         self.translate_expr(ast, names, value);
 
@@ -682,8 +680,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
-        lhs: ExprIndex,
-        rhs: ExprIndex,
+        (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
@@ -755,8 +752,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
-        lhs: ExprIndex,
-        rhs: ExprIndex,
+        (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
