@@ -19,14 +19,14 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         Instruction::Unary { operand: value, .. }
                         | Instruction::Assign { value, .. }
                         | Instruction::Push(value)
-                        | Instruction::Call(value) => {
+                        | Instruction::Call { callee: value, .. } => {
                             if let Value::Address(_) = value
                                 && let Some(propagated_value) = clone_constant(ssa, value)
                                 && let Some(
                                     Instruction::Unary { operand: value, .. }
                                     | Instruction::Assign { value, .. }
                                     | Instruction::Push(value)
-                                    | Instruction::Call(value),
+                                    | Instruction::Call { callee: value, .. },
                                 ) = ssa
                                     .blocks_mut()
                                     .get_mut(b)
@@ -114,7 +114,8 @@ fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
         | Value::Unit
         | Value::Fn(_)
         | Value::NativeFn(_)
-        | Value::Argument(_) => Some(value.clone()),
+        | Value::Argument(_)
+        | Value::Register(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address),
         Value::Runtime => None,
     }

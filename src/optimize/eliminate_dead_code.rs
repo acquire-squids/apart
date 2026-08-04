@@ -46,7 +46,7 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Assign { value, .. }
                 | Instruction::Push(value)
-                | Instruction::Call(value) => {
+                | Instruction::Call { callee: value, .. } => {
                     if let Value::Fn(block_index) = value {
                         blocks_used[usize::from(*block_index)] = true;
                     }
@@ -110,7 +110,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                         addresses_used.insert((address.block_index, address.offset));
                     }
                 }
-                Instruction::Push(value) | Instruction::Call(value) => {
+                Instruction::Push(value) | Instruction::Call { callee: value, .. } => {
                     if let Value::Address(address) = value {
                         addresses_used.insert((address.block_index, address.offset));
                     }
@@ -137,7 +137,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
             }
             BlockTerminator::Jump(jump_to) => {
                 for argument in jump_to.arguments() {
-                    if let Argument::Address(address) = argument {
+                    if let Argument::Address(Value::Address(address)) = argument {
                         addresses_used.insert((address.block_index, address.offset));
                     }
                 }
@@ -152,13 +152,13 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 }
 
                 for argument in when_true.arguments() {
-                    if let Argument::Address(address) = argument {
+                    if let Argument::Address(Value::Address(address)) = argument {
                         addresses_used.insert((address.block_index, address.offset));
                     }
                 }
 
                 for argument in otherwise.arguments() {
-                    if let Argument::Address(address) = argument {
+                    if let Argument::Address(Value::Address(address)) = argument {
                         addresses_used.insert((address.block_index, address.offset));
                     }
                 }

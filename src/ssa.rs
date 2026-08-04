@@ -5,7 +5,10 @@ use crate::basic_blocks::{
 use std::{collections::HashSet, fmt};
 
 pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
-    let mut ssa = Ssa { blocks: vec![] };
+    let mut ssa = Ssa {
+        blocks: vec![],
+        function_count: basic_blocks.function_count(),
+    };
 
     for basic_block in basic_blocks.blocks() {
         ssa.blocks.push(Block {
@@ -43,6 +46,7 @@ pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
 
 pub struct Ssa {
     blocks: Vec<Block>,
+    function_count: usize,
 }
 
 impl fmt::Display for Ssa {
@@ -68,6 +72,12 @@ impl fmt::Display for Block {
 }
 
 impl Ssa {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn function_count(&self) -> usize {
+        self.function_count
+    }
+
     #[allow(dead_code)]
     #[must_use]
     pub const fn blocks(&self) -> &[Block] {
@@ -145,15 +155,15 @@ pub enum BlockTerminator {
     Return(Value),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct JumpTo {
     block_index: BlockIndex,
     arguments: Vec<Argument>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Argument {
-    Address(Address),
+    Address(Value),
     Passthrough(usize),
 }
 
@@ -292,7 +302,7 @@ impl Ssa {
                         None
                     }
                 }) {
-                    arguments.push(Argument::Address(*address));
+                    arguments.push(Argument::Address(Value::Address(*address)));
                 } else if let Some(i) = block.parameters.iter().position(|parameter| {
                     parameter.block_index == successor_parameter.block_index
                         && parameter.offset == successor_parameter.offset
@@ -358,7 +368,7 @@ impl Ssa {
                 Instruction::NoOp | Instruction::Pop => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
-                | Instruction::Call(value) => {
+                | Instruction::Call { callee: value, .. } => {
                     Self::accumulate_live_value(block_index, living, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
@@ -368,7 +378,9 @@ impl Ssa {
                 Instruction::Assign { value, to } => {
                     Self::accumulate_live_value(block_index, living, value);
 
-                    let old_address = *to;
+                    let Value::Address(to) = to else {
+                        unreachable!("assignments are only to addresses");
+                    };
 
                     let new_address = Address {
                         block_index,
@@ -380,10 +392,9 @@ impl Ssa {
 
                     *to = new_address;
 
-                    if old_address.block_index == block_index {
+                    if to.block_index == block_index {
                         living.retain(|address| {
-                            address.block_index != old_address.block_index
-                                || address.offset != old_address.offset
+                            address.block_index != to.block_index || address.offset != to.offset
                         });
                     }
                 }
@@ -453,7 +464,7 @@ impl Ssa {
                     Instruction::Unary { operand: value, .. }
                     | Instruction::Assign { value, .. }
                     | Instruction::Push(value)
-                    | Instruction::Call(value) => {
+                    | Instruction::Call { callee: value, .. } => {
                         if let Value::Address(address) = value
                             && address.block_index == parameter.block_index
                             && address.offset == parameter.offset
@@ -504,7 +515,7 @@ impl Ssa {
                 Instruction::NoOp | Instruction::Pop => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
-                | Instruction::Call(value)
+                | Instruction::Call { callee: value, .. }
                 | Instruction::Assign { value, .. } => {
                     Self::value_to_argument(parameter_count, living, addresses, value);
                 }

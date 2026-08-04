@@ -1,3 +1,4 @@
+mod allocate_registers;
 mod basic_blocks;
 mod evaluate;
 mod lex;
@@ -10,6 +11,8 @@ mod type_check;
 use reporting::{Reportable, Span, Spanned};
 
 use std::{error::Error, fmt, io::Write};
+
+const MAX_REGISTERS: usize = 0;
 
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
@@ -132,7 +135,13 @@ where
         }
     }
 
-    evaluate::run(&ssa, sources_with_core.as_slice(), out);
+    allocate_registers::allocate::<MAX_REGISTERS>(&mut ssa);
+
+    if cfg!(feature = "print_allocated") {
+        print!("{ssa}");
+    }
+
+    evaluate::run::<MAX_REGISTERS, O>(&ssa, sources_with_core.as_slice(), out);
 
     Ok(vec![])
 }

@@ -29,6 +29,8 @@ pub fn translate(ast: &Ast, names: &HashMap<Span, Span>) -> BasicBlocks {
         }
     }
 
+    let function_count = translator.blocks.len();
+
     for root in ast.roots() {
         if let Some(Item::Fn {
             name,
@@ -78,11 +80,13 @@ pub fn translate(ast: &Ast, names: &HashMap<Span, Span>) -> BasicBlocks {
 
     BasicBlocks {
         blocks: translator.blocks,
+        function_count,
     }
 }
 
 pub struct BasicBlocks {
     blocks: Vec<Block>,
+    function_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -151,6 +155,12 @@ impl Block {
 }
 
 impl BasicBlocks {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn function_count(&self) -> usize {
+        self.function_count
+    }
+
     #[allow(dead_code)]
     #[must_use]
     pub const fn blocks(&self) -> &[Block] {
@@ -242,9 +252,9 @@ pub enum Value {
     Fn(BlockIndex),
     Address(Address),
     NativeFn(Span),
-    #[allow(dead_code)]
     Runtime,
     Argument(usize),
+    Register(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,19 +264,24 @@ pub enum Instruction {
     Unary {
         op: UnaryOp,
         operand: Value,
+        temporary: Value,
     },
     Binary {
         op: BinaryOp,
         lhs: Value,
         rhs: Value,
+        temporary: Value,
     },
     Assign {
         value: Value,
-        to: Address,
+        to: Value,
     },
     Push(Value),
     Pop,
-    Call(Value),
+    Call {
+        callee: Value,
+        temporary: Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -555,15 +570,19 @@ impl Translator {
             .pop()
             .expect("all unary operands should produce a value");
 
-        self.push_instruction(Instruction::Unary { op, operand });
-
         let address = Address {
             block_index: self
                 .current_block
                 .expect("unary expressions only exist in blocks"),
-            offset: self.instructions_len() - 1,
+            offset: self.instructions_len(),
             version: 0,
         };
+
+        self.push_instruction(Instruction::Unary {
+            op,
+            operand,
+            temporary: Value::Address(address),
+        });
 
         self.values.push(Value::Address(address));
 
@@ -597,15 +616,20 @@ impl Translator {
             .pop()
             .expect("all binary left operands should produce a value");
 
-        self.push_instruction(Instruction::Binary { op, lhs, rhs });
-
         let address = Address {
             block_index: self
                 .current_block
                 .expect("binary expressions only exist in blocks"),
-            offset: self.instructions_len() - 1,
+            offset: self.instructions_len(),
             version: 0,
         };
+
+        self.push_instruction(Instruction::Binary {
+            op,
+            lhs,
+            rhs,
+            temporary: Value::Address(address),
+        });
 
         self.values.push(Value::Address(address));
 
@@ -669,7 +693,10 @@ impl Translator {
             })
             .unwrap_or(address);
 
-        self.push_instruction(Instruction::Assign { value, to: address });
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
 
         self.addresses.insert(span, Addresslike::Address(address));
 
@@ -705,7 +732,7 @@ impl Translator {
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
-            to: address,
+            to: Value::Address(address),
         });
 
         let current_block = self
@@ -777,7 +804,7 @@ impl Translator {
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
-            to: address,
+            to: Value::Address(address),
         });
 
         let current_block = self
@@ -904,7 +931,7 @@ impl Translator {
 
         self.translate_expr(ast, names, callee);
 
-        let callee_value = self
+        let callee = self
             .values
             .pop()
             .expect("parsing ensures a call expression has a callee");
@@ -925,13 +952,16 @@ impl Translator {
             self.push_instruction(Instruction::Push(argument));
         }
 
-        self.push_instruction(Instruction::Call(callee_value));
-
         let address = Address {
             block_index: self.current_block.expect("calls only exist in blocks"),
-            offset: self.instructions_len() - 1,
+            offset: self.instructions_len(),
             version: 0,
         };
+
+        self.push_instruction(Instruction::Call {
+            callee,
+            temporary: Value::Address(address),
+        });
 
         self.values.push(Value::Address(address));
 
