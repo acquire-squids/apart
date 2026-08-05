@@ -108,14 +108,14 @@ where
             .collect::<Vec<_>>()
     })?;
 
-    let _types = type_check::check_types(&ast, &names).map_err(|errors| {
+    let types = type_check::check_types(&ast, &names).map_err(|errors| {
         errors
             .into_iter()
             .map(|error| error.transmute(|error| ErrorBox(Box::new(error) as Box<dyn Reportable>)))
             .collect::<Vec<_>>()
     })?;
 
-    let basic_blocks = basic_blocks::translate(&ast, &names);
+    let basic_blocks = basic_blocks::translate(&ast, &names, &types);
 
     if cfg!(feature = "print_blocks") {
         print!("{basic_blocks}");

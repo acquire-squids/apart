@@ -20,6 +20,7 @@ pub enum Token {
     CloseSquareBracket,
     OpenBracket,
     CloseBracket,
+    Dot,
     Star,
     Slash,
     Percent,
@@ -165,6 +166,7 @@ impl Iterator for Lexer {
 
             match ch {
                 _ if ch.is_ascii_whitespace() => {}
+                '.' => return Some(Ok(self.single_char_token(Token::Dot))),
                 '*' => return Some(Ok(self.single_char_token(Token::Star))),
                 '/' => return Some(Ok(self.single_char_token(Token::Slash))),
                 '%' => return Some(Ok(self.single_char_token(Token::Percent))),

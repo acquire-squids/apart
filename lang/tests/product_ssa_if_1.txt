@@ -1,0 +1,23 @@
+funky main() {
+	let a = Number {
+		x <- 19,
+	}, result = Number {
+		x <- 0,
+	} in {
+		if a.x == 19 {
+			if true {
+				result.x = 19;
+			} else {
+				result.x = 38;
+			}
+		} else {
+			result.x = 21;
+		}
+
+		print_i64(result.x);
+	}
+}
+
+product Number {
+	x <- i64,
+}

@@ -43,6 +43,7 @@ pub enum Error {
     DuplicatePrimitiveName,
     DuplicateNativeFnName,
     DuplicateFnName,
+    DuplicateProductName,
 }
 
 impl fmt::Display for Error {
@@ -65,6 +66,9 @@ impl fmt::Display for Error {
             ),
             Self::DuplicateFnName => {
                 write!(f, "this function name is already in use in this scope")
+            }
+            Self::DuplicateProductName => {
+                write!(f, "this product name is already in use in this scope")
             }
         }
     }
@@ -244,23 +248,46 @@ impl NameResolver {
 
     fn resolve_types(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            if let Some(Item::Fn {
-                name,
-                parameters,
-                return_type,
-                generics,
-                ..
-            }) = ast.get_item(*root).map(Spanned::kind)
-            {
-                for generic in generics {
-                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                }
+            match ast.get_item(*root).map(Spanned::kind) {
+                None | Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
+                Some(Item::Fn {
+                    name,
+                    parameters,
+                    return_type,
+                    generics,
+                    ..
+                }) => {
+                    for generic in generics {
+                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
+                    }
+                    for parameter in parameters {
+                        self.resolve_type_signature(Some(name.span()), parameter.ty());
+                    }
 
-                for parameter in parameters {
-                    self.resolve_type_signature(Some(name.span()), parameter.ty());
+                    self.resolve_type_signature(Some(name.span()), return_type);
                 }
+                Some(Item::Product {
+                    name,
+                    fields,
+                    generics,
+                }) => {
+                    for generic in generics {
+                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
+                    }
 
-                self.resolve_type_signature(Some(name.span()), return_type);
+                    for field in fields {
+                        self.resolve_type_signature(Some(name.span()), field.ty());
+                    }
+
+                    if self.resolve_name(name.kind()).is_some() {
+                        self.errors
+                            .push(Spanned::new(Error::DuplicateProductName, name.span()));
+                    } else {
+                        self.declare_name(name.kind().clone(), name.span());
+
+                        self.define_name(name.kind());
+                    }
+                }
             }
         }
     }
@@ -369,6 +396,10 @@ impl NameResolver {
                             self.assign_name(name_span, span);
                         }
                     }
+                    Some(Expr::Binary {
+                        op: BinaryOp::Access,
+                        ..
+                    }) => {}
                     Some(_) => unreachable!("only names can be assigned to (for now)"),
                 }
             }
@@ -379,6 +410,9 @@ impl NameResolver {
                     .expect("if the expression exists, the span does too");
 
                 self.resolve_and_insert_name(associated_with, name, span);
+            }
+            Some(Expr::Product { name, .. }) => {
+                self.resolve_and_insert_name(None, name.kind(), name.span());
             }
             _ => {}
         }

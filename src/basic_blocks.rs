@@ -1,11 +1,12 @@
 use crate::{
     Span, Spanned,
     parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, UnaryOp},
+    type_check::{Type, TypeChecker},
 };
 
 use std::{collections::HashMap, fmt};
 
-pub fn translate(ast: &Ast, names: &HashMap<Span, Span>) -> BasicBlocks {
+pub fn translate(ast: &Ast, names: &HashMap<Span, Span>, types: &TypeChecker) -> BasicBlocks {
     let mut translator = Translator::new();
 
     if let Some(root) = ast.roots().iter().find(|root| {
@@ -64,7 +65,7 @@ pub fn translate(ast: &Ast, names: &HashMap<Span, Span>) -> BasicBlocks {
 
             translator.last_in_fn = true;
 
-            translator.translate_expr(ast, names, *body);
+            translator.translate_expr(ast, names, types, *body);
 
             translator.last_in_fn = last_in_fn;
 
@@ -255,6 +256,7 @@ pub enum Value {
     Runtime,
     Argument(usize),
     Register(usize),
+    Compound(Vec<Self>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -281,6 +283,16 @@ pub enum Instruction {
     Call {
         callee: Value,
         temporary: Value,
+    },
+    Access {
+        index: usize,
+        of: Value,
+        temporary: Value,
+    },
+    AccessAssign {
+        index: usize,
+        of: Value,
+        value: Value,
     },
 }
 
@@ -316,7 +328,7 @@ impl Translator {
 
                 self.next_block();
             }
-            Some(Item::Primitive(_)) => {}
+            Some(Item::Primitive(_) | Item::Product { .. }) => {}
             Some(Item::NativeFn { name, .. }) => {
                 self.addresses
                     .insert(name.span(), Addresslike::NativeFn(name.span()));
@@ -357,7 +369,13 @@ impl Translator {
 
 impl Translator {
     #[allow(clippy::too_many_lines)]
-    fn translate_expr(&mut self, ast: &Ast, names: &HashMap<Span, Span>, expr: ExprIndex) {
+    fn translate_expr(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        expr: ExprIndex,
+    ) {
         match ast.get_expr(expr).map(Spanned::kind) {
             None | Some(Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue) => {
                 unreachable!("the ast should be valid since we succeeded in parsing");
@@ -394,7 +412,7 @@ impl Translator {
                 self.translate_name(ast, names, expr);
             }
             Some(Expr::Unary { op, .. }) => {
-                self.translate_unary(ast, names, expr, *op);
+                self.translate_unary(ast, names, types, expr, *op);
             }
             Some(Expr::Block(exprs)) if exprs.is_empty() => {
                 self.values.push(Value::Unit);
@@ -404,60 +422,69 @@ impl Translator {
                 }
             }
             Some(Expr::Block(exprs)) => {
-                self.translate_block(ast, names, exprs.as_slice());
+                self.translate_block(ast, names, types, exprs.as_slice());
             }
             Some(Expr::Group(_)) => {
-                ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+                ast.for_children_exprs(expr, |ast, expr| {
+                    self.translate_expr(ast, names, types, expr);
+                });
             }
             Some(Expr::Let { name, value, .. }) => {
-                self.translate_assign_name(ast, names, (name.span(), *value));
+                self.translate_assign_name(ast, names, types, (name.span(), *value));
             }
             Some(Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
             }) => {
-                self.translate_assign(ast, names, (*lhs, *rhs));
+                self.translate_assign(ast, names, types, (*lhs, *rhs));
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::Access,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_access(ast, names, types, (*lhs, *rhs));
             }
             Some(Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
             }) => {
-                self.translate_and(ast, names, (*lhs, *rhs));
+                self.translate_and(ast, names, types, (*lhs, *rhs));
             }
             Some(Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
             }) => {
-                self.translate_or(ast, names, (*lhs, *rhs));
+                self.translate_or(ast, names, types, (*lhs, *rhs));
             }
             Some(Expr::Binary { op, .. }) => {
-                self.translate_binary(ast, names, expr, *op);
+                self.translate_binary(ast, names, types, expr, *op);
             }
             Some(Expr::If {
                 condition,
                 when_true,
                 otherwise,
             }) => {
-                self.translate_if(ast, names, (*condition, *when_true, *otherwise));
+                self.translate_if(ast, names, types, (*condition, *when_true, *otherwise));
             }
             Some(Expr::Call { callee, arguments }) => {
-                self.translate_call(ast, names, (*callee, arguments.as_slice()));
+                self.translate_call(ast, names, types, (*callee, arguments.as_slice()));
             }
             Some(Expr::While {
                 condition,
                 when_true,
             }) => {
-                self.translate_while(ast, names, (*condition, *when_true));
+                self.translate_while(ast, names, types, (*condition, *when_true));
             }
             Some(Expr::Return(value)) => {
                 let last_in_fn = self.last_in_fn;
 
                 self.last_in_fn = true;
 
-                self.translate_expr(ast, names, *value);
+                self.translate_expr(ast, names, types, *value);
 
                 self.last_in_fn = last_in_fn;
             }
@@ -466,7 +493,7 @@ impl Translator {
 
                 self.last_in_fn = false;
 
-                self.translate_expr(ast, names, *value);
+                self.translate_expr(ast, names, types, *value);
 
                 self.values.pop();
 
@@ -477,6 +504,9 @@ impl Translator {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+            }
+            Some(Expr::Product { fields, .. }) => {
+                self.translate_product(ast, names, types, expr, fields.as_slice());
             }
         }
     }
@@ -528,13 +558,19 @@ impl Translator {
         }
     }
 
-    fn translate_block(&mut self, ast: &Ast, names: &HashMap<Span, Span>, exprs: &[ExprIndex]) {
+    fn translate_block(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        exprs: &[ExprIndex],
+    ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
         for expr in exprs.iter().rev().skip(1).rev() {
-            self.translate_expr(ast, names, *expr);
+            self.translate_expr(ast, names, types, *expr);
 
             self.values
                 .pop()
@@ -546,6 +582,7 @@ impl Translator {
         self.translate_expr(
             ast,
             names,
+            types,
             *exprs
                 .last()
                 .expect("`translate_block` in only called on blocks that aren't empty"),
@@ -556,6 +593,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         expr: ExprIndex,
         op: UnaryOp,
     ) {
@@ -563,7 +601,9 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+        ast.for_children_exprs(expr, |ast, expr| {
+            self.translate_expr(ast, names, types, expr);
+        });
 
         let operand = self
             .values
@@ -597,6 +637,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         expr: ExprIndex,
         op: BinaryOp,
     ) {
@@ -604,7 +645,9 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        ast.for_children_exprs(expr, |ast, expr| self.translate_expr(ast, names, expr));
+        ast.for_children_exprs(expr, |ast, expr| {
+            self.translate_expr(ast, names, types, expr);
+        });
 
         let rhs = self
             .values
@@ -644,17 +687,30 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
-        let lhs_span = ast
-            .get_expr(lhs)
-            .expect("`translate_assign` is only called on existing assignments from `translate`")
-            .span();
+        let value = rhs;
 
-        if let Some(Expr::Name(_)) = ast.get_expr(lhs).map(Spanned::kind) {
-            self.translate_assign_name(ast, names, (lhs_span, rhs));
-        } else {
-            unreachable!("for now, only names can be assigned to");
+        match ast.get_expr(lhs).map(Spanned::kind) {
+            Some(Expr::Name(_)) => {
+                let lhs_span = ast
+                    .get_expr(lhs)
+                    .expect("`translate_assign` is only called on existing assignments from `translate`")
+                    .span();
+
+                self.translate_assign_name(ast, names, types, (lhs_span, value));
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::Access,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_assign_access(ast, names, types, (*lhs, *rhs, value));
+            }
+            _ => {
+                unreachable!("for now, only names and accesses can be assigned to");
+            }
         }
     }
 
@@ -662,9 +718,10 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (span, value): (Span, ExprIndex),
     ) {
-        self.translate_expr(ast, names, value);
+        self.translate_expr(ast, names, types, value);
 
         let value = self
             .values
@@ -707,13 +764,14 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, lhs);
+        self.translate_expr(ast, names, types, lhs);
 
         let lhs = self
             .values
@@ -751,7 +809,7 @@ impl Translator {
 
         self.next_block();
 
-        self.translate_expr(ast, names, rhs);
+        self.translate_expr(ast, names, types, rhs);
 
         if last_in_fn {
             self.emit_return();
@@ -779,13 +837,14 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, lhs);
+        self.translate_expr(ast, names, types, lhs);
 
         let lhs = self
             .values
@@ -823,7 +882,7 @@ impl Translator {
 
         self.next_block();
 
-        self.translate_expr(ast, names, rhs);
+        self.translate_expr(ast, names, types, rhs);
 
         if last_in_fn {
             self.emit_return();
@@ -851,13 +910,14 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, condition);
+        self.translate_expr(ast, names, types, condition);
 
         let condition = self
             .values
@@ -884,7 +944,7 @@ impl Translator {
 
         self.last_in_fn = last_in_fn;
 
-        self.translate_expr(ast, names, when_true);
+        self.translate_expr(ast, names, types, when_true);
 
         let then_branch = BlockIndex(self.blocks.len() - 1);
 
@@ -892,7 +952,7 @@ impl Translator {
 
         self.next_block();
 
-        self.translate_expr(ast, names, otherwise);
+        self.translate_expr(ast, names, types, otherwise);
 
         let after_all = self.next_block();
 
@@ -923,13 +983,14 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (callee, arguments): (ExprIndex, &[ExprIndex]),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, callee);
+        self.translate_expr(ast, names, types, callee);
 
         let callee = self
             .values
@@ -940,7 +1001,7 @@ impl Translator {
             .iter()
             .copied()
             .map(|argument| {
-                self.translate_expr(ast, names, argument);
+                self.translate_expr(ast, names, types, argument);
 
                 self.values
                     .pop()
@@ -976,6 +1037,7 @@ impl Translator {
         &mut self,
         ast: &Ast,
         names: &HashMap<Span, Span>,
+        types: &TypeChecker,
         (condition, when_true): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
@@ -984,7 +1046,7 @@ impl Translator {
 
         let condition_block = self.next_block();
 
-        self.translate_expr(ast, names, condition);
+        self.translate_expr(ast, names, types, condition);
 
         let condition = self
             .values
@@ -1009,7 +1071,7 @@ impl Translator {
 
         self.next_block();
 
-        self.translate_expr(ast, names, when_true);
+        self.translate_expr(ast, names, types, when_true);
 
         if let Some(block) = self.blocks.get_mut(usize::from(then_branch))
             && block.terminator.is_none()
@@ -1031,6 +1093,177 @@ impl Translator {
         self.values.pop();
 
         self.values.push(Value::Unit);
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_product(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        expr: ExprIndex,
+        fields: &[(Spanned<String>, ExprIndex)],
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let expr_span = ast
+            .get_expr(expr)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        let Some(Type::Product {
+            fields: type_fields,
+            ..
+        }) = types
+            .get_type_index(expr_span)
+            .and_then(|type_index| types.get_type(type_index))
+        else {
+            unreachable!("type checking guarantees a product is a product");
+        };
+
+        let mut values = vec![];
+
+        for (field_name, _) in type_fields {
+            let Some((_, value)) = fields.iter().find(|(name, _)| name.kind() == field_name) else {
+                unreachable!("type checking guarantees all fields are present and not duplicated");
+            };
+
+            self.translate_expr(ast, names, types, *value);
+
+            values.push(self.values.pop().expect("all expressions produce a value"));
+        }
+
+        self.values.push(Value::Compound(values));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_access(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        (lhs, rhs): (ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let field_index = Self::find_field_index(ast, types, (lhs, rhs));
+
+        self.translate_expr(ast, names, types, lhs);
+
+        let lhs = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let address = Address {
+            block_index: self.current_block.expect("calls only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.push_instruction(Instruction::Access {
+            index: field_index,
+            of: lhs,
+            temporary: Value::Address(address),
+        });
+
+        self.values.push(Value::Address(address));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn find_field_index(
+        ast: &Ast,
+        types: &TypeChecker,
+        (lhs, rhs): (ExprIndex, ExprIndex),
+    ) -> usize {
+        let lhs_span = ast
+            .get_expr(lhs)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        match types
+            .get_type_index(lhs_span)
+            .and_then(|type_index| types.get_type(type_index))
+        {
+            Some(Type::Product {
+                fields: type_fields,
+                ..
+            }) => match ast.get_expr(rhs).map(Spanned::kind) {
+                Some(Expr::Name(name)) => {
+                    let Some(field_index) = type_fields
+                        .iter()
+                        .position(|(field_name, _)| field_name == name)
+                    else {
+                        unreachable!("type checking guarantees the field exists on the type");
+                    };
+
+                    field_index
+                }
+                _ => unreachable!("for now, only names can be accessors"),
+            },
+            _ => unreachable!("for now, only products can be accessees"),
+        }
+    }
+
+    fn translate_assign_access(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        (lhs, rhs, value): (ExprIndex, ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let field_index = Self::find_field_index(ast, types, (lhs, rhs));
+
+        self.translate_expr(ast, names, types, lhs);
+
+        let lhs = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        self.translate_expr(ast, names, types, value);
+
+        let value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let address = Address {
+            block_index: self.current_block.expect("calls only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.push_instruction(Instruction::AccessAssign {
+            index: field_index,
+            of: lhs,
+            value,
+        });
+
+        self.values.push(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 

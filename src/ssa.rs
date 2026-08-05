@@ -368,12 +368,17 @@ impl Ssa {
                 Instruction::NoOp | Instruction::Pop => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
-                | Instruction::Call { callee: value, .. } => {
+                | Instruction::Call { callee: value, .. }
+                | Instruction::Access { of: value, .. } => {
                     Self::accumulate_live_value(block_index, living, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
                     Self::accumulate_live_value(block_index, living, lhs);
                     Self::accumulate_live_value(block_index, living, rhs);
+                }
+                Instruction::AccessAssign { of, value, .. } => {
+                    Self::accumulate_live_value(block_index, living, of);
+                    Self::accumulate_live_value(block_index, living, value);
                 }
                 Instruction::Assign { value, to } => {
                     Self::accumulate_live_value(block_index, living, value);
@@ -423,7 +428,31 @@ impl Ssa {
             {
                 living.push(*address);
             }
+            Value::Compound(values) => {
+                for address in values {
+                    Self::accumulate_live_value(block_index, living, address);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn value_uses_parameter(parameter: &Address, value: &Value) -> bool {
+        match value {
+            Value::Address(address)
+                if address.block_index == parameter.block_index
+                    && address.offset == parameter.offset =>
+            {
+                true
+            }
+            Value::Compound(values)
+                if values
+                    .iter()
+                    .any(|value| Self::value_uses_parameter(parameter, value)) =>
+            {
+                true
+            }
+            _ => false,
         }
     }
 
@@ -442,10 +471,7 @@ impl Ssa {
                     condition: value, ..
                 }
                 | BlockTerminator::Return(value) => {
-                    if let Value::Address(address) = value
-                        && address.block_index == parameter.block_index
-                        && address.offset == parameter.offset
-                    {
+                    if Self::value_uses_parameter(parameter, value) {
                         return true;
                     }
                 }
@@ -464,26 +490,27 @@ impl Ssa {
                     Instruction::Unary { operand: value, .. }
                     | Instruction::Assign { value, .. }
                     | Instruction::Push(value)
-                    | Instruction::Call { callee: value, .. } => {
-                        if let Value::Address(address) = value
-                            && address.block_index == parameter.block_index
-                            && address.offset == parameter.offset
-                        {
+                    | Instruction::Call { callee: value, .. }
+                    | Instruction::Access { of: value, .. } => {
+                        if Self::value_uses_parameter(parameter, value) {
                             return true;
                         }
                     }
                     Instruction::Binary { lhs, rhs, .. } => {
-                        if let Value::Address(address) = lhs
-                            && address.block_index == parameter.block_index
-                            && address.offset == parameter.offset
-                        {
+                        if Self::value_uses_parameter(parameter, lhs) {
                             return true;
                         }
 
-                        if let Value::Address(address) = rhs
-                            && address.block_index == parameter.block_index
-                            && address.offset == parameter.offset
-                        {
+                        if Self::value_uses_parameter(parameter, rhs) {
+                            return true;
+                        }
+                    }
+                    Instruction::AccessAssign { of, value, .. } => {
+                        if Self::value_uses_parameter(parameter, of) {
+                            return true;
+                        }
+
+                        if Self::value_uses_parameter(parameter, value) {
                             return true;
                         }
                     }
@@ -516,12 +543,17 @@ impl Ssa {
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }
-                | Instruction::Assign { value, .. } => {
+                | Instruction::Assign { value, .. }
+                | Instruction::Access { of: value, .. } => {
                     Self::value_to_argument(parameter_count, living, addresses, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
                     Self::value_to_argument(parameter_count, living, addresses, lhs);
                     Self::value_to_argument(parameter_count, living, addresses, rhs);
+                }
+                Instruction::AccessAssign { of, value, .. } => {
+                    Self::value_to_argument(parameter_count, living, addresses, of);
+                    Self::value_to_argument(parameter_count, living, addresses, value);
                 }
             }
         }
@@ -563,6 +595,11 @@ impl Ssa {
                     }) =>
             {
                 *address = new_address;
+            }
+            Value::Compound(values) => {
+                for value in values {
+                    Self::value_to_argument(parameter_count, living, addresses, value);
+                }
             }
             Value::Argument(i) if *i < living.len() => {
                 *i += parameter_count;

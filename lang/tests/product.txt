@@ -1,0 +1,16 @@
+funky main() {
+	let bingus = Bingus {
+		cat <- false,
+		favorite_thing <- 19,
+	} in {
+		bingus = Bingus {
+			cat <- true,
+			favorite_thing <- 21,
+		};
+	};
+}
+
+product Bingus[T] {
+	cat <- bool,
+	favorite_thing <- T,
+}

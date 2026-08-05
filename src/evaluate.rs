@@ -92,6 +92,56 @@ where
                         value,
                     );
                 }
+                Instruction::Access {
+                    index,
+                    of,
+                    temporary: to,
+                } => {
+                    let Value::Compound(values) = dereference_value(
+                        stack.as_slice(),
+                        call_frames.as_slice(),
+                        registers.as_slice(),
+                        of,
+                    ) else {
+                        unreachable!("type checking guarantees an accessee is a compound");
+                    };
+
+                    let value = dereference_value(
+                        stack.as_slice(),
+                        call_frames.as_slice(),
+                        registers.as_slice(),
+                        &values[*index],
+                    )
+                    .clone();
+
+                    assign(
+                        &mut stack,
+                        call_frames.as_mut_slice(),
+                        registers.as_mut_slice(),
+                        to,
+                        value,
+                    );
+                }
+                Instruction::AccessAssign { index, of, value } => {
+                    let value = dereference_value(
+                        stack.as_slice(),
+                        call_frames.as_slice(),
+                        registers.as_slice(),
+                        value,
+                    )
+                    .clone();
+
+                    let Value::Compound(values) = dereference_value_mut(
+                        stack.as_mut_slice(),
+                        call_frames.as_mut_slice(),
+                        registers.as_mut_slice(),
+                        of,
+                    ) else {
+                        unreachable!("type checking guarantees an accessee is a compound");
+                    };
+
+                    values[*index] = value;
+                }
                 Instruction::Assign { value, to } => {
                     let value = dereference_value(
                         stack.as_slice(),
@@ -544,6 +594,113 @@ fn dereference_register<'a>(
         ),
         Value::Register(index) => dereference_register(stack, call_frames, registers, *index),
         value => value,
+    }
+}
+
+#[must_use]
+fn dereference_value_mut<'a>(
+    stack: &'a mut [Value],
+    call_frames: &'a mut [CallFrame],
+    registers: &'a mut [Value],
+    value: &Value,
+) -> &'a mut Value {
+    match value {
+        Value::Argument(offset) => {
+            let argument = call_frames.last_mut().and_then(|call_frame| {
+                if *offset >= call_frame.block_arguments.len() {
+                    call_frame
+                        .call_arguments
+                        .get_mut(*offset - call_frame.block_arguments.len())
+                } else {
+                    call_frame.block_arguments.get_mut(*offset)
+                }
+            });
+
+            argument.expect("call argument not found")
+        }
+        Value::Address(address) => {
+            let offset = call_frames
+                .iter()
+                .rfind(|frame| frame.block_index == address.block_index)
+                .map(|frame| frame.fp + address.offset)
+                .expect("couldn't calculate offset from fp");
+
+            dereference_address_mut(stack, call_frames, registers, offset)
+        }
+        Value::Register(index) => dereference_register_mut(stack, call_frames, registers, *index),
+        _ => {
+            unreachable!("dereference_value_mut should never be used with a normal value");
+        }
+    }
+}
+
+#[must_use]
+fn dereference_address_mut<'a>(
+    stack: &'a mut [Value],
+    call_frames: &'a mut [CallFrame],
+    registers: &'a mut [Value],
+    offset: usize,
+) -> &'a mut Value {
+    match stack.get(offset).expect("value doesn't exist") {
+        Value::Argument(offset) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.call_arguments.get_mut(*offset))
+            .expect("call argument not found"),
+        Value::Address(address) => {
+            let address = *address;
+
+            dereference_address_mut(
+                stack,
+                call_frames,
+                registers,
+                call_frames
+                    .iter()
+                    .rfind(|frame| frame.block_index == address.block_index)
+                    .map(|frame| frame.fp + address.offset)
+                    .expect("couldn't calculate offset from fp"),
+            )
+        }
+        Value::Register(index) => {
+            let index = *index;
+
+            dereference_register_mut(stack, call_frames, registers, index)
+        }
+        _ => stack.get_mut(offset).expect("value doesn't exist"),
+    }
+}
+
+#[must_use]
+fn dereference_register_mut<'a>(
+    stack: &'a mut [Value],
+    call_frames: &'a mut [CallFrame],
+    registers: &'a mut [Value],
+    index: usize,
+) -> &'a mut Value {
+    match registers.get(index).expect("value doesn't exist") {
+        Value::Argument(offset) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.call_arguments.get_mut(*offset))
+            .expect("call argument not found"),
+        Value::Address(address) => {
+            let address = *address;
+
+            dereference_address_mut(
+                stack,
+                call_frames,
+                registers,
+                call_frames
+                    .iter()
+                    .rfind(|frame| frame.block_index == address.block_index)
+                    .map(|frame| frame.fp + address.offset)
+                    .expect("couldn't calculate offset from fp"),
+            )
+        }
+        Value::Register(index) => {
+            let index = *index;
+
+            dereference_register_mut(stack, call_frames, registers, index)
+        }
+        _ => registers.get_mut(index).expect("value doesn't exist"),
     }
 }
 

@@ -13,6 +13,8 @@ pub fn check_types(
 
     type_checker.check_primitives(ast);
 
+    type_checker.check_types(ast, names);
+
     type_checker.check_native_functions(ast, names);
 
     type_checker.check_functions(ast, names);
@@ -53,6 +55,11 @@ pub enum Type {
         return_type: TypeIndex,
     },
     Generic(String),
+    Product {
+        name: String,
+        fields: Vec<(String, TypeIndex)>,
+        generics: Vec<TypeIndex>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,11 +83,39 @@ impl Type {
             .to_string(),
             Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
             Self::Generic(name) => name.clone(),
+            Self::Product { name, generics, .. } => {
+                let mut buffer = name.clone();
+
+                if !generics.is_empty() {
+                    buffer.push('[');
+
+                    if let Some(first_generic) = generics
+                        .first()
+                        .and_then(|type_index| types.get(usize::from(*type_index)))
+                    {
+                        buffer.push_str(first_generic.to_string(types).as_str());
+                    }
+
+                    for generic in generics
+                        .iter()
+                        .skip(1)
+                        .filter_map(|generic| types.get(usize::from(*generic)))
+                    {
+                        buffer.push_str(", ");
+
+                        buffer.push_str(generic.to_string(types).as_str());
+                    }
+
+                    buffer.push(']');
+                }
+
+                buffer
+            }
             Self::Fn {
                 parameters,
                 return_type,
             } => {
-                let mut buffer = "Funky(".to_string();
+                let mut buffer = "funky(".to_string();
 
                 if let Some(parameter) = parameters
                     .first()
@@ -94,6 +129,8 @@ impl Type {
                     .skip(1)
                     .filter_map(|parameter| types.get(usize::from(*parameter)))
                 {
+                    buffer.push_str(", ");
+
                     buffer.push_str(parameter.to_string(types).as_str());
                 }
 
@@ -102,7 +139,8 @@ impl Type {
                 if let Some(return_type) = types.get(usize::from(*return_type))
                     && return_type != &Self::Primitive(Primitive::Unit)
                 {
-                    buffer.push_str(" = ");
+                    buffer.push_str(" -> ");
+
                     buffer.push_str(return_type.to_string(types).as_str());
                 }
 
@@ -123,6 +161,12 @@ pub enum Error {
     CalledUncallable,
     MainFnWithParameters,
     MainFnWithReturnType,
+    ProductMissingField(String),
+    DuplicateField,
+    UnknownProduct,
+    CannotAccess,
+    InvalidAccess,
+    NonExistentField,
 }
 
 impl fmt::Display for Error {
@@ -154,6 +198,16 @@ impl fmt::Display for Error {
                 write!(f, "the \"main\" function should take no parameters")
             }
             Self::MainFnWithReturnType => write!(f, "the \"main\" function should return unit"),
+            Self::ProductMissingField(name) => {
+                write!(f, "this product is missing its required field \"{name}\"")
+            }
+            Self::DuplicateField => write!(f, "fields cannot exist twice on a product"),
+            Self::UnknownProduct => {
+                write!(f, "a product of this name does not exist in this scope")
+            }
+            Self::CannotAccess => write!(f, "this expression has nothing to access"),
+            Self::InvalidAccess => write!(f, "only names can be used to access"),
+            Self::NonExistentField => write!(f, "this field does not exist on the accessed type"),
         }
     }
 }
@@ -280,6 +334,55 @@ impl TypeChecker {
                 };
 
                 self.type_map.insert(name.span(), type_index);
+            }
+        }
+    }
+
+    fn check_types(&mut self, ast: &Ast, names: &HashMap<Span, Span>) {
+        for root in ast.roots() {
+            match ast.get_item(*root).map(Spanned::kind) {
+                Some(Item::Product {
+                    name,
+                    fields,
+                    generics,
+                }) => {
+                    let mut generic_type_indices = vec![];
+
+                    for generic in generics {
+                        let type_index = self.push_type(Type::Generic(generic.kind().clone()));
+
+                        self.type_map.insert(generic.span(), type_index);
+
+                        generic_type_indices.push(type_index);
+                    }
+
+                    let fields = fields
+                        .iter()
+                        .map(|field| {
+                            self.check_type_signature(names, field.ty());
+
+                            let type_index = self
+                                .get_type_index(field.ty().span())
+                                .expect("the type should have been set in the previous call");
+
+                            self.type_map.insert(field.name().span(), type_index);
+
+                            (
+                                field.name().kind().clone(),
+                                self.get_type_index_or_error(field.name().span()),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+
+                    let type_index = self.push_type(Type::Product {
+                        name: name.kind().clone(),
+                        fields,
+                        generics: generic_type_indices,
+                    });
+
+                    self.type_map.insert(name.span(), type_index);
+                }
+                None | Some(Item::Primitive(_) | Item::NativeFn { .. } | Item::Fn { .. }) => {}
             }
         }
     }
@@ -451,7 +554,7 @@ macro_rules! type_check_binary_op {
             }
         )+
     ) => {{
-        #[allow(unreachable_patterns)]
+        #[allow(unreachable_patterns, unused_variables)]
         let ty = match ($type_checker.expr_type($ast, $lhs).clone(), $type_checker.expr_type($ast, $rhs).clone()) {
             ($crate::type_check::Type::Unknown, _) => Ok($type_checker.type_unknown()),
             (_, $crate::type_check::Type::Unknown) => Ok($type_checker.type_unknown()),
@@ -657,6 +760,13 @@ impl TypeChecker {
             Some(Expr::Unary { op, expr: operand }) => {
                 self.type_check_unary(ast, names, expr, (*op, *operand));
             }
+            Some(Expr::Binary {
+                op: BinaryOp::Access,
+                lhs,
+                rhs,
+            }) => {
+                self.type_check_access(ast, names, expr, (*lhs, *rhs));
+            }
             Some(Expr::Binary { op, lhs, rhs }) => {
                 self.type_check_binary(ast, names, expr, (*op, *lhs, *rhs));
             }
@@ -717,6 +827,9 @@ impl TypeChecker {
                     self.check_return_type_mismatch(ast, expr);
                 }
             }
+            Some(Expr::Product { name, fields }) => {
+                self.type_check_product(ast, names, expr, (name, fields.as_slice()));
+            }
         }
     }
 }
@@ -729,6 +842,7 @@ macro_rules! type_check_unary_op {
             $allow:pat => $success:expr,
         )+
     ) => {{
+        #[allow(unreachable_patterns, unused_variables)]
         let ty = match &*$type_checker.expr_type($ast, $operand) {
             $crate::type_check::Type::Unknown => Ok($type_checker.type_unknown()),
             $(
@@ -867,6 +981,13 @@ impl TypeChecker {
 
         self.type_map.insert(span, value_type);
 
+        let expr_span = ast
+            .get_expr(expr)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        self.type_map.insert(expr_span, value_type);
+
         if self.last_in_fn {
             self.check_return_type_mismatch(ast, expr);
         }
@@ -908,6 +1029,47 @@ impl TypeChecker {
 }
 
 impl TypeChecker {
+    fn type_check_binary_products(
+        &mut self,
+        ast: &Ast,
+        (lhs, lhs_type, lhs_name, lhs_fields): (ExprIndex, &Type, &str, &[(String, TypeIndex)]),
+        (rhs, rhs_type, rhs_name, rhs_fields): (ExprIndex, &Type, &str, &[(String, TypeIndex)]),
+    ) -> TypeIndex {
+        ast.get_expr(lhs)
+            .map(Spanned::span)
+            .and_then(|span| {
+                if lhs_name == rhs_name
+                    && lhs_fields.len() == rhs_fields.len()
+                    && lhs_fields.iter().zip(rhs_fields).all(
+                        |((lhs_name, lhs_field), (rhs_name, rhs_field))| {
+                            lhs_name.as_str() == rhs_name.as_str()
+                                && self.get_type(*lhs_field) == self.get_type(*rhs_field)
+                        },
+                    )
+                {
+                    self.get_type_index(span)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| {
+                let error = Spanned::new(
+                    Error::TypeMismatch {
+                        expected: lhs_type.to_string(self.types.as_slice()),
+                        got: rhs_type.to_string(self.types.as_slice()),
+                    },
+                    ast.get_expr(rhs)
+                        .map(Spanned::span)
+                        .expect("the ast should be valid since we succeeded in parsing"),
+                );
+
+                self.errors.push(error);
+
+                self.type_unknown()
+            })
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn type_check_binary(
         &mut self,
         ast: &Ast,
@@ -925,6 +1087,7 @@ impl TypeChecker {
         self.last_in_fn = last_in_fn;
 
         match op {
+            BinaryOp::Access => {}
             BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Remainder
@@ -975,6 +1138,25 @@ impl TypeChecker {
                     rhs_failure: Type::Primitive(Primitive::Unit),
                     success: self.type_boolean(),
                 }
+                (
+                    ref lhs_type @ Type::Product {
+                        name: ref lhs_name,
+                        fields: ref lhs_fields,
+                        ..
+                    },
+                    ref rhs_type @ Type::Product {
+                        name: ref rhs_name,
+                        fields: ref rhs_fields,
+                        ..
+                    }
+                ) => {
+                    rhs_failure: lhs_type.clone(),
+                    success: self.type_check_binary_products(
+                        ast,
+                        (lhs, lhs_type, lhs_name.as_str(), lhs_fields),
+                        (rhs, rhs_type, rhs_name.as_str(), rhs_fields)
+                    ),
+                }
             ),
             BinaryOp::And | BinaryOp::Or => type_check_binary_op!(
                 self, ast, expr, (lhs, rhs) ;
@@ -1005,6 +1187,25 @@ impl TypeChecker {
                 (Type::Primitive(Primitive::Unit), Type::Primitive(Primitive::Unit)) => {
                     rhs_failure: Type::Primitive(Primitive::Unit),
                     success: self.type_unit(),
+                }
+                (
+                    ref lhs_type @ Type::Product {
+                        name: ref lhs_name,
+                        fields: ref lhs_fields,
+                        ..
+                    },
+                    ref rhs_type @ Type::Product {
+                        name: ref rhs_name,
+                        fields: ref rhs_fields,
+                        ..
+                    }
+                ) => {
+                    rhs_failure: lhs_type.clone(),
+                    success: self.type_check_binary_products(
+                        ast,
+                        (lhs, lhs_type, lhs_name.as_str(), lhs_fields),
+                        (rhs, rhs_type, rhs_name.as_str(), rhs_fields)
+                    ),
                 }
             ),
         }
@@ -1220,5 +1421,177 @@ impl TypeChecker {
         );
 
         self.check_return_type_mismatch(ast, value);
+    }
+
+    fn type_check_product(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        expr: ExprIndex,
+        (name, fields): (&Spanned<String>, &[(Spanned<String>, ExprIndex)]),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let span = ast
+            .get_expr(expr)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        for (_, value) in fields {
+            self.type_check_expr(ast, names, *value);
+        }
+
+        let mut field_types = vec![];
+
+        for (field, value) in fields {
+            field_types.push((
+                field,
+                ast.get_expr(*value)
+                    .map(Spanned::span)
+                    .and_then(|span| {
+                        self.get_type_index(span).and_then(|type_index| {
+                            self.get_type(type_index).map(|ty| (span, (type_index, ty)))
+                        })
+                    })
+                    .expect("we found the types in the loop above"),
+            ));
+        }
+
+        if let Some(Type::Product { fields, .. }) = names
+            .get(&name.span())
+            .and_then(|span| self.get_type_index(*span))
+            .and_then(|type_index| self.get_type(type_index))
+        {
+            let mut generics = vec![];
+
+            let mut errors = vec![];
+
+            for (field_name, field_ty) in fields.iter().filter_map(|(field_name, field_ty)| {
+                self.get_type(*field_ty).map(|ty| (field_name, ty))
+            }) {
+                if !field_types
+                    .iter()
+                    .any(|(name, (_, _))| field_name == name.kind())
+                {
+                    errors.push(Spanned::new(
+                        Error::ProductMissingField(field_name.clone()),
+                        span,
+                    ));
+                } else if let Some((name, (_, _))) = field_types
+                    .iter()
+                    .filter(|(_, (_, (_, ty)))| ty == &field_ty)
+                    .nth(1)
+                {
+                    errors.push(Spanned::new(Error::DuplicateField, name.span()));
+                } else if let Some((_, (value_span, (type_index, ty)))) = field_types
+                    .iter()
+                    .find(|(name, (_, (_, _)))| name.kind() == field_name)
+                    && ty != &field_ty
+                {
+                    if let Type::Generic(_) = field_ty {
+                        generics.push(*type_index);
+                    } else {
+                        errors.push(Spanned::new(
+                            Error::TypeMismatch {
+                                expected: field_ty.to_string(self.types.as_slice()),
+                                got: ty.to_string(self.types.as_slice()),
+                            },
+                            *value_span,
+                        ));
+                    }
+                }
+            }
+
+            let fields = field_types
+                .into_iter()
+                .map(|(name, (_, (type_index, _)))| (name.kind().clone(), type_index))
+                .collect::<Vec<_>>();
+
+            self.errors.append(&mut errors);
+
+            let type_index = self.push_type(Type::Product {
+                name: name.kind().clone(),
+                fields,
+                generics,
+            });
+
+            self.type_map.insert(span, type_index);
+        } else {
+            self.errors
+                .push(Spanned::new(Error::UnknownProduct, name.span()));
+
+            self.type_map.insert(span, self.type_unknown());
+        }
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.check_return_type_mismatch(ast, expr);
+        }
+    }
+
+    fn type_check_access(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        expr: ExprIndex,
+        (lhs, rhs): (ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.type_check_expr(ast, names, lhs);
+
+        let expr_span = ast
+            .get_expr(expr)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        if let Some(Type::Product { fields, .. }) = ast
+            .get_expr(lhs)
+            .map(Spanned::span)
+            .and_then(|span| self.get_type_index(span))
+            .and_then(|type_index| self.get_type(type_index))
+        {
+            if let Some((name_span, Expr::Name(name))) =
+                ast.get_expr(rhs).map(|expr| (expr.span(), expr.kind()))
+            {
+                if let Some((_, ty)) = fields.iter().find(|(field_name, _)| field_name == name) {
+                    self.type_map.insert(expr_span, *ty);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::NonExistentField, name_span));
+
+                    self.type_map.insert(expr_span, self.type_unknown());
+                }
+            } else {
+                self.errors.push(Spanned::new(
+                    Error::InvalidAccess,
+                    ast.get_expr(rhs)
+                        .map(Spanned::span)
+                        .expect("the ast should be valid since we succeeded in parsing"),
+                ));
+
+                self.type_map.insert(expr_span, self.type_unknown());
+            }
+        } else {
+            self.errors.push(Spanned::new(
+                Error::CannotAccess,
+                ast.get_expr(lhs)
+                    .map(Spanned::span)
+                    .expect("the ast should be valid since we succeeded in parsing"),
+            ));
+
+            self.type_map.insert(expr_span, self.type_unknown());
+        }
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.check_return_type_mismatch(ast, expr);
+        }
     }
 }

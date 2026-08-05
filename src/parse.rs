@@ -63,6 +63,12 @@ pub enum Error {
     UnnamedGeneric,
     GenericsWithoutComma,
     UnclosedGenerics,
+    ProductWithoutName,
+    ProductWithoutFields,
+    ProductFieldWithoutName,
+    ProductFieldWithoutLeftArrow,
+    ProductFieldsWithoutComma,
+    UnclosedProduct,
 }
 
 impl fmt::Display for Error {
@@ -201,6 +207,33 @@ impl fmt::Display for Error {
             Self::UnclosedGenerics => {
                 write!(f, "this list of generics was never closed")
             }
+            Self::ProductWithoutName => {
+                write!(f, "expected a product name")
+            }
+            Self::ProductWithoutFields => {
+                write!(
+                    f,
+                    "the product's fields should be here, within curly brackets"
+                )
+            }
+            Self::ProductFieldWithoutName => {
+                write!(f, "expected a product field name")
+            }
+            Self::ProductFieldWithoutLeftArrow => {
+                write!(
+                    f,
+                    "expected a \"<-\" after the product field name, and then a type signature"
+                )
+            }
+            Self::ProductFieldsWithoutComma => {
+                write!(
+                    f,
+                    "if there is another product field here, a comma should be between it and the previous field"
+                )
+            }
+            Self::UnclosedProduct => {
+                write!(f, "this product was never closed")
+            }
         }
     }
 }
@@ -277,6 +310,10 @@ pub enum Expr {
     Return(ExprIndex),
     AsUnitNoValue,
     AsUnit(ExprIndex),
+    Product {
+        name: Spanned<String>,
+        fields: Vec<(Spanned<String>, ExprIndex)>,
+    },
 }
 
 #[derive(Debug)]
@@ -292,6 +329,11 @@ pub enum Item {
         return_type: Spanned<TypeSignature>,
         generics: Vec<Spanned<String>>,
         body: ExprIndex,
+    },
+    Product {
+        name: Spanned<String>,
+        fields: Vec<Parameter>,
+        generics: Vec<Spanned<String>>,
     },
 }
 
@@ -328,6 +370,7 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
+    Access,
     Multiply,
     Divide,
     Remainder,
@@ -436,12 +479,23 @@ impl Ast {
             | Expr::Boolean(_)
             | Expr::Unit
             | Expr::Name(_)
-            | Expr::AsUnitNoValue => {}
+            | Expr::AsUnitNoValue
+            | Expr::BinaryNoLhs {
+                op: BinaryOp::Access,
+                ..
+            } => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
             Expr::BinaryNoLhs { rhs, .. } => {
                 f(self, *rhs);
+            }
+            Expr::Binary {
+                op: BinaryOp::Access,
+                lhs,
+                ..
+            } => {
+                f(self, *lhs);
             }
             Expr::Binary { lhs, rhs, .. } => {
                 let (lhs, rhs) = (*lhs, *rhs);
@@ -495,6 +549,13 @@ impl Ast {
 
                 f(self, condition);
                 f(self, when_true);
+            }
+            Expr::Product { fields, .. } => {
+                let fields = fields.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+
+                for value in fields {
+                    f(self, value);
+                }
             }
         }
     }
@@ -514,12 +575,23 @@ impl Ast {
             | Expr::Boolean(_)
             | Expr::Unit
             | Expr::Name(_)
-            | Expr::AsUnitNoValue => {}
+            | Expr::AsUnitNoValue
+            | Expr::BinaryNoLhs {
+                op: BinaryOp::Access,
+                ..
+            } => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
             Expr::BinaryNoLhs { rhs, .. } => {
                 f(self, *rhs);
+            }
+            Expr::Binary {
+                op: BinaryOp::Access,
+                lhs,
+                ..
+            } => {
+                f(self, *lhs);
             }
             Expr::Binary { lhs, rhs, .. } => {
                 let (lhs, rhs) = (*lhs, *rhs);
@@ -574,6 +646,13 @@ impl Ast {
                 f(self, condition);
                 f(self, when_true);
             }
+            Expr::Product { fields, .. } => {
+                let fields = fields.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+
+                for value in fields {
+                    f(self, value);
+                }
+            }
         }
     }
 }
@@ -591,9 +670,8 @@ impl Parser {
 
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
-            "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return" => {
-                Some(lexeme)
-            }
+            "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
+            | "product" => Some(lexeme),
             _ => None,
         }
     }
@@ -801,6 +879,11 @@ impl Parser {
 
                     self.parse_fn(lexer, ast, span)
                 }
+                Some("product") => {
+                    self.advance(lexer);
+
+                    self.parse_product(lexer, ast, span)
+                }
                 _ => Err(Spanned::new(Error::ExpectedItem, span)),
             }
         } else {
@@ -872,32 +955,7 @@ impl Parser {
 
         let mut generics = vec![];
 
-        if let Some(span) = self
-            .match_next(lexer, Token::OpenSquareBracket)
-            .map(|token| token.span())
-        {
-            while self.peek(lexer).is_some()
-                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
-            {
-                let generic_name = self
-                    .name_lexeme(lexer)
-                    .map_err(|error| error.transmute(|_| Error::UnnamedGeneric))
-                    .map(|(name, name_span)| Spanned::new(name, name_span))?;
-
-                generics.push(generic_name);
-
-                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
-                    self.consume_next(lexer, Token::Comma, Error::GenericsWithoutComma)?;
-                }
-            }
-
-            self.consume_next_with_span(
-                lexer,
-                Token::CloseSquareBracket,
-                Error::UnclosedGenerics,
-                span,
-            )?;
-        }
+        self.parse_generics(lexer, &mut generics)?;
 
         let parameters_span = self
             .consume_next(lexer, Token::OpenParenthesis, Error::FnWithoutParameters)?
@@ -991,6 +1049,120 @@ impl Parser {
                 body,
             },
             span.combine_with(fn_end).unwrap_or(span),
+        ));
+
+        Ok(funky)
+    }
+
+    fn parse_generics(
+        &mut self,
+        lexer: &mut Lexer,
+        generics: &mut Vec<Spanned<String>>,
+    ) -> Result<(), Spanned<Error>> {
+        if let Some(span) = self
+            .match_next(lexer, Token::OpenSquareBracket)
+            .map(|token| token.span())
+        {
+            while self.peek(lexer).is_some()
+                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
+            {
+                let generic_name = self
+                    .name_lexeme(lexer)
+                    .map_err(|error| error.transmute(|_| Error::UnnamedGeneric))
+                    .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+                generics.push(generic_name);
+
+                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
+                    self.consume_next(lexer, Token::Comma, Error::GenericsWithoutComma)?;
+                }
+            }
+
+            self.consume_next_with_span(
+                lexer,
+                Token::CloseSquareBracket,
+                Error::UnclosedGenerics,
+                span,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn parse_product(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        span: Span,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let name = self
+            .name_lexeme(lexer)
+            .map_err(|error| error.transmute(|_| Error::ProductWithoutName))
+            .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+        let mut generics = vec![];
+
+        self.parse_generics(lexer, &mut generics)?;
+
+        let fields_span = self
+            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
+            .span();
+
+        let mut fields = vec![];
+
+        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
+            let name = self
+                .name_lexeme(lexer)
+                .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))
+                .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+            let less =
+                self.consume_next(lexer, Token::Less, Error::ProductFieldWithoutLeftArrow)?;
+
+            let minus =
+                self.consume_next(lexer, Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+
+            if minus.span().start() != less.span().end() {
+                return Err(Spanned::new(
+                    Error::ProductFieldWithoutLeftArrow,
+                    less.span()
+                        .combine_with(minus.span())
+                        .expect("these spans are from the same source"),
+                ));
+            }
+
+            let type_signature = self.parse_type_signature(lexer)?;
+
+            fields.push(Parameter {
+                name,
+                type_signature,
+            });
+
+            if self.check_next(lexer, Token::CloseBracket).is_none() {
+                self.consume_next(lexer, Token::Comma, Error::ProductFieldsWithoutComma)?;
+            }
+        }
+
+        // sort fields to keep the order consistent in other passes
+        fields.sort_by(|a, b| a.name().kind().cmp(b.name().kind()));
+
+        let fields_end = self
+            .consume_next_with_span(
+                lexer,
+                Token::CloseBracket,
+                Error::UnclosedProduct,
+                fields_span,
+            )?
+            .span();
+
+        let funky = ast.push_item(Spanned::new(
+            Item::Product {
+                name,
+                generics,
+                fields,
+            },
+            span.combine_with(fields_end).unwrap_or(span),
         ));
 
         Ok(funky)
@@ -1110,6 +1282,9 @@ mod precedence {
     pub const PRIMARY: u16 = 0xEE00;
 
     pub const CALL: u16 = 0xBB00;
+
+    pub const LEFT_ACCESS: u16 = 0xBB50;
+    pub const RIGHT_ACCESS: u16 = 0xBB00;
 
     pub const NOT: u16 = 0xAA00;
 
@@ -1445,6 +1620,10 @@ impl Parser {
         let token = self.peek(lexer)?;
 
         match token.kind() {
+            Token::Dot => infix_op_precedence!(
+                self, lexer;
+                access (LEFT_ACCESS, RIGHT_ACCESS),
+            ),
             Token::Star => infix_op_precedence!(
                 self, lexer;
                 multiply (LEFT_MULTIPLY, RIGHT_MULTIPLY),
@@ -1660,6 +1839,7 @@ impl Parser {
     unary_op!(negate, Negate);
     unary_op!(not, Not);
 
+    binary_op!(access, Access);
     binary_op!(multiply, Multiply);
     binary_op!(divide, Divide);
     binary_op!(remainder, Remainder);
@@ -1774,11 +1954,15 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         _: u16,
-        _: Span,
+        span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
         let (name, name_span) = self.name_lexeme(lexer)?;
 
-        Ok(ast.push_expr(Spanned::new(Expr::Name(name), name_span)))
+        if self.match_next(lexer, Token::OpenBracket).is_some() {
+            self.product_expr(lexer, ast, 0, span)
+        } else {
+            Ok(ast.push_expr(Spanned::new(Expr::Name(name), name_span)))
+        }
     }
 
     fn let_in(
@@ -2039,5 +2223,60 @@ impl Parser {
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Return(value), span)))
+    }
+
+    fn product_expr(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        let name = span
+            .lexeme(lexer.source())
+            .ok_or_else(|| Spanned::new(Error::ProductWithoutName, span))
+            .map(|name| Spanned::new(name.to_string(), span))?;
+
+        let mut fields = vec![];
+
+        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
+            let name = self
+                .name_lexeme(lexer)
+                .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))
+                .map(|(name, span)| Spanned::new(name, span))?;
+
+            let less =
+                self.consume_next(lexer, Token::Less, Error::ProductFieldWithoutLeftArrow)?;
+
+            let minus =
+                self.consume_next(lexer, Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+
+            if minus.span().start() != less.span().end() {
+                return Err(Spanned::new(
+                    Error::ProductFieldWithoutLeftArrow,
+                    less.span()
+                        .combine_with(minus.span())
+                        .expect("these spans are from the same source"),
+                ));
+            }
+
+            let value = self.parse_expression(lexer, ast, 0)?;
+
+            fields.push((name, value));
+
+            if self.check_next(lexer, Token::CloseBracket).is_none() {
+                self.consume_next(lexer, Token::Comma, Error::ProductFieldsWithoutComma)?;
+            }
+        }
+
+        let close_span = self
+            .consume_next_with_span(lexer, Token::CloseBracket, Error::UnclosedProduct, span)?
+            .span();
+
+        Ok(ast.push_expr(Spanned::new(
+            Expr::Product { name, fields },
+            span.combine_with(close_span)
+                .expect("these spans are from the same source"),
+        )))
     }
 }

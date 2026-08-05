@@ -34,6 +34,20 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     changed
 }
 
+fn value_uses_block(blocks_used: &mut [bool], value: &Value) {
+    match value {
+        Value::Fn(block_index) => {
+            blocks_used[usize::from(*block_index)] = true;
+        }
+        Value::Compound(values) => {
+            for value in values {
+                value_uses_block(blocks_used, value);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
     let mut blocks_used = vec![false; ssa.blocks().len() + 1];
 
@@ -46,19 +60,17 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Assign { value, .. }
                 | Instruction::Push(value)
-                | Instruction::Call { callee: value, .. } => {
-                    if let Value::Fn(block_index) = value {
-                        blocks_used[usize::from(*block_index)] = true;
-                    }
+                | Instruction::Call { callee: value, .. }
+                | Instruction::Access { of: value, .. } => {
+                    value_uses_block(blocks_used.as_mut_slice(), value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
-                    if let Value::Fn(block_index) = lhs {
-                        blocks_used[usize::from(*block_index)] = true;
-                    }
-
-                    if let Value::Fn(block_index) = rhs {
-                        blocks_used[usize::from(*block_index)] = true;
-                    }
+                    value_uses_block(blocks_used.as_mut_slice(), lhs);
+                    value_uses_block(blocks_used.as_mut_slice(), rhs);
+                }
+                Instruction::AccessAssign { of, value, .. } => {
+                    value_uses_block(blocks_used.as_mut_slice(), of);
+                    value_uses_block(blocks_used.as_mut_slice(), value);
                 }
             }
         }
@@ -66,7 +78,9 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
 
     for block in ssa.blocks_mut() {
         match block.terminator_mut() {
-            BlockTerminator::Return(_) => {}
+            BlockTerminator::Return(value) => {
+                value_uses_block(blocks_used.as_mut_slice(), value);
+            }
             BlockTerminator::Jump(jump_to) => {
                 blocks_used[usize::from(jump_to.block())] = true;
             }
@@ -86,6 +100,8 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
                     *block.terminator_mut() = BlockTerminator::Jump(otherwise.clone());
                 }
                 _ => {
+                    value_uses_block(blocks_used.as_mut_slice(), condition);
+
                     blocks_used[usize::from(when_true.block())] = true;
                     blocks_used[usize::from(otherwise.block())] = true;
                 }
@@ -94,6 +110,20 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
     }
 
     blocks_used
+}
+
+fn value_uses_address(addresses_used: &mut HashSet<(BlockIndex, usize)>, value: &Value) {
+    match value {
+        Value::Address(address) => {
+            addresses_used.insert((address.block_index, address.offset));
+        }
+        Value::Compound(values) => {
+            for value in values {
+                value_uses_address(addresses_used, value);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
@@ -106,39 +136,34 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                     addresses_used.insert((BlockIndex(b), i));
                 }
                 Instruction::Unary { operand: value, .. } | Instruction::Assign { value, .. } => {
-                    if let Value::Address(address) = value {
-                        addresses_used.insert((address.block_index, address.offset));
-                    }
+                    value_uses_address(&mut addresses_used, value);
                 }
-                Instruction::Push(value) | Instruction::Call { callee: value, .. } => {
-                    if let Value::Address(address) = value {
-                        addresses_used.insert((address.block_index, address.offset));
-                    }
+                Instruction::Push(value)
+                | Instruction::Call { callee: value, .. }
+                | Instruction::Access { of: value, .. } => {
+                    value_uses_address(&mut addresses_used, value);
 
                     addresses_used.insert((BlockIndex(b), i));
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
-                    if let Value::Address(address) = lhs {
-                        addresses_used.insert((address.block_index, address.offset));
-                    }
-
-                    if let Value::Address(address) = rhs {
-                        addresses_used.insert((address.block_index, address.offset));
-                    }
+                    value_uses_address(&mut addresses_used, lhs);
+                    value_uses_address(&mut addresses_used, rhs);
+                }
+                Instruction::AccessAssign { of, value, .. } => {
+                    value_uses_address(&mut addresses_used, of);
+                    value_uses_address(&mut addresses_used, value);
                 }
             }
         }
 
         match block.terminator() {
             BlockTerminator::Return(value) => {
-                if let Value::Address(address) = value {
-                    addresses_used.insert((address.block_index, address.offset));
-                }
+                value_uses_address(&mut addresses_used, value);
             }
             BlockTerminator::Jump(jump_to) => {
                 for argument in jump_to.arguments() {
-                    if let Argument::Address(Value::Address(address)) = argument {
-                        addresses_used.insert((address.block_index, address.offset));
+                    if let Argument::Address(value) = argument {
+                        value_uses_address(&mut addresses_used, value);
                     }
                 }
             }
@@ -147,19 +172,17 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 when_true,
                 otherwise,
             } => {
-                if let Value::Address(address) = condition {
-                    addresses_used.insert((address.block_index, address.offset));
-                }
+                value_uses_address(&mut addresses_used, condition);
 
                 for argument in when_true.arguments() {
-                    if let Argument::Address(Value::Address(address)) = argument {
-                        addresses_used.insert((address.block_index, address.offset));
+                    if let Argument::Address(value) = argument {
+                        value_uses_address(&mut addresses_used, value);
                     }
                 }
 
                 for argument in otherwise.arguments() {
-                    if let Argument::Address(Value::Address(address)) = argument {
-                        addresses_used.insert((address.block_index, address.offset));
+                    if let Argument::Address(value) = argument {
+                        value_uses_address(&mut addresses_used, value);
                     }
                 }
             }

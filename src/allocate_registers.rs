@@ -69,17 +69,11 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                 match instruction {
                     Instruction::NoOp | Instruction::Pop => {}
                     Instruction::Push(value) => {
-                        if let Value::Address(address) = value {
-                            *value = match addresses.get(address) {
-                                None => unreachable!("all addresses get allocated"),
-                                Some(Allocation::Register(index)) => Value::Register(*index),
-                                Some(Allocation::Stack(offset)) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
-                        }
+                        self.value_to_allocation(&addresses, value);
+                    }
+                    Instruction::AccessAssign { value, of, .. } => {
+                        self.value_to_allocation(&addresses, value);
+                        self.value_to_allocation(&addresses, of);
                     }
                     Instruction::Unary {
                         operand: value,
@@ -90,18 +84,13 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                         callee: value,
                         temporary: to,
                     }
-                    | Instruction::Assign { value, to } => {
-                        if let Value::Address(address) = value {
-                            *value = match addresses.get(address) {
-                                None => unreachable!("all addresses get allocated"),
-                                Some(Allocation::Register(index)) => Value::Register(*index),
-                                Some(Allocation::Stack(offset)) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
-                        }
+                    | Instruction::Assign { value, to }
+                    | Instruction::Access {
+                        of: value,
+                        temporary: to,
+                        ..
+                    } => {
+                        self.value_to_allocation(&addresses, value);
 
                         let Value::Address(to_address) = to else {
                             unreachable!("destinations can only be addresses at this point");
@@ -127,29 +116,8 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                         temporary: to,
                         ..
                     } => {
-                        if let Value::Address(address) = lhs {
-                            *lhs = match addresses.get(address) {
-                                None => unreachable!("all addresses get allocated"),
-                                Some(Allocation::Register(index)) => Value::Register(*index),
-                                Some(Allocation::Stack(offset)) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
-                        }
-
-                        if let Value::Address(address) = rhs {
-                            *rhs = match addresses.get(address) {
-                                None => unreachable!("all addresses get allocated"),
-                                Some(Allocation::Register(index)) => Value::Register(*index),
-                                Some(Allocation::Stack(offset)) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
-                        }
+                        self.value_to_allocation(&addresses, lhs);
+                        self.value_to_allocation(&addresses, rhs);
 
                         let Value::Address(to_address) = to else {
                             unreachable!("destinations can only be addresses at this point");
@@ -178,17 +146,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                 | BlockTerminator::Branch {
                     condition: value, ..
                 } => {
-                    if let Value::Address(address) = value {
-                        *value = match addresses.get(address) {
-                            None => unreachable!("all addresses get allocated"),
-                            Some(Allocation::Register(index)) => Value::Register(*index),
-                            Some(Allocation::Stack(offset)) => Value::Address(Address {
-                                block_index: self.current_fn,
-                                offset: *offset,
-                                version: 0,
-                            }),
-                        };
-                    }
+                    self.value_to_allocation(&addresses, value);
                 }
             }
 
@@ -205,14 +163,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                                 None
                             }
                         }) {
-                            *address = match allocation {
-                                Allocation::Register(index) => Value::Register(*index),
-                                Allocation::Stack(offset) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
+                            self.value_to_allocation(&addresses, address);
                         } else if let Allocation::Register(index) = allocation {
                             self.free(*index);
                         }
@@ -235,14 +186,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                                 None
                             }
                         }) {
-                            *address = match allocation {
-                                Allocation::Register(index) => Value::Register(*index),
-                                Allocation::Stack(offset) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
+                            self.value_to_allocation(&addresses, address);
                         } else {
                             allocations_unused.push(allocation);
                         }
@@ -260,14 +204,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                         }) {
                             allocations_unused.retain(|unused_allocation| unused_allocation != &allocation);
 
-                            *address = match allocation {
-                                Allocation::Register(index) => Value::Register(*index),
-                                Allocation::Stack(offset) => Value::Address(Address {
-                                    block_index: self.current_fn,
-                                    offset: *offset,
-                                    version: 0,
-                                }),
-                            };
+                            self.value_to_allocation(&addresses, address);
                         } else {
                             allocations_unused.push(allocation);
                         }
@@ -289,6 +226,28 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                 self.stack_size = 0;
                 self.allocate_block(ssa, child, seen);
             }
+        }
+    }
+
+    fn value_to_allocation(&self, addresses: &HashMap<Address, Allocation>, value: &mut Value) {
+        match value {
+            Value::Address(address) => {
+                *value = match addresses.get(address) {
+                    None => unreachable!("all addresses get allocated"),
+                    Some(Allocation::Register(index)) => Value::Register(*index),
+                    Some(Allocation::Stack(offset)) => Value::Address(Address {
+                        block_index: self.current_fn,
+                        offset: *offset,
+                        version: 0,
+                    }),
+                };
+            }
+            Value::Compound(values) => {
+                for value in values {
+                    self.value_to_allocation(addresses, value);
+                }
+            }
+            _ => {}
         }
     }
 }

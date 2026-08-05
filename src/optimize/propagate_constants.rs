@@ -15,18 +15,24 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     .and_then(|block| block.instructions().get(i))
                 {
                     match instruction {
-                        Instruction::NoOp | Instruction::Pop | Instruction::Binary { .. } => {}
+                        Instruction::NoOp | Instruction::Pop => {}
                         Instruction::Unary { operand: value, .. }
                         | Instruction::Assign { value, .. }
                         | Instruction::Push(value)
-                        | Instruction::Call { callee: value, .. } => {
+                        | Instruction::Call { callee: value, .. }
+                        | Instruction::Access { of: value, .. }
+                        | Instruction::Binary { lhs: value, .. }
+                        | Instruction::AccessAssign { of: value, .. } => {
                             if let Value::Address(_) = value
                                 && let Some(propagated_value) = clone_constant(ssa, value)
                                 && let Some(
                                     Instruction::Unary { operand: value, .. }
                                     | Instruction::Assign { value, .. }
                                     | Instruction::Push(value)
-                                    | Instruction::Call { callee: value, .. },
+                                    | Instruction::Call { callee: value, .. }
+                                    | Instruction::Access { of: value, .. }
+                                    | Instruction::Binary { lhs: value, .. }
+                                    | Instruction::AccessAssign { of: value, .. },
                                 ) = ssa
                                     .blocks_mut()
                                     .get_mut(b)
@@ -40,28 +46,28 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     }
                 }
 
-                if let Some(Instruction::Binary { lhs, .. }) = ssa
-                    .blocks()
-                    .get(b)
-                    .and_then(|block| block.instructions().get(i))
-                    && let Value::Address(_) = lhs
-                    && let Some(propagated_value) = clone_constant(ssa, lhs)
-                    && let Some(Instruction::Binary { lhs, .. }) = ssa
-                        .blocks_mut()
-                        .get_mut(b)
-                        .and_then(|block| block.instructions_mut().get_mut(i))
-                {
-                    *lhs = propagated_value;
-
-                    changed = true;
-                }
-
                 if let Some(Instruction::Binary { rhs, .. }) = ssa
                     .blocks()
                     .get(b)
                     .and_then(|block| block.instructions().get(i))
                     && let Value::Address(_) = rhs
                     && let Some(propagated_value) = clone_constant(ssa, rhs)
+                    && let Some(Instruction::Binary { rhs, .. }) = ssa
+                        .blocks_mut()
+                        .get_mut(b)
+                        .and_then(|block| block.instructions_mut().get_mut(i))
+                {
+                    *rhs = propagated_value;
+
+                    changed = true;
+                }
+
+                if let Some(Instruction::AccessAssign { value, .. }) = ssa
+                    .blocks()
+                    .get(b)
+                    .and_then(|block| block.instructions().get(i))
+                    && let Value::Address(_) = value
+                    && let Some(propagated_value) = clone_constant(ssa, value)
                     && let Some(Instruction::Binary { rhs, .. }) = ssa
                         .blocks_mut()
                         .get_mut(b)
@@ -115,7 +121,8 @@ fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
         | Value::Fn(_)
         | Value::NativeFn(_)
         | Value::Argument(_)
-        | Value::Register(_) => Some(value.clone()),
+        | Value::Register(_)
+        | Value::Compound(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address),
         Value::Runtime => None,
     }

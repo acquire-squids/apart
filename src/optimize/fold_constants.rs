@@ -14,7 +14,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 | Instruction::Pop
                 | Instruction::Assign { .. }
                 | Instruction::Push(_)
-                | Instruction::Call { .. } => {}
+                | Instruction::Call { .. }
+                | Instruction::Access { .. }
+                | Instruction::AccessAssign { .. } => {}
                 Instruction::Unary { .. } => {
                     fold_unary(b, i, instruction, &mut changed);
                 }
@@ -471,7 +473,8 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *changed = true;
             }
             (
-                BinaryOp::Multiply
+                BinaryOp::Access
+                | BinaryOp::Multiply
                 | BinaryOp::Divide
                 | BinaryOp::Remainder
                 | BinaryOp::Add
