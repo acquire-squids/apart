@@ -41,7 +41,7 @@ fn main() -> ExitCode {
                     Ok(source) => {
                         let source = source.as_str();
 
-                        compile::<MAX_REGISTERS>(input_path, source, false);
+                        compile::<MAX_REGISTERS>(input_path, source);
 
                         ExitCode::SUCCESS
                     }
@@ -51,10 +51,9 @@ fn main() -> ExitCode {
     )
 }
 
-fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str, silent: bool) {
+fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str) {
     match apart::compile::<MAX_REGISTERS, _>([(0, source)].as_slice(), &mut io::stdout().lock()) {
         Ok(_) => {}
-        Err(_) if silent => {}
         Err(errors) => {
             let report_data = reporting::ReportData::new(
                 source,
@@ -78,7 +77,7 @@ fn repl<const MAX_REGISTERS: usize>() -> io::Result<()> {
     for line in io::stdin().lock().lines() {
         let source = line?;
 
-        compile::<MAX_REGISTERS>("stdin", source.as_str(), false);
+        compile::<MAX_REGISTERS>("stdin", source.as_str());
 
         print!("> ");
         io::stdout().lock().flush()?;
