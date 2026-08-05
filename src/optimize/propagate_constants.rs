@@ -120,11 +120,9 @@ fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
         | Value::Unit
         | Value::Fn(_)
         | Value::NativeFn(_)
-        | Value::Argument(_)
-        | Value::Register(_)
-        | Value::Compound(_) => Some(value.clone()),
+        | Value::Argument(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address),
-        Value::Runtime => None,
+        Value::Runtime | Value::Register(_) | Value::Compound(_) => None,
     }
 }
 

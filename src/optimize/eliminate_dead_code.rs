@@ -152,6 +152,8 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 Instruction::AccessAssign { of, value, .. } => {
                     value_uses_address(&mut addresses_used, of);
                     value_uses_address(&mut addresses_used, value);
+
+                    addresses_used.insert((BlockIndex(b), i));
                 }
             }
         }
