@@ -43,6 +43,7 @@ pub enum Error {
     DuplicateNativeFnName,
     DuplicateFnName,
     DuplicateProductName,
+    InvalidAssignTarget,
 }
 
 impl fmt::Display for Error {
@@ -68,6 +69,9 @@ impl fmt::Display for Error {
             }
             Self::DuplicateProductName => {
                 write!(f, "this product name is already in use in this scope")
+            }
+            Self::InvalidAssignTarget => {
+                write!(f, "only names and fields may be assigned to")
             }
         }
     }
@@ -420,9 +424,17 @@ impl NameResolver {
                     }
                     Some(Expr::Binary {
                         op: BinaryOp::Access,
+                        rhs,
                         ..
-                    }) => {}
-                    Some(_) => unreachable!("only names can be assigned to (for now)"),
+                    }) if matches!(ast.get_expr(*rhs).map(Spanned::kind), Some(Expr::Name(_))) => {}
+                    Some(_) => {
+                        self.errors.push(Spanned::new(
+                            Error::InvalidAssignTarget,
+                            ast.get_expr(lhs)
+                                .map(Spanned::span)
+                                .expect("if the expression exists, the span does too"),
+                        ));
+                    }
                 }
             }
             Some(Expr::Name(name)) => {
