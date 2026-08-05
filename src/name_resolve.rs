@@ -1,6 +1,6 @@
 use crate::{
     Reportable, Span, Spanned,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, TypeSignature},
+    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature},
 };
 
 use std::{collections::HashMap, error, fmt};
@@ -12,12 +12,11 @@ pub fn resolve_names(ast: &Ast) -> Result<HashMap<Span, Span>, Vec<Spanned<Error
     resolver.resolve_primitives(ast);
 
     // now that all the types are resolved, resolve their uses
-    resolver.resolve_types(ast);
+    for root in ast.roots() {
+        resolver.resolve_types(ast, *root, None);
+    }
 
     resolver.resolve_native_functions(ast);
-
-    // we need to resolve all functions before their bodies
-    resolver.resolve_functions(ast);
 
     resolver.resolve(ast);
 
@@ -191,22 +190,34 @@ impl NameResolver {
 
     fn resolve_type_signature(
         &mut self,
-        associated_with: Option<Span>,
+        (associated_with_outer, associated_with_inner): (Option<Span>, Option<Span>),
         ty: &Spanned<TypeSignature>,
     ) {
         match ty.kind() {
             TypeSignature::Name(name) => {
-                self.resolve_and_insert_name(associated_with, name, ty.span());
+                self.resolve_and_insert_name(
+                    associated_with_inner.map_or(associated_with_outer, |associated_with| {
+                        Some(associated_with)
+                    }),
+                    name,
+                    ty.span(),
+                );
             }
             TypeSignature::Fn {
                 parameters,
                 return_type,
             } => {
                 for parameter in parameters {
-                    self.resolve_type_signature(associated_with, parameter);
+                    self.resolve_type_signature(
+                        (associated_with_outer, associated_with_inner),
+                        parameter,
+                    );
                 }
 
-                self.resolve_type_signature(associated_with, return_type);
+                self.resolve_type_signature(
+                    (associated_with_outer, associated_with_inner),
+                    return_type,
+                );
             }
         }
     }
@@ -232,7 +243,7 @@ impl NameResolver {
         for root in ast.roots() {
             if let Some(Item::NativeFn { name, signature }) = ast.get_item(*root).map(Spanned::kind)
             {
-                self.resolve_type_signature(None, signature);
+                self.resolve_type_signature((None, None), signature);
 
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
@@ -246,63 +257,74 @@ impl NameResolver {
         }
     }
 
-    fn resolve_types(&mut self, ast: &Ast) {
-        for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                None | Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
-                Some(Item::Fn {
-                    name,
-                    parameters,
-                    return_type,
-                    generics,
-                    ..
-                }) => {
-                    for generic in generics {
-                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                    }
-                    for parameter in parameters {
-                        self.resolve_type_signature(Some(name.span()), parameter.ty());
-                    }
-
-                    self.resolve_type_signature(Some(name.span()), return_type);
+    fn resolve_types(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
+        match ast.get_item(item).map(Spanned::kind) {
+            None | Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
+            Some(Item::Fn {
+                name,
+                parameters,
+                return_type,
+                generics,
+                ..
+            }) => {
+                for generic in generics {
+                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
                 }
-                Some(Item::Product {
-                    name,
-                    fields,
-                    generics,
-                }) => {
-                    for generic in generics {
-                        self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                    }
-
-                    for field in fields {
-                        self.resolve_type_signature(Some(name.span()), field.ty());
-                    }
-
-                    if self.resolve_name(name.kind()).is_some() {
-                        self.errors
-                            .push(Spanned::new(Error::DuplicateProductName, name.span()));
-                    } else {
-                        self.declare_name(name.kind().clone(), name.span());
-
-                        self.define_name(name.kind());
-                    }
+                for parameter in parameters {
+                    self.resolve_type_signature(
+                        (associated_with, Some(name.span())),
+                        parameter.ty(),
+                    );
                 }
+
+                self.resolve_type_signature((associated_with, Some(name.span())), return_type);
+
+                self.resolve_function_name(ast, item, associated_with);
             }
-        }
-    }
+            Some(Item::Product {
+                name,
+                fields,
+                generics,
+            }) => {
+                for generic in generics {
+                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
+                }
 
-    fn resolve_functions(&mut self, ast: &Ast) {
-        for root in ast.roots() {
-            if let Some(Item::Fn { name, .. }) = ast.get_item(*root).map(Spanned::kind) {
+                for field in fields {
+                    self.resolve_type_signature((Some(name.span()), None), field.ty());
+                }
+
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
-                        .push(Spanned::new(Error::DuplicateFnName, name.span()));
+                        .push(Spanned::new(Error::DuplicateProductName, name.span()));
                 } else {
                     self.declare_name(name.kind().clone(), name.span());
 
                     self.define_name(name.kind());
                 }
+            }
+        }
+    }
+
+    fn resolve_function_name(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
+        if let Some(Item::Fn { name, .. }) = ast.get_item(item).map(Spanned::kind) {
+            if let Some(associated_with) = associated_with {
+                if self
+                    .resolve_associated_name(associated_with, name.kind())
+                    .is_some()
+                {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicateFnName, name.span()));
+                } else {
+                    self.associate_name(associated_with, name.kind().clone(), name.span());
+                }
+            } else if self.resolve_name(name.kind()).is_some() {
+                self.errors
+                    .push(Spanned::new(Error::DuplicateFnName, name.span()));
+            } else {
+                self.declare_name(name.kind().clone(), name.span());
+
+                self.define_name(name.kind());
             }
         }
     }
@@ -355,7 +377,7 @@ impl NameResolver {
                 ..
             }) => {
                 if let Some(type_signature) = type_signature {
-                    self.resolve_type_signature(associated_with, type_signature);
+                    self.resolve_type_signature((associated_with, None), type_signature);
                 }
 
                 self.declare_name(name.kind().clone(), name.span());

@@ -1,6 +1,6 @@
 use crate::{
     Reportable, Span, Spanned,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, TypeSignature, UnaryOp},
+    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature, UnaryOp},
 };
 
 use std::{collections::HashMap, error, fmt};
@@ -15,9 +15,9 @@ pub fn check_types(
 
     type_checker.check_types(ast, names);
 
-    type_checker.check_native_functions(ast, names);
-
-    type_checker.check_functions(ast, names);
+    for root in ast.roots() {
+        type_checker.check_item(ast, names, *root);
+    }
 
     type_checker.type_check_functions(ast, names);
 
@@ -387,36 +387,46 @@ impl TypeChecker {
         }
     }
 
-    fn check_native_functions(&mut self, ast: &Ast, names: &HashMap<Span, Span>) {
-        for root in ast.roots() {
-            if let Some(Item::NativeFn { name, signature }) = ast.get_item(*root).map(Spanned::kind)
-                && let TypeSignature::Fn {
-                    parameters,
-                    return_type,
-                } = signature.kind()
-            {
-                let parameters = parameters
-                    .iter()
-                    .map(|parameter| {
-                        self.check_type_signature(names, parameter);
-
-                        self.get_type_index_or_error(parameter.span())
-                    })
-                    .collect::<Vec<_>>();
-
-                let return_type = {
-                    self.check_type_signature(names, return_type);
-
-                    self.get_type_index_or_error(return_type.span())
-                };
-
-                let type_index = self.push_type(Type::Fn {
-                    parameters,
-                    return_type,
-                });
-
-                self.type_map.insert(name.span(), type_index);
+    fn check_item(&mut self, ast: &Ast, names: &HashMap<Span, Span>, item: ItemIndex) {
+        match ast.get_item(item).map(Spanned::kind) {
+            None | Some(Item::Primitive(_) | Item::Product { .. }) => {}
+            Some(Item::NativeFn { .. }) => {
+                self.check_native_function(ast, names, item);
             }
+            Some(Item::Fn { .. }) => {
+                self.check_function(ast, names, item);
+            }
+        }
+    }
+
+    fn check_native_function(&mut self, ast: &Ast, names: &HashMap<Span, Span>, item: ItemIndex) {
+        if let Some(Item::NativeFn { name, signature }) = ast.get_item(item).map(Spanned::kind)
+            && let TypeSignature::Fn {
+                parameters,
+                return_type,
+            } = signature.kind()
+        {
+            let parameters = parameters
+                .iter()
+                .map(|parameter| {
+                    self.check_type_signature(names, parameter);
+
+                    self.get_type_index_or_error(parameter.span())
+                })
+                .collect::<Vec<_>>();
+
+            let return_type = {
+                self.check_type_signature(names, return_type);
+
+                self.get_type_index_or_error(return_type.span())
+            };
+
+            let type_index = self.push_type(Type::Fn {
+                parameters,
+                return_type,
+            });
+
+            self.type_map.insert(name.span(), type_index);
         }
     }
 
@@ -464,50 +474,48 @@ impl TypeChecker {
         }
     }
 
-    fn check_functions(&mut self, ast: &Ast, names: &HashMap<Span, Span>) {
-        for root in ast.roots() {
-            if let Some(Item::Fn {
-                name,
+    fn check_function(&mut self, ast: &Ast, names: &HashMap<Span, Span>, item: ItemIndex) {
+        if let Some(Item::Fn {
+            name,
+            parameters,
+            return_type,
+            generics,
+            ..
+        }) = ast.get_item(item).map(Spanned::kind)
+        {
+            for generic in generics {
+                let type_index = self.push_type(Type::Generic(generic.kind().clone()));
+
+                self.type_map.insert(generic.span(), type_index);
+            }
+
+            let parameters = parameters
+                .iter()
+                .map(|parameter| {
+                    self.check_type_signature(names, parameter.ty());
+
+                    let type_index = self
+                        .get_type_index(parameter.ty().span())
+                        .expect("the type should have been set in the previous call");
+
+                    self.type_map.insert(parameter.name().span(), type_index);
+
+                    self.get_type_index_or_error(parameter.name().span())
+                })
+                .collect::<Vec<_>>();
+
+            let return_type = {
+                self.check_type_signature(names, return_type);
+
+                self.get_type_index_or_error(return_type.span())
+            };
+
+            let type_index = self.push_type(Type::Fn {
                 parameters,
                 return_type,
-                generics,
-                ..
-            }) = ast.get_item(*root).map(Spanned::kind)
-            {
-                for generic in generics {
-                    let type_index = self.push_type(Type::Generic(generic.kind().clone()));
+            });
 
-                    self.type_map.insert(generic.span(), type_index);
-                }
-
-                let parameters = parameters
-                    .iter()
-                    .map(|parameter| {
-                        self.check_type_signature(names, parameter.ty());
-
-                        let type_index = self
-                            .get_type_index(parameter.ty().span())
-                            .expect("the type should have been set in the previous call");
-
-                        self.type_map.insert(parameter.name().span(), type_index);
-
-                        self.get_type_index_or_error(parameter.name().span())
-                    })
-                    .collect::<Vec<_>>();
-
-                let return_type = {
-                    self.check_type_signature(names, return_type);
-
-                    self.get_type_index_or_error(return_type.span())
-                };
-
-                let type_index = self.push_type(Type::Fn {
-                    parameters,
-                    return_type,
-                });
-
-                self.type_map.insert(name.span(), type_index);
-            }
+            self.type_map.insert(name.span(), type_index);
         }
     }
 
