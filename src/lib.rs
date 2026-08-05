@@ -12,8 +12,6 @@ use reporting::{Reportable, Span, Spanned};
 
 use std::{error::Error, fmt, io::Write};
 
-const MAX_REGISTERS: usize = 0;
-
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
 const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt"));
@@ -45,7 +43,7 @@ impl<E> Reportable for ErrorBox<E> where E: Reportable + ?Sized {}
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc)]
-pub fn compile<O>(
+pub fn compile<const MAX_REGISTERS: usize, O>(
     sources: &[(usize, &str)],
     out: &mut O,
 ) -> Result<Vec<u8>, Vec<Spanned<ErrorBox<dyn Reportable>>>>

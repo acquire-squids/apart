@@ -5,13 +5,15 @@ use std::{
     process::ExitCode,
 };
 
+const MAX_REGISTERS: usize = 0;
+
 fn main() -> ExitCode {
     let mut arguments = env::args();
     arguments.next();
 
     arguments.next().map_or_else(
         || {
-            repl().map_or_else(
+            repl::<MAX_REGISTERS>().map_or_else(
                 |error| {
                     eprintln!("repl input/output error: {error}");
                     ExitCode::FAILURE
@@ -39,7 +41,7 @@ fn main() -> ExitCode {
                     Ok(source) => {
                         let source = source.as_str();
 
-                        compile(input_path, source, false);
+                        compile::<MAX_REGISTERS>(input_path, source, false);
 
                         ExitCode::SUCCESS
                     }
@@ -49,8 +51,8 @@ fn main() -> ExitCode {
     )
 }
 
-fn compile(source_label: &str, source: &str, silent: bool) {
-    match apart::compile([(0, source)].as_slice(), &mut io::stdout().lock()) {
+fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str, silent: bool) {
+    match apart::compile::<MAX_REGISTERS, _>([(0, source)].as_slice(), &mut io::stdout().lock()) {
         Ok(_) => {}
         Err(_) if silent => {}
         Err(errors) => {
@@ -69,14 +71,14 @@ fn compile(source_label: &str, source: &str, silent: bool) {
     }
 }
 
-fn repl() -> io::Result<()> {
+fn repl<const MAX_REGISTERS: usize>() -> io::Result<()> {
     print!("> ");
     io::stdout().lock().flush()?;
 
     for line in io::stdin().lock().lines() {
         let source = line?;
 
-        compile("stdin", source.as_str(), false);
+        compile::<MAX_REGISTERS>("stdin", source.as_str(), false);
 
         print!("> ");
         io::stdout().lock().flush()?;
