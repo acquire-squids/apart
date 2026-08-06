@@ -777,28 +777,14 @@ fn evaluate_binary(
         (BinaryOp::GreaterOrEqual, Value::Float(lhs), Value::Float(rhs)) => {
             Value::Boolean(lhs >= rhs)
         }
-        (BinaryOp::Equal, Value::Integer(lhs), Value::Integer(rhs)) => Value::Boolean(lhs == rhs),
-        (BinaryOp::NotEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
-            Value::Boolean(lhs != rhs)
-        }
         (BinaryOp::Equal, Value::Float(lhs), Value::Float(rhs)) => {
             Value::Boolean((lhs - rhs).abs() < f64::EPSILON)
         }
         (BinaryOp::NotEqual, Value::Float(lhs), Value::Float(rhs)) => {
             Value::Boolean((lhs - rhs).abs() >= f64::EPSILON)
         }
-        (BinaryOp::Equal, Value::Boolean(lhs), Value::Boolean(rhs)) => Value::Boolean(lhs == rhs),
-        (BinaryOp::NotEqual, Value::Boolean(lhs), Value::Boolean(rhs)) => {
-            Value::Boolean(lhs != rhs)
-        }
-        (BinaryOp::Equal, Value::Unit, Value::Unit) => Value::Boolean(true),
-        (BinaryOp::NotEqual, Value::Unit, Value::Unit) => Value::Boolean(false),
-        (BinaryOp::Equal, Value::Fn(lhs), Value::Fn(rhs)) => Value::Boolean(lhs == rhs),
-        (BinaryOp::NotEqual, Value::Fn(lhs), Value::Fn(rhs)) => Value::Boolean(lhs != rhs),
-        (BinaryOp::Equal, Value::NativeFn(lhs), Value::NativeFn(rhs)) => Value::Boolean(lhs == rhs),
-        (BinaryOp::NotEqual, Value::NativeFn(lhs), Value::NativeFn(rhs)) => {
-            Value::Boolean(lhs != rhs)
-        }
+        (BinaryOp::Equal, lhs, rhs) => Value::Boolean(lhs == rhs),
+        (BinaryOp::NotEqual, lhs, rhs) => Value::Boolean(lhs != rhs),
         (_, _, _) => unreachable!("type checking would have caught the wrong operand type"),
     }
 }

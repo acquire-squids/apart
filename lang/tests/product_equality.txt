@@ -1,0 +1,13 @@
+funky main() {
+	print_bool(
+		Number { value <- 1 } != Number { value <- 2 + 3 },
+	);
+
+	print_bool(
+		Number { value <- 1 } == Number { value <- 2 + 3 },
+	);
+}
+
+product Number {
+	value <- i64,
+}
