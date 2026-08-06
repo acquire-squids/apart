@@ -1283,56 +1283,56 @@ mod precedence {
 
     pub const CALL: u16 = 0xBB00;
 
-    pub const LEFT_ACCESS: u16 = 0xBB50;
-    pub const RIGHT_ACCESS: u16 = 0xBB00;
+    pub const LEFT_ACCESS: u16 = 0xBB00;
+    pub const RIGHT_ACCESS: u16 = 0xBB50;
 
     pub const NOT: u16 = 0xAA00;
 
     pub const NEGATE: u16 = 0xAA00;
 
-    pub const LEFT_MULTIPLY: u16 = 0x9950;
-    pub const RIGHT_MULTIPLY: u16 = 0x9900;
+    pub const LEFT_MULTIPLY: u16 = 0x9900;
+    pub const RIGHT_MULTIPLY: u16 = 0x9950;
 
-    pub const LEFT_DIVIDE: u16 = 0x9950;
-    pub const RIGHT_DIVIDE: u16 = 0x9900;
+    pub const LEFT_DIVIDE: u16 = 0x9900;
+    pub const RIGHT_DIVIDE: u16 = 0x9950;
 
-    pub const LEFT_REMAINDER: u16 = 0x9950;
-    pub const RIGHT_REMAINDER: u16 = 0x9900;
+    pub const LEFT_REMAINDER: u16 = 0x9900;
+    pub const RIGHT_REMAINDER: u16 = 0x9950;
 
-    pub const LEFT_ADD: u16 = 0x8850;
-    pub const RIGHT_ADD: u16 = 0x8800;
+    pub const LEFT_ADD: u16 = 0x8800;
+    pub const RIGHT_ADD: u16 = 0x8850;
 
-    pub const LEFT_SUBTRACT: u16 = 0x8850;
-    pub const RIGHT_SUBTRACT: u16 = 0x8800;
+    pub const LEFT_SUBTRACT: u16 = 0x8800;
+    pub const RIGHT_SUBTRACT: u16 = 0x8850;
 
-    pub const LEFT_LESS: u16 = 0x7750;
-    pub const RIGHT_LESS: u16 = 0x7700;
+    pub const LEFT_LESS: u16 = 0x7700;
+    pub const RIGHT_LESS: u16 = 0x7750;
 
-    pub const LEFT_GREATER: u16 = 0x7750;
-    pub const RIGHT_GREATER: u16 = 0x7700;
+    pub const LEFT_GREATER: u16 = 0x7700;
+    pub const RIGHT_GREATER: u16 = 0x7750;
 
-    pub const LEFT_LESS_OR_EQUAL: u16 = 0x7750;
-    pub const RIGHT_LESS_OR_EQUAL: u16 = 0x7700;
+    pub const LEFT_LESS_OR_EQUAL: u16 = 0x7700;
+    pub const RIGHT_LESS_OR_EQUAL: u16 = 0x7750;
 
-    pub const LEFT_GREATER_OR_EQUAL: u16 = 0x7750;
-    pub const RIGHT_GREATER_OR_EQUAL: u16 = 0x7700;
+    pub const LEFT_GREATER_OR_EQUAL: u16 = 0x7700;
+    pub const RIGHT_GREATER_OR_EQUAL: u16 = 0x7750;
 
-    pub const LEFT_EQUAL: u16 = 0x6650;
-    pub const RIGHT_EQUAL: u16 = 0x6600;
+    pub const LEFT_EQUAL: u16 = 0x6600;
+    pub const RIGHT_EQUAL: u16 = 0x6650;
 
-    pub const LEFT_NOT_EQUAL: u16 = 0x6650;
-    pub const RIGHT_NOT_EQUAL: u16 = 0x6600;
+    pub const LEFT_NOT_EQUAL: u16 = 0x6600;
+    pub const RIGHT_NOT_EQUAL: u16 = 0x6650;
 
-    pub const LEFT_AND: u16 = 0x5550;
-    pub const RIGHT_AND: u16 = 0x5500;
+    pub const LEFT_AND: u16 = 0x5500;
+    pub const RIGHT_AND: u16 = 0x5550;
 
-    pub const LEFT_OR: u16 = 0x4450;
-    pub const RIGHT_OR: u16 = 0x4400;
+    pub const LEFT_OR: u16 = 0x4400;
+    pub const RIGHT_OR: u16 = 0x4450;
 
     pub const RETURN: u16 = 0x3800;
 
-    pub const LEFT_ASSIGN: u16 = 0x3300;
-    pub const RIGHT_ASSIGN: u16 = 0x3350;
+    pub const LEFT_ASSIGN: u16 = 0x3350;
+    pub const RIGHT_ASSIGN: u16 = 0x3300;
 
     pub const AS_UNIT: u16 = 0x1100;
 }
