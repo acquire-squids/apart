@@ -198,12 +198,19 @@ impl NameResolver {
         ty: &Spanned<TypeSignature>,
     ) {
         match ty.kind() {
-            TypeSignature::Name(name) => {
+            TypeSignature::Normal { name, generics } => {
+                for generic in generics {
+                    self.resolve_type_signature(
+                        (associated_with_outer, associated_with_inner),
+                        generic,
+                    );
+                }
+
                 self.resolve_and_insert_name(
                     associated_with_inner.map_or(associated_with_outer, |associated_with| {
                         Some(associated_with)
                     }),
-                    name,
+                    name.kind(),
                     ty.span(),
                 );
             }

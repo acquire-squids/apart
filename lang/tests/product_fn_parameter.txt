@@ -1,0 +1,15 @@
+funky main() {
+	let wrapped = Wrapper {
+		value <- {},
+	} in {
+		print_unit(unwrap(wrapped));
+	}
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+funky unwrap[T](wrapped <- Wrapper[T]) -> T {
+	wrapped.value
+}

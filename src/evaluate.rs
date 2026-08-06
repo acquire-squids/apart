@@ -302,13 +302,12 @@ where
                 }
             },
             BlockTerminator::Return(value) => {
-                let value = dereference_value(
+                let value = clone_value(
                     stack.as_slice(),
                     call_frames.as_slice(),
                     registers.as_slice(),
                     value,
-                )
-                .clone();
+                );
 
                 if let Some(call_frame) = call_frames.pop() {
                     b = call_frame.from.0;
@@ -346,6 +345,23 @@ where
                 }
             }
         }
+    }
+}
+
+fn clone_value(
+    stack: &[Value],
+    call_frames: &[CallFrame],
+    registers: &[Value],
+    value: &Value,
+) -> Value {
+    match dereference_value(stack, call_frames, registers, value).clone() {
+        Value::Compound(values) => Value::Compound(
+            values
+                .iter()
+                .map(|value| clone_value(stack, call_frames, registers, value))
+                .collect::<Vec<_>>(),
+        ),
+        value => value,
     }
 }
 

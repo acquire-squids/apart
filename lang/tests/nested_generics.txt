@@ -1,0 +1,23 @@
+funky main() {
+	print_f64(double_unwrap(double_wrap(3.14)));
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+product OtherWrapper[U] {
+	value <- U,
+}
+
+funky double_wrap[T](value <- T) -> OtherWrapper[Wrapper[T]] {
+	OtherWrapper {
+		value <- Wrapper {
+			value <- value,
+		},
+	}
+}
+
+funky double_unwrap[T](value <- OtherWrapper[Wrapper[T]]) -> T {
+	value.value.value
+}

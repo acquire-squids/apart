@@ -1,0 +1,17 @@
+funky main() {
+	print_f64(wrap(3.14).value);
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+funky wrap[T](value <- T) -> Wrapper[T] {
+	Wrapper {
+		value <- identity(value),
+	}
+}
+
+funky identity[V](value <- V) -> V {
+	value
+}

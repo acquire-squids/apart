@@ -140,7 +140,7 @@ impl fmt::Display for Error {
             Self::UnclosedCall => write!(f, "this call was never closed"),
             Self::FnParametersWithoutComma | Self::FnTypeParametersWithoutComma => write!(
                 f,
-                "if there is another parameter here,a  comma should be between it and the previous parameter"
+                "if there is another parameter here, a comma should be between it and the previous parameter"
             ),
             Self::FnTypeWithoutParameters => {
                 write!(
@@ -355,7 +355,10 @@ impl Parameter {
 
 #[derive(Debug)]
 pub enum TypeSignature {
-    Name(String),
+    Normal {
+        name: Spanned<String>,
+        generics: Vec<Spanned<Self>>,
+    },
     Fn {
         parameters: Vec<Spanned<Self>>,
         return_type: Box<Spanned<Self>>,
@@ -1017,10 +1020,22 @@ impl Parser {
             } else {
                 lexer.restore(minus.span());
 
-                Spanned::new(TypeSignature::Name("unit".to_string()), parameters_end)
+                Spanned::new(
+                    TypeSignature::Normal {
+                        name: Spanned::new("unit".to_string(), parameters_end),
+                        generics: vec![],
+                    },
+                    parameters_end,
+                )
             }
         } else {
-            Spanned::new(TypeSignature::Name("unit".to_string()), parameters_end)
+            Spanned::new(
+                TypeSignature::Normal {
+                    name: Spanned::new("unit".to_string(), parameters_end),
+                    generics: vec![],
+                },
+                parameters_end,
+            )
         };
 
         let body_span = self
@@ -1168,6 +1183,7 @@ impl Parser {
         Ok(funky)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_type_signature(
         &mut self,
         lexer: &mut Lexer,
@@ -1230,10 +1246,22 @@ impl Parser {
                             } else {
                                 lexer.restore(minus.span());
 
-                                Spanned::new(TypeSignature::Name("unit".to_string()), close_span)
+                                Spanned::new(
+                                    TypeSignature::Normal {
+                                        name: Spanned::new("unit".to_string(), close_span),
+                                        generics: vec![],
+                                    },
+                                    close_span,
+                                )
                             }
                         } else {
-                            Spanned::new(TypeSignature::Name("unit".to_string()), close_span)
+                            Spanned::new(
+                                TypeSignature::Normal {
+                                    name: Spanned::new("unit".to_string(), close_span),
+                                    generics: vec![],
+                                },
+                                close_span,
+                            )
                         };
 
                         let return_span = return_type.span();
@@ -1251,7 +1279,33 @@ impl Parser {
                     None => {
                         let (name, span) = self.name_lexeme(lexer)?;
 
-                        Ok(Spanned::new(TypeSignature::Name(name), span))
+                        let mut generics = vec![];
+
+                        if let Some(open_span) = self
+                            .match_next(lexer, Token::OpenSquareBracket)
+                            .map(|token| token.span())
+                        {
+                            while self.peek(lexer).is_some()
+                                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
+                            {
+                                generics.push(self.parse_type_signature(lexer)?);
+                            }
+
+                            self.consume_next_with_span(
+                                lexer,
+                                Token::CloseSquareBracket,
+                                Error::UnclosedGenerics,
+                                open_span,
+                            )?;
+                        }
+
+                        Ok(Spanned::new(
+                            TypeSignature::Normal {
+                                name: Spanned::new(name, span),
+                                generics,
+                            },
+                            span,
+                        ))
                     }
                 }
             }

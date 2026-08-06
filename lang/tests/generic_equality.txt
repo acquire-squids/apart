@@ -1,0 +1,7 @@
+funky main() {
+	print_bool(check_equality(true, false));
+}
+
+funky check_equality[T, U](a <- T, b <- U) -> bool {
+	a == b
+}
