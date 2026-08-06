@@ -6,19 +6,15 @@ use crate::{
 use std::collections::HashMap;
 
 pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
-    let mut allocator = RegisterAllocator::<MAX_REGISTERS> {
-        index: 0,
-        free: vec![],
-        stack_size: 0,
-        current_fn: BlockIndex(0),
-    };
-
     let mut seen = vec![false; ssa.blocks().len()];
 
     for b in 0..(ssa.function_count()) {
-        allocator.current_fn = BlockIndex(b);
-
-        allocator.stack_size = 0;
+        let mut allocator = RegisterAllocator::<MAX_REGISTERS> {
+            index: 0,
+            free: vec![],
+            stack_size: 0,
+            current_fn: BlockIndex(b),
+        };
 
         allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
     }
