@@ -219,7 +219,13 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
             ssa.for_children(block_index, |_, block_index| children.push(block_index));
 
             for child in children {
-                self.stack_size = 0;
+                *self = Self {
+                    index: 0,
+                    free: vec![],
+                    stack_size: 0,
+                    current_fn: self.current_fn,
+                };
+
                 self.allocate_block(ssa, child, seen);
             }
         }
