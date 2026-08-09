@@ -1435,7 +1435,7 @@ impl TypeChecker {
                     Ok(should_be)
                 } else {
                     Err(Error::TypeMismatch {
-                        expected: Type::Primitive(*a).to_string(self.types.as_slice()),
+                        expected: Type::Primitive(*b).to_string(self.types.as_slice()),
                         got: Type::Primitive(*a).to_string(self.types.as_slice()),
                     })
                 }
@@ -1445,8 +1445,8 @@ impl TypeChecker {
                     Ok(should_be)
                 } else {
                     Err(Error::TypeMismatch {
-                        expected: Type::Generic(a.clone()).to_string(self.types.as_slice()),
-                        got: Type::Generic(b.clone()).to_string(self.types.as_slice()),
+                        expected: Type::Generic(b.clone()).to_string(self.types.as_slice()),
+                        got: Type::Generic(a.clone()).to_string(self.types.as_slice()),
                     })
                 }
             }
@@ -1533,8 +1533,8 @@ impl TypeChecker {
                 }))
             }
             (a, b) => Err(Error::TypeMismatch {
-                expected: a.to_string(self.types.as_slice()),
-                got: b.to_string(self.types.as_slice()),
+                expected: b.to_string(self.types.as_slice()),
+                got: a.to_string(self.types.as_slice()),
             }),
         }
     }
