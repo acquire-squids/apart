@@ -12,7 +12,21 @@ mod invalid_assign_target {
 
         let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
 
-        std::assert_matches!(compiled, Err(_));
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::NameResolve(
+                apart::NameResolveError::InvalidAssignTarget
+            )])
+        );
     }
 }
 
@@ -30,7 +44,24 @@ mod generic_equality {
 
         let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
 
-        std::assert_matches!(compiled, Err(_));
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::TypeMismatch {
+                    expected,
+                    got,
+                },
+            )]) if expected == "T" && got == "U"
+        );
     }
 }
 
@@ -48,6 +79,23 @@ mod callee_is_call_invalid {
 
         let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
 
-        std::assert_matches!(compiled, Err(_));
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::TypeMismatch {
+                    expected,
+                    got,
+                },
+            )]) if expected == "unit" && got == "bool"
+        );
     }
 }
