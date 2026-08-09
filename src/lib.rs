@@ -8,37 +8,39 @@ mod parse;
 mod ssa;
 mod type_check;
 
+pub use {
+    name_resolve::Error as NameResolveError, parse::Error as ParseError,
+    type_check::Error as TypeCheckError,
+};
+
 use reporting::{Reportable, Span, Spanned};
 
-use std::{error::Error, fmt, io::Write};
+use std::{error, fmt, io::Write};
 
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
 const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt"));
 
-pub struct ErrorBox<E: ?Sized>(Box<E>);
+#[derive(Debug)]
+pub enum Error {
+    Parse(ParseError),
+    NameResolve(NameResolveError),
+    TypeCheck(TypeCheckError),
+}
 
-impl<E> fmt::Debug for ErrorBox<E>
-where
-    E: fmt::Debug + ?Sized,
-{
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.0)
+        match self {
+            Self::Parse(error) => write!(f, "{error}"),
+            Self::NameResolve(error) => write!(f, "{error}"),
+            Self::TypeCheck(error) => write!(f, "{error}"),
+        }
     }
 }
 
-impl<E> fmt::Display for ErrorBox<E>
-where
-    E: fmt::Display + ?Sized,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+impl error::Error for Error {}
 
-impl<E> Error for ErrorBox<E> where E: Error + ?Sized {}
-
-impl<E> Reportable for ErrorBox<E> where E: Reportable + ?Sized {}
+impl Reportable for Error {}
 
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
@@ -46,7 +48,7 @@ impl<E> Reportable for ErrorBox<E> where E: Reportable + ?Sized {}
 pub fn compile<const MAX_REGISTERS: usize, O>(
     sources: &[(usize, &str)],
     out: &mut O,
-) -> Result<Vec<u8>, Vec<Spanned<ErrorBox<dyn Reportable>>>>
+) -> Result<Vec<u8>, Vec<Spanned<Error>>>
 where
     O: Write,
 {
@@ -90,9 +92,7 @@ where
         parse::parse(&mut lexer, &mut ast).map_err(|errors| {
             errors
                 .into_iter()
-                .map(|error| {
-                    error.transmute(|error| ErrorBox(Box::new(error) as Box<dyn Reportable>))
-                })
+                .map(|error| error.transmute(Error::Parse))
                 .collect::<Vec<_>>()
         })?;
 
@@ -102,14 +102,14 @@ where
     let names = name_resolve::resolve_names(&ast).map_err(|errors| {
         errors
             .into_iter()
-            .map(|error| error.transmute(|error| ErrorBox(Box::new(error) as Box<dyn Reportable>)))
+            .map(|error| error.transmute(Error::NameResolve))
             .collect::<Vec<_>>()
     })?;
 
     let types = type_check::check_types(&ast, &names).map_err(|errors| {
         errors
             .into_iter()
-            .map(|error| error.transmute(|error| ErrorBox(Box::new(error) as Box<dyn Reportable>)))
+            .map(|error| error.transmute(Error::TypeCheck))
             .collect::<Vec<_>>()
     })?;
 
