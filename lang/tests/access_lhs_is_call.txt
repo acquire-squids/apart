@@ -1,5 +1,7 @@
 funky main() {
-	print_f64(double_unwrap(double_wrap(3.14)));
+	let printer = double_wrap(print_bool) in {
+		unwrap(printer).value(true);
+	};
 }
 
 product Wrapper[T] {
@@ -18,6 +20,6 @@ funky double_wrap[W](value <- W) -> OtherWrapper[Wrapper[W]] {
 	}
 }
 
-funky double_unwrap[U](value <- OtherWrapper[Wrapper[U]]) -> U {
-	value.value.value
+funky unwrap[U](value <- OtherWrapper[U]) -> U {
+	value.value
 }

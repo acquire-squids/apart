@@ -1,5 +1,7 @@
 funky main() {
-	print_f64(double_unwrap(double_wrap(3.14)));
+	let printer = double_wrap(print_bool) in {
+		double_unwrap(printer)(true);
+	};
 }
 
 product Wrapper[T] {

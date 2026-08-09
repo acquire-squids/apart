@@ -1,0 +1,11 @@
+funky main() {
+	let printer = Printer {
+		f <- print_bool,
+	} in {
+		printer.f(true);
+	};
+}
+
+product Printer[T] {
+	f <- funky(T),
+}

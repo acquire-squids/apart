@@ -33,3 +33,21 @@ mod generic_equality {
         std::assert_matches!(compiled, Err(_));
     }
 }
+
+#[cfg(test)]
+mod callee_is_call_invalid {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "callee_is_call_invalid.txt"
+    ));
+
+    #[test]
+    fn callee_is_call_invalid() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        std::assert_matches!(compiled, Err(_));
+    }
+}
