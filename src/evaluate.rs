@@ -531,19 +531,14 @@ fn dereference_value<'a>(
     value: &'a Value,
 ) -> &'a Value {
     match value {
-        Value::Argument(offset) => {
-            let argument = call_frames.last().and_then(|call_frame| {
-                if *offset >= call_frame.block_arguments.len() {
-                    call_frame
-                        .call_arguments
-                        .get(*offset - call_frame.block_arguments.len())
-                } else {
-                    call_frame.block_arguments.get(*offset)
-                }
-            });
-
-            argument.expect("call argument not found")
-        }
+        Value::BlockArgument(index) => call_frames
+            .last()
+            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last()
+            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
             call_frames,
@@ -567,10 +562,14 @@ fn dereference_address<'a>(
     offset: usize,
 ) -> &'a Value {
     match stack.get(offset).expect("value doesn't exist") {
-        Value::Argument(offset) => call_frames
+        Value::BlockArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.call_arguments.get(*offset))
-            .expect("call argument not found"),
+            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last()
+            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
             call_frames,
@@ -594,10 +593,14 @@ fn dereference_register<'a>(
     index: usize,
 ) -> &'a Value {
     match registers.get(index).expect("value doesn't exist") {
-        Value::Argument(offset) => call_frames
+        Value::BlockArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.call_arguments.get(*offset))
-            .expect("call argument not found"),
+            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last()
+            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
             call_frames,
@@ -621,19 +624,14 @@ fn dereference_value_mut<'a>(
     value: &Value,
 ) -> &'a mut Value {
     match value {
-        Value::Argument(offset) => {
-            let argument = call_frames.last_mut().and_then(|call_frame| {
-                if *offset >= call_frame.block_arguments.len() {
-                    call_frame
-                        .call_arguments
-                        .get_mut(*offset - call_frame.block_arguments.len())
-                } else {
-                    call_frame.block_arguments.get_mut(*offset)
-                }
-            });
-
-            argument.expect("call argument not found")
-        }
+        Value::BlockArgument(index) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => {
             let offset = call_frames
                 .iter()
@@ -658,10 +656,14 @@ fn dereference_address_mut<'a>(
     offset: usize,
 ) -> &'a mut Value {
     match stack.get(offset).expect("value doesn't exist") {
-        Value::Argument(offset) => call_frames
+        Value::BlockArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.call_arguments.get_mut(*offset))
-            .expect("call argument not found"),
+            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => {
             let address = *address;
 
@@ -693,10 +695,14 @@ fn dereference_register_mut<'a>(
     index: usize,
 ) -> &'a mut Value {
     match registers.get(index).expect("value doesn't exist") {
-        Value::Argument(offset) => call_frames
+        Value::BlockArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.call_arguments.get_mut(*offset))
-            .expect("call argument not found"),
+            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .expect("the block argument should exist"),
+        Value::CallArgument(index) => call_frames
+            .last_mut()
+            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .expect("the call argument should exist"),
         Value::Address(address) => {
             let address = *address;
 

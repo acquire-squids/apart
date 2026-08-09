@@ -341,16 +341,9 @@ impl Ssa {
             }
 
             if let Some(block) = self.get_block_mut(block_index) {
-                let parameter_count = parameters.len();
-
                 block.parameters = parameters;
 
-                Self::values_to_arguments(
-                    parameter_count,
-                    block,
-                    living.as_slice(),
-                    addresses.as_slice(),
-                );
+                Self::values_to_arguments(block, living.as_slice(), addresses.as_slice());
             }
         }
 
@@ -532,7 +525,6 @@ impl Ssa {
     }
 
     fn values_to_arguments(
-        parameter_count: usize,
         block: &mut Block,
         living: &[Address],
         addresses: &[(Address, Address)],
@@ -545,15 +537,15 @@ impl Ssa {
                 | Instruction::Call { callee: value, .. }
                 | Instruction::Assign { value, .. }
                 | Instruction::Access { of: value, .. } => {
-                    Self::value_to_argument(parameter_count, living, addresses, value);
+                    Self::value_to_argument(living, addresses, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
-                    Self::value_to_argument(parameter_count, living, addresses, lhs);
-                    Self::value_to_argument(parameter_count, living, addresses, rhs);
+                    Self::value_to_argument(living, addresses, lhs);
+                    Self::value_to_argument(living, addresses, rhs);
                 }
                 Instruction::AccessAssign { of, value, .. } => {
-                    Self::value_to_argument(parameter_count, living, addresses, of);
-                    Self::value_to_argument(parameter_count, living, addresses, value);
+                    Self::value_to_argument(living, addresses, of);
+                    Self::value_to_argument(living, addresses, value);
                 }
             }
         }
@@ -564,17 +556,12 @@ impl Ssa {
                 condition: value, ..
             }
             | BlockTerminator::Return(value) => {
-                Self::value_to_argument(parameter_count, living, addresses, value);
+                Self::value_to_argument(living, addresses, value);
             }
         }
     }
 
-    fn value_to_argument(
-        parameter_count: usize,
-        living: &[Address],
-        addresses: &[(Address, Address)],
-        value: &mut Value,
-    ) {
+    fn value_to_argument(living: &[Address], addresses: &[(Address, Address)], value: &mut Value) {
         match value {
             Value::Address(address)
                 if let Some(i) = living.iter().position(|live_from_elsewhere| {
@@ -582,7 +569,7 @@ impl Ssa {
                         && address.offset == live_from_elsewhere.offset
                 }) =>
             {
-                *value = Value::Argument(i);
+                *value = Value::BlockArgument(i);
             }
             Value::Address(address)
                 if let Some(new_address) =
@@ -598,11 +585,8 @@ impl Ssa {
             }
             Value::Compound(values) => {
                 for value in values {
-                    Self::value_to_argument(parameter_count, living, addresses, value);
+                    Self::value_to_argument(living, addresses, value);
                 }
-            }
-            Value::Argument(i) if *i < living.len() => {
-                *i += parameter_count;
             }
             _ => {}
         }

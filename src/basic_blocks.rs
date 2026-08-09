@@ -58,7 +58,7 @@ pub fn translate(ast: &Ast, names: &HashMap<Span, Span>, types: &TypeChecker) ->
 
                 translator
                     .addresses
-                    .insert(parameter.name().span(), Addresslike::Argument(p));
+                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
             }
 
             let last_in_fn = translator.last_in_fn;
@@ -240,7 +240,7 @@ impl Translator {
 enum Addresslike {
     Address(Address),
     Block(BlockIndex),
-    Argument(usize),
+    CallArgument(usize),
     NativeFn(Span),
 }
 
@@ -254,7 +254,8 @@ pub enum Value {
     Address(Address),
     NativeFn(Span),
     Runtime,
-    Argument(usize),
+    BlockArgument(usize),
+    CallArgument(usize),
     Register(usize),
     Compound(Vec<Self>),
 }
@@ -545,8 +546,8 @@ impl Translator {
             Addresslike::Address(address) => {
                 self.values.push(Value::Address(*address));
             }
-            Addresslike::Argument(offset) => {
-                self.values.push(Value::Argument(*offset));
+            Addresslike::CallArgument(offset) => {
+                self.values.push(Value::CallArgument(*offset));
             }
             Addresslike::NativeFn(span) => {
                 self.values.push(Value::NativeFn(*span));
