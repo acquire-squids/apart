@@ -489,15 +489,9 @@ impl Translator {
 
                 self.last_in_fn = last_in_fn;
 
-                let value = self
-                    .values
-                    .last()
-                    .cloned()
-                    .expect("every expression produces a value");
-
-                self.values.push(value);
-
                 self.emit_return();
+
+                self.values.push(Value::Unit);
             }
             Some(Expr::AsUnit(value)) => {
                 let last_in_fn = self.last_in_fn;
