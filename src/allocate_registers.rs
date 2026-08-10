@@ -18,6 +18,12 @@ pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
 
         allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
     }
+
+    for block in ssa.blocks_mut() {
+        block
+            .instructions_mut()
+            .retain(|instruction| !matches!(instruction, Instruction::NoOp));
+    }
 }
 
 struct RegisterAllocator<const MAX_REGISTERS: usize> {

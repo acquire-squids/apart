@@ -1,0 +1,15 @@
+funky main() {
+	let
+		x = 2,
+		y = 3,
+		z = 4,
+		a = 10,
+		b = 20,
+		c = 30,
+		d = 0,
+		e = 0,
+		f = 0,
+	in {
+		print_i64((x + y) * z + a + b + c - d - e + f);
+	}
+}

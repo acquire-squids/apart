@@ -322,3 +322,31 @@ mod r#while {
         assert_eq!(str::from_utf8(out.as_slice()), Ok("{}\n{}\n{}\n"));
     }
 }
+#[cfg(test)]
+mod noppers {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "noppers.txt"
+    ));
+
+    #[test]
+    fn noppers() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("80\n"));
+    }
+
+    #[test]
+    fn noppers_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("80\n"));
+    }
+}
