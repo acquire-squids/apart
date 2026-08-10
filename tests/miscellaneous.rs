@@ -173,6 +173,35 @@ mod r#if {
 }
 
 #[cfg(test)]
+mod if_else_if_else {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "if_else_if_else.txt"
+    ));
+
+    #[test]
+    fn if_else_if_else() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("3\n2\n1\n1\n"));
+    }
+
+    #[test]
+    fn if_else_if_else_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("3\n2\n1\n1\n"));
+    }
+}
+
+#[cfg(test)]
 mod or {
     const SOURCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -239,7 +268,7 @@ mod equality {
     ));
 
     #[test]
-    fn three_or_four() {
+    fn equality() {
         let mut out = vec![];
 
         let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
@@ -252,7 +281,7 @@ mod equality {
     }
 
     #[test]
-    fn three_or_four_register() {
+    fn equality_register() {
         let mut out = vec![];
 
         let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
@@ -262,5 +291,34 @@ mod equality {
             str::from_utf8(out.as_slice()),
             Ok("true\nfalse\ntrue\nfalse\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod r#while {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "while.txt"
+    ));
+
+    #[test]
+    fn r#while() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("{}\n{}\n{}\n"));
+    }
+
+    #[test]
+    fn r#while_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("{}\n{}\n{}\n"));
     }
 }

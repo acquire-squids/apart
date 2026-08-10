@@ -1,0 +1,19 @@
+funky main() {
+	thrice({}, print_unit);
+}
+
+funky thrice[T](value <- T, f <- funky(T)) {
+	let i = 0 in {
+		while true {
+			if i >= 3 {
+				return {};
+			}
+
+			f(value);
+
+			i = i + 1;
+		}
+	}
+
+	{}
+}

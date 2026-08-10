@@ -1,0 +1,16 @@
+funky main() {
+	print_i64(three_or_two_or_one(3));
+	print_i64(three_or_two_or_one(2));
+	print_i64(three_or_two_or_one(1));
+	print_i64(three_or_two_or_one(0));
+}
+
+funky three_or_two_or_one(n <- i64) -> i64 {
+	if n == 3 {
+		3
+	} else if n == 2 {
+		2
+	} else {
+		1
+	}
+}

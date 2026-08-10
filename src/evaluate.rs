@@ -34,7 +34,7 @@ where
 
     let mut registers = [const { Value::Runtime }; MAX_REGISTERS];
 
-    let mut fp = 0;
+    let mut fp = None;
 
     let mut b = 0;
     let mut i = 0;
@@ -160,7 +160,9 @@ where
                     );
                 }
                 Instruction::Push(value) => {
-                    fp = stack.len();
+                    if fp.is_none() {
+                        fp = Some(stack.len());
+                    }
 
                     stack.push(
                         dereference_value(
@@ -185,6 +187,8 @@ where
                     callee,
                     temporary: to,
                 } => {
+                    let fp = fp.take().unwrap_or(stack.len());
+
                     match dereference_value(
                         stack.as_slice(),
                         call_frames.as_slice(),

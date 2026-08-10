@@ -51,15 +51,33 @@ pub fn translate(ast: &Ast, names: &HashMap<Span, Span>, types: &TypeChecker) ->
                 })
                 .copied()
         {
+            let block_index = if parameters.is_empty() {
+                block_index
+            } else {
+                translator.switch_to_block(block_index);
+
+                for (p, parameter) in parameters.iter().enumerate() {
+                    translator.push_instruction(Instruction::Pop);
+
+                    translator
+                        .addresses
+                        .insert(parameter.name().span(), Addresslike::CallArgument(p));
+                }
+
+                let after_arguments = translator.next_block();
+
+                let Some(block) = translator.blocks.get_mut(usize::from(block_index)) else {
+                    unreachable!("we're guaranteed to have a block by now");
+                };
+
+                if block.terminator.is_none() {
+                    block.terminator = Some(BlockTerminator::Jump(after_arguments));
+                }
+
+                after_arguments
+            };
+
             translator.switch_to_block(block_index);
-
-            for (p, parameter) in parameters.iter().enumerate() {
-                translator.push_instruction(Instruction::Pop);
-
-                translator
-                    .addresses
-                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
-            }
 
             let last_in_fn = translator.last_in_fn;
 
@@ -800,7 +818,7 @@ impl Translator {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true_block = BlockIndex(self.blocks.len());
+        let when_true_block = self.next_block();
 
         if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
@@ -809,8 +827,6 @@ impl Translator {
                 otherwise: BlockIndex(usize::MAX),
             });
         }
-
-        self.next_block();
 
         self.translate_expr(ast, names, types, rhs);
 
@@ -897,7 +913,7 @@ impl Translator {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let otherwise_block = BlockIndex(self.blocks.len());
+        let otherwise_block = self.next_block();
 
         if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
@@ -906,8 +922,6 @@ impl Translator {
                 otherwise: otherwise_block,
             });
         }
-
-        self.next_block();
 
         self.translate_expr(ast, names, types, rhs);
 
@@ -994,7 +1008,7 @@ impl Translator {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true_block = BlockIndex(self.blocks.len());
+        let when_true_block = self.next_block();
 
         if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
@@ -1003,8 +1017,6 @@ impl Translator {
                 otherwise: BlockIndex(usize::MAX),
             });
         }
-
-        self.next_block();
 
         self.translate_expr(ast, names, types, when_true);
 
@@ -1146,35 +1158,29 @@ impl Translator {
         let condition = self
             .values
             .pop()
-            .expect("if expressions are enforced to have conditions by an earlier stage");
+            .expect("every expression produces a value");
 
         let current_block = self
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let then_branch = BlockIndex(self.blocks.len());
+        let when_true_block = self.next_block();
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
-            && block.terminator.is_none()
-        {
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition,
-                when_true: then_branch,
+                when_true: when_true_block,
                 otherwise: BlockIndex(usize::MAX),
             });
         }
 
-        self.next_block();
-
         self.translate_expr(ast, names, types, when_true);
 
-        if let Some(block) = self.blocks.get_mut(usize::from(then_branch))
-            && block.terminator.is_none()
-        {
-            block.terminator = Some(BlockTerminator::Jump(condition_block));
-        }
+        let when_true_block = self
+            .current_block
+            .expect("if expressions can only exist in a block");
 
-        let after_all = self.next_block();
+        let otherwise_block = self.next_block();
 
         if let BlockTerminator::Branch { otherwise, .. } = self
             .blocks
@@ -1182,14 +1188,20 @@ impl Translator {
             .and_then(|block| block.terminator.as_mut())
             .expect("the destination to backpatch was set just before")
         {
-            *otherwise = after_all;
+            *otherwise = otherwise_block;
         }
+
+        if let Some(block) = self.blocks.get_mut(usize::from(when_true_block))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Jump(condition_block));
+        }
+
+        self.last_in_fn = last_in_fn;
 
         self.values.pop();
 
         self.values.push(Value::Unit);
-
-        self.last_in_fn = last_in_fn;
 
         if self.last_in_fn {
             self.emit_return();
