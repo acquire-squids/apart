@@ -1,0 +1,3 @@
+funky main() {
+	print_bool(true && true || true);
+}

@@ -483,11 +483,21 @@ impl Translator {
             Some(Expr::Return(value)) => {
                 let last_in_fn = self.last_in_fn;
 
-                self.last_in_fn = true;
+                self.last_in_fn = false;
 
                 self.translate_expr(ast, names, types, *value);
 
                 self.last_in_fn = last_in_fn;
+
+                let value = self
+                    .values
+                    .last()
+                    .cloned()
+                    .expect("every expression produces a value");
+
+                self.values.push(value);
+
+                self.emit_return();
             }
             Some(Expr::AsUnit(value)) => {
                 let last_in_fn = self.last_in_fn;
@@ -777,7 +787,7 @@ impl Translator {
         let lhs = self
             .values
             .pop()
-            .expect("every binary left operand should produce a value");
+            .expect("every expression produces a value");
 
         let address = Address {
             block_index: self
@@ -786,8 +796,6 @@ impl Translator {
             offset: self.instructions_len(),
             version: 0,
         };
-
-        self.values.push(Value::Address(address));
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
@@ -798,12 +806,12 @@ impl Translator {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true = BlockIndex(self.blocks.len());
+        let when_true_block = BlockIndex(self.blocks.len());
 
         if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition: Value::Address(address),
-                when_true,
+                when_true: when_true_block,
                 otherwise: BlockIndex(usize::MAX),
             });
         }
@@ -812,26 +820,52 @@ impl Translator {
 
         self.translate_expr(ast, names, types, rhs);
 
-        if last_in_fn {
-            self.emit_return();
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        };
+
+        let rhs = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        self.push_instruction(Instruction::Assign {
+            value: rhs,
+            to: Value::Address(address),
+        });
+
+        let after_all = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self
+            .current_block
+            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+        {
+            block.terminator = Some(BlockTerminator::Jump(after_all));
         }
 
-        let after_all = self.next_block();
-
-        if last_in_fn {
-            self.emit_return();
-        }
-
-        if let BlockTerminator::Branch { otherwise, .. } = self
+        if let Some(BlockTerminator::Branch { otherwise, .. }) = self
             .blocks
             .get_mut(usize::from(current_block))
             .and_then(|block| block.terminator.as_mut())
-            .expect("the destination to backpatch was set just before")
         {
             *otherwise = after_all;
         }
 
         self.last_in_fn = last_in_fn;
+
+        self.next_block();
+
+        self.values.push(Value::Address(Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        }));
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
     }
 
     fn translate_or(
@@ -850,7 +884,7 @@ impl Translator {
         let lhs = self
             .values
             .pop()
-            .expect("every binary left operand should produce a value");
+            .expect("every expression produces a value");
 
         let address = Address {
             block_index: self
@@ -859,8 +893,6 @@ impl Translator {
             offset: self.instructions_len(),
             version: 0,
         };
-
-        self.values.push(Value::Address(address));
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
@@ -871,13 +903,13 @@ impl Translator {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let otherwise = BlockIndex(self.blocks.len());
+        let otherwise_block = BlockIndex(self.blocks.len());
 
         if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition: Value::Address(address),
                 when_true: BlockIndex(usize::MAX),
-                otherwise,
+                otherwise: otherwise_block,
             });
         }
 
@@ -885,26 +917,52 @@ impl Translator {
 
         self.translate_expr(ast, names, types, rhs);
 
-        if last_in_fn {
-            self.emit_return();
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        };
+
+        let rhs = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        self.push_instruction(Instruction::Assign {
+            value: rhs,
+            to: Value::Address(address),
+        });
+
+        let after_all = BlockIndex(self.blocks.len());
+
+        if let Some(block) = self
+            .current_block
+            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+        {
+            block.terminator = Some(BlockTerminator::Jump(after_all));
         }
 
-        let after_all = self.next_block();
-
-        if last_in_fn {
-            self.emit_return();
-        }
-
-        if let BlockTerminator::Branch { when_true, .. } = self
+        if let Some(BlockTerminator::Branch { when_true, .. }) = self
             .blocks
             .get_mut(usize::from(current_block))
             .and_then(|block| block.terminator.as_mut())
-            .expect("the destination to backpatch was set just before")
         {
             *when_true = after_all;
         }
 
         self.last_in_fn = last_in_fn;
+
+        self.next_block();
+
+        self.values.push(Value::Address(Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        }));
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
     }
 
     fn translate_if(
@@ -923,45 +981,57 @@ impl Translator {
         let condition = self
             .values
             .pop()
-            .expect("if expressions are enforced to have conditions by an earlier stage");
+            .expect("every expression produces a value");
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("binary expressions only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.push_instruction(Instruction::Assign {
+            value: Value::Runtime,
+            to: Value::Address(address),
+        });
 
         let current_block = self
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let then_branch = BlockIndex(self.blocks.len());
+        let when_true_block = BlockIndex(self.blocks.len());
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
-            && block.terminator.is_none()
-        {
+        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition,
-                when_true: then_branch,
+                when_true: when_true_block,
                 otherwise: BlockIndex(usize::MAX),
             });
         }
 
         self.next_block();
 
-        self.last_in_fn = last_in_fn;
-
         self.translate_expr(ast, names, types, when_true);
 
-        let then_branch = BlockIndex(self.blocks.len() - 1);
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        };
 
-        let else_branch = BlockIndex(self.blocks.len());
+        let value = self.values.pop().expect("all expressions produce a value");
 
-        self.next_block();
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
 
-        self.translate_expr(ast, names, types, otherwise);
+        let when_true_block = self
+            .current_block
+            .expect("if expressions can only exist in a block");
 
-        let after_all = self.next_block();
-
-        if let Some(block) = self.blocks.get_mut(usize::from(then_branch))
-            && matches!(block.terminator, Some(BlockTerminator::Jump(_)) | None)
-        {
-            block.terminator = Some(BlockTerminator::Jump(after_all));
-        }
+        let otherwise_block = self.next_block();
 
         if let BlockTerminator::Branch { otherwise, .. } = self
             .blocks
@@ -969,14 +1039,44 @@ impl Translator {
             .and_then(|block| block.terminator.as_mut())
             .expect("the destination to backpatch was set just before")
         {
-            *otherwise = else_branch;
+            *otherwise = otherwise_block;
         }
 
-        if !self.last_in_fn {
-            self.values.pop();
-            self.values.pop();
+        self.translate_expr(ast, names, types, otherwise);
 
-            self.values.push(Value::Runtime);
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        };
+
+        let value = self.values.pop().expect("all expressions produce a value");
+
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
+
+        let after_all = self.next_block();
+
+        if let Some(block) = self.blocks.get_mut(usize::from(when_true_block))
+            && block.terminator.is_none()
+        {
+            block.terminator = Some(BlockTerminator::Jump(after_all));
+        }
+
+        self.last_in_fn = last_in_fn;
+
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address.version + 1,
+        };
+
+        self.values.push(Value::Address(address));
+
+        if self.last_in_fn {
+            self.emit_return();
         }
     }
 

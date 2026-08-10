@@ -28,6 +28,64 @@ mod and {
 }
 
 #[cfg(test)]
+mod and_and_and_and_and {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "and_and_and_and_and.txt"
+    ));
+
+    #[test]
+    fn and_and_and_and_and() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
+    }
+
+    #[test]
+    fn and_and_and_and_and_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
+    }
+}
+
+#[cfg(test)]
+mod and_and_or {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "and_and_or.txt"
+    ));
+
+    #[test]
+    fn and_and_or() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
+    }
+
+    #[test]
+    fn and_and_or_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
+    }
+}
+
+#[cfg(test)]
 mod empty {
     const SOURCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -140,6 +198,35 @@ mod or {
             .expect("examples should always compile");
 
         assert_eq!(str::from_utf8(out.as_slice()), Ok("true\nfalse\n"));
+    }
+}
+
+#[cfg(test)]
+mod or_and_or_and_or {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "or_and_or_and_or.txt"
+    ));
+
+    #[test]
+    fn or_and_or_and_or() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
+    }
+
+    #[test]
+    fn or_and_or_and_or_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("true\n"));
     }
 }
 
