@@ -1,0 +1,17 @@
+funky main() {
+	let pos = Vec3f {
+		z <- 3.0,
+		x <- 1.0,
+		y <- 2.0,
+	} in {
+		print_f64(pos.x);
+		print_f64(pos.y);
+		print_f64(pos.z);
+	}
+}
+
+product Vec3f {
+	x <- f64,
+	y <- f64,
+	z <- f64,
+}

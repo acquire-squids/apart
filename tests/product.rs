@@ -57,6 +57,35 @@ mod product_identity {
 }
 
 #[cfg(test)]
+mod product_rearrange {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "product_rearrange.txt"
+    ));
+
+    #[test]
+    fn product_rearrange() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("1.0\n2.0\n3.0\n"));
+    }
+
+    #[test]
+    fn product_rearrange_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("1.0\n2.0\n3.0\n"));
+    }
+}
+
+#[cfg(test)]
 mod product_ssa_if_0 {
     const SOURCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
