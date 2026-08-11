@@ -13,7 +13,9 @@ pub fn check_types(
 
     type_checker.check_primitives(ast);
 
-    type_checker.check_types(ast, names);
+    for root in ast.roots() {
+        type_checker.check_type(ast, names, *root);
+    }
 
     for root in ast.roots() {
         type_checker.check_item(ast, names, *root);
@@ -60,6 +62,11 @@ pub enum Type {
         fields: Vec<(String, TypeIndex)>,
         generics: Vec<TypeIndex>,
     },
+    Sum {
+        name: String,
+        variants: Vec<TypeIndex>,
+        generics: Vec<TypeIndex>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -72,6 +79,7 @@ impl From<TypeIndex> for usize {
 }
 
 impl Type {
+    #[allow(clippy::too_many_lines)]
     fn eq(&self, types: &[Self], other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(a), Self::Primitive(b)) => a == b,
@@ -151,6 +159,46 @@ impl Type {
                                 })
                         })
             }
+            (
+                Self::Sum {
+                    name: a_name,
+                    variants: a_variants,
+                    generics: a_generics,
+                },
+                Self::Sum {
+                    name: b_name,
+                    variants: b_variants,
+                    generics: b_generics,
+                },
+            ) => {
+                a_name == b_name
+                    && a_variants
+                        .iter()
+                        .zip(b_variants)
+                        .all(|(a_variant_type, b_variant_type)| {
+                            types
+                                .get(usize::from(*a_variant_type))
+                                .and_then(|a_variant_type| {
+                                    Some((a_variant_type, types.get(usize::from(*b_variant_type))?))
+                                })
+                                .is_some_and(|(a_variant_type, b_variant_type)| {
+                                    a_variant_type.eq(types, b_variant_type)
+                                })
+                        })
+                    && a_generics
+                        .iter()
+                        .zip(b_generics)
+                        .all(|(a_generic_type, b_generic_type)| {
+                            types
+                                .get(usize::from(*a_generic_type))
+                                .and_then(|a_generic_type| {
+                                    Some((a_generic_type, types.get(usize::from(*b_generic_type))?))
+                                })
+                                .is_some_and(|(a_generic_type, b_generic_type)| {
+                                    a_generic_type.eq(types, b_generic_type)
+                                })
+                        })
+            }
             (_, _) => false,
         }
     }
@@ -170,7 +218,7 @@ impl Type {
             .to_string(),
             Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
             Self::Generic(name) | Self::Existential(name) => name.clone(),
-            Self::Product { name, generics, .. } => {
+            Self::Product { name, generics, .. } | Self::Sum { name, generics, .. } => {
                 let mut buffer = name.clone();
 
                 if !generics.is_empty() {
@@ -258,6 +306,10 @@ pub enum Error {
     GenericCountMismatch { expected: usize, got: usize },
     GenericsOnPrimitive,
     GenericsOnGeneric,
+    NotASum,
+    InvalidSumVariant,
+    NonExistentSumVariant,
+    TooManyVariants,
 }
 
 impl fmt::Display for Error {
@@ -305,6 +357,12 @@ impl fmt::Display for Error {
             }
             Self::GenericsOnPrimitive => write!(f, "primitive types cannot have generics"),
             Self::GenericsOnGeneric => write!(f, "generics cannot have generics"),
+            Self::NotASum => write!(f, "this type is not a sum"),
+            Self::InvalidSumVariant => write!(f, "a sum variant must be a name and some fields"),
+            Self::NonExistentSumVariant => write!(f, "this variant does not exist on the sum"),
+            Self::TooManyVariants => {
+                write!(f, "a sum may not have more than {} variants", u16::MAX)
+            }
         }
     }
 }
@@ -434,58 +492,109 @@ impl TypeChecker {
         }
     }
 
-    fn check_types(&mut self, ast: &Ast, names: &HashMap<Span, Span>) {
-        for root in ast.roots() {
-            match ast.get_item(*root).map(Spanned::kind) {
-                Some(Item::Product {
-                    name,
-                    fields,
-                    generics,
-                }) => {
-                    let mut generic_type_indices = vec![];
+    fn check_type(&mut self, ast: &Ast, names: &HashMap<Span, Span>, item: ItemIndex) {
+        match ast.get_item(item).map(Spanned::kind) {
+            Some(Item::Product {
+                name,
+                fields,
+                generics,
+            }) => {
+                let mut generic_type_indices = vec![];
 
-                    for generic in generics {
-                        let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+                for generic in generics {
+                    let type_index = self.push_type(Type::Existential(generic.kind().clone()));
 
-                        self.type_map.insert(generic.span(), type_index);
+                    self.type_map.insert(generic.span(), type_index);
 
-                        generic_type_indices.push(type_index);
-                    }
-
-                    let fields = fields
-                        .iter()
-                        .map(|field| {
-                            self.check_type_signature(names, field.ty());
-
-                            let type_index = self
-                                .get_type_index(field.ty().span())
-                                .expect("the type should have been set in the previous call");
-
-                            self.type_map.insert(field.name().span(), type_index);
-
-                            (
-                                field.name().kind().clone(),
-                                self.get_type_index_or_error(field.name().span()),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-
-                    let type_index = self.push_type(Type::Product {
-                        name: name.kind().clone(),
-                        fields,
-                        generics: generic_type_indices,
-                    });
-
-                    self.type_map.insert(name.span(), type_index);
+                    generic_type_indices.push(type_index);
                 }
-                None | Some(Item::Primitive(_) | Item::NativeFn { .. } | Item::Fn { .. }) => {}
+
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        self.check_type_signature(names, field.ty());
+
+                        let type_index = self
+                            .get_type_index(field.ty().span())
+                            .expect("the type should have been set in the previous call");
+
+                        self.type_map.insert(field.name().span(), type_index);
+
+                        (
+                            field.name().kind().clone(),
+                            self.get_type_index_or_error(field.name().span()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                let type_index = self.push_type(Type::Product {
+                    name: name.kind().clone(),
+                    fields,
+                    generics: generic_type_indices,
+                });
+
+                self.type_map.insert(name.span(), type_index);
             }
+            Some(Item::Sum {
+                name,
+                variants,
+                generics,
+            }) => {
+                let mut generic_type_indices = vec![];
+
+                for generic in generics {
+                    let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+
+                    self.type_map.insert(generic.span(), type_index);
+
+                    generic_type_indices.push(type_index);
+                }
+
+                let variants = variants
+                    .iter()
+                    .map(|variant| {
+                        self.check_type(ast, names, *variant);
+
+                        self.get_type_index(
+                            ast.get_item(*variant)
+                                .map(Spanned::kind)
+                                .and_then(|item| {
+                                    if let Item::Product { name, .. } = item {
+                                        Some(name.span())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .expect("all items exist"),
+                        )
+                        .expect("the type exists from the check_type call")
+                    })
+                    .collect::<Vec<_>>();
+
+                if variants.len() > usize::from(u16::MAX) {
+                    self.errors.push(Spanned::new(
+                        Error::TooManyVariants,
+                        ast.get_item(item)
+                            .map(Spanned::span)
+                            .expect("if the item exists, the span does too"),
+                    ));
+                }
+
+                let type_index = self.push_type(Type::Sum {
+                    name: name.kind().clone(),
+                    variants,
+                    generics: generic_type_indices,
+                });
+
+                self.type_map.insert(name.span(), type_index);
+            }
+            None | Some(Item::Primitive(_) | Item::NativeFn { .. } | Item::Fn { .. }) => {}
         }
     }
 
     fn check_item(&mut self, ast: &Ast, names: &HashMap<Span, Span>, item: ItemIndex) {
         match ast.get_item(item).map(Spanned::kind) {
-            None | Some(Item::Primitive(_) | Item::Product { .. }) => {}
+            None | Some(Item::Primitive(_) | Item::Product { .. } | Item::Sum { .. }) => {}
             Some(Item::NativeFn { .. }) => {
                 self.check_native_function(ast, names, item);
             }
@@ -590,9 +699,38 @@ impl TypeChecker {
                     generics,
                 })
             }
+            Some(Type::Sum {
+                name,
+                variants,
+                generics,
+            }) => {
+                let name = name.clone();
+
+                let generics = generics.clone();
+
+                let variants = variants
+                    .clone()
+                    .into_iter()
+                    .map(|type_index| {
+                        self.substitute_type(originals, replacements, type_index)
+                    })
+                    .collect::<Vec<_>>();
+
+                let generics = generics
+                    .into_iter()
+                    .map(|type_index| self.substitute_type(originals, replacements, type_index))
+                    .collect::<Vec<_>>();
+
+                self.push_type(Type::Sum {
+                    name,
+                    variants,
+                    generics,
+                })
+            }
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_type_signature(&mut self, names: &HashMap<Span, Span>, ty: &Spanned<TypeSignature>) {
         match ty.kind() {
             TypeSignature::Normal { name, generics } => {
@@ -673,6 +811,49 @@ impl TypeChecker {
                             let type_index = self.push_type(Type::Product {
                                 name: name.kind().clone(),
                                 fields,
+                                generics: checked_generics,
+                            });
+
+                            self.type_map.insert(ty.span(), type_index);
+                        }
+                    }
+                    Type::Sum {
+                        variants,
+                        generics: generic_types,
+                        ..
+                    } => {
+                        if generic_types.is_empty() && !checked_generics.is_empty() {
+                            self.errors
+                                .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
+
+                            self.type_map.insert(ty.span(), self.type_unknown());
+                        } else if checked_generics.len() != checked_generics.len() {
+                            self.errors.push(Spanned::new(
+                                Error::GenericCountMismatch {
+                                    expected: generic_types.len(),
+                                    got: checked_generics.len(),
+                                },
+                                ty.span(),
+                            ));
+
+                            self.type_map.insert(ty.span(), self.type_unknown());
+                        } else {
+                            let variants =
+                                variants.iter().fold(vec![], |mut accum, variant_type| {
+                                    let type_index = self.substitute_type(
+                                        generic_types.as_slice(),
+                                        checked_generics.as_slice(),
+                                        *variant_type,
+                                    );
+
+                                    accum.push(type_index);
+
+                                    accum
+                                });
+
+                            let type_index = self.push_type(Type::Sum {
+                                name: name.kind().clone(),
+                                variants,
                                 generics: checked_generics,
                             });
 
@@ -817,28 +998,21 @@ impl TypeChecker {
                             None
                         }
                     })
-                    .map(|return_type| match self.apply(return_type, &mut generics) {
-                        Ok(return_type) => return_type,
-                        Err(error) => {
-                            self.errors.push(Spanned::new(
-                                error,
-                                ast.get_expr(*body)
-                                    .map(Spanned::span)
-                                    .expect("every expression has a span"),
-                            ));
-
-                            self.type_unknown()
-                        }
-                    })
+                    .map(|return_type| self.apply(return_type, &mut generics))
                     .expect("all functions have a return type");
 
                 let fn_return_type = self.fn_return_type;
 
                 self.fn_return_type = Some(expected_return_type);
 
-                if let Err(error) =
-                    self.check(ast, names, *body, expected_return_type, &mut generics)
-                {
+                if let Err(error) = self.check(
+                    ast,
+                    names,
+                    *body,
+                    expected_return_type,
+                    &mut generics,
+                    false,
+                ) {
                     self.errors.push(Spanned::new(
                         error,
                         ast.get_expr(*body)
@@ -918,7 +1092,7 @@ impl TypeChecker {
                 otherwise,
             } => {
                 if self
-                    .check(ast, names, *condition, self.type_boolean(), context)
+                    .check(ast, names, *condition, self.type_boolean(), context, true)
                     .is_err()
                 {
                     let condition_span = ast
@@ -932,7 +1106,9 @@ impl TypeChecker {
 
                 let when_true_type = self.infer(ast, names, *when_true, context);
 
-                if let Err(error) = self.check(ast, names, *otherwise, when_true_type, context) {
+                if let Err(error) =
+                    self.check(ast, names, *otherwise, when_true_type, context, true)
+                {
                     let otherwise_span = ast
                         .get_expr(*otherwise)
                         .map(Spanned::span)
@@ -950,7 +1126,7 @@ impl TypeChecker {
                 when_true,
             } => {
                 if self
-                    .check(ast, names, *condition, self.type_boolean(), context)
+                    .check(ast, names, *condition, self.type_boolean(), context, true)
                     .is_err()
                 {
                     let condition_span = ast
@@ -978,7 +1154,8 @@ impl TypeChecker {
                         "the annotation should be resolved by the `check_type_signature` call",
                     );
 
-                    if let Err(error) = self.check(ast, names, *value, annotation_ty, context) {
+                    if let Err(error) = self.check(ast, names, *value, annotation_ty, context, true)
+                    {
                         let value_span = ast
                             .get_expr(*value)
                             .map(Spanned::span)
@@ -1014,7 +1191,7 @@ impl TypeChecker {
 
                         for (argument, parameter) in arguments.iter().zip(&parameters) {
                             if let Err(error) =
-                                self.check(ast, names, *argument, *parameter, &mut context)
+                                self.check(ast, names, *argument, *parameter, &mut context, false)
                             {
                                 self.errors.push(Spanned::new(
                                     error,
@@ -1025,14 +1202,7 @@ impl TypeChecker {
                             }
                         }
 
-                        match self.apply(return_type, &mut context) {
-                            Ok(type_index) => type_index,
-                            Err(error) => {
-                                self.errors.push(Spanned::new(error, span));
-
-                                self.type_unknown()
-                            }
-                        }
+                        self.apply(return_type, &mut context)
                     } else {
                         self.errors.push(Spanned::new(
                             Error::CallArgumentCountMismatch {
@@ -1064,6 +1234,7 @@ impl TypeChecker {
                     self.fn_return_type
                         .expect("returns can only happen in functions"),
                     context,
+                    true,
                 ) {
                     self.errors.push(Spanned::new(error, span));
                 }
@@ -1078,6 +1249,7 @@ impl TypeChecker {
             Expr::Product { name, fields } => {
                 if let Some(Type::Product {
                     fields: field_types,
+                    generics,
                     ..
                 }) = names
                     .get(&name.span())
@@ -1085,6 +1257,8 @@ impl TypeChecker {
                     .cloned()
                 {
                     let error_count = self.errors.len();
+
+                    let mut context = context.clone();
 
                     let mut checked_fields = vec![];
 
@@ -1106,7 +1280,14 @@ impl TypeChecker {
                                 .nth(1)
                                 .is_none()
                             {
-                                match self.check(ast, names, *field, *field_type, context) {
+                                match self.check(
+                                    ast,
+                                    names,
+                                    *field,
+                                    *field_type,
+                                    &mut context,
+                                    false,
+                                ) {
                                     Ok(ty) => {
                                         checked_fields.push((field_name.kind().clone(), ty));
                                     }
@@ -1142,10 +1323,15 @@ impl TypeChecker {
                     }
 
                     if self.errors.len() == error_count {
+                        let generics = generics
+                            .into_iter()
+                            .map(|generic| self.apply(generic, &mut context))
+                            .collect::<Vec<_>>();
+
                         self.push_type(Type::Product {
                             name: name.kind().clone(),
                             fields: checked_fields,
-                            generics: vec![],
+                            generics,
                         })
                     } else {
                         self.type_unknown()
@@ -1175,7 +1361,9 @@ impl TypeChecker {
             UnaryOp::Not => {
                 self.infer(ast, names, operand, context);
 
-                if let Err(error) = self.check(ast, names, operand, self.type_boolean(), context) {
+                if let Err(error) =
+                    self.check(ast, names, operand, self.type_boolean(), context, true)
+                {
                     let span = ast
                         .get_expr(operand)
                         .map(Spanned::span)
@@ -1191,8 +1379,9 @@ impl TypeChecker {
             UnaryOp::Negate => {
                 self.infer(ast, names, operand, context);
 
-                if let Err(_) = self.check(ast, names, operand, self.type_integer(), context)
-                    && let Err(_) = self.check(ast, names, operand, self.type_float(), context)
+                if let Err(_) = self.check(ast, names, operand, self.type_integer(), context, true)
+                    && let Err(_) =
+                        self.check(ast, names, operand, self.type_float(), context, true)
                 {
                     let span = ast
                         .get_expr(operand)
@@ -1219,6 +1408,106 @@ impl TypeChecker {
         context: &mut Vec<(String, TypeIndex)>,
     ) -> TypeIndex {
         match op {
+            BinaryOp::VariantAccess => {
+                let lhs_span = ast
+                    .get_expr(lhs)
+                    .map(Spanned::span)
+                    .expect("all expressions exist");
+
+                if let Some(Type::Sum { variants, .. }) = names
+                    .get(&lhs_span)
+                    .and_then(|span| self.get_type_index(*span))
+                    .and_then(|type_index| self.get_type(type_index))
+                {
+                    let rhs_span = ast
+                        .get_expr(rhs)
+                        .map(Spanned::span)
+                        .expect("if the expression exists, the span does too");
+
+                    if let Expr::Product { name, .. } = ast
+                        .get_expr(rhs)
+                        .map(Spanned::kind)
+                        .expect("all expressions exist")
+                    {
+                        if let Some((variant_index, variant_type)) =
+                            variants.iter().enumerate().find_map(|(i, variant)| {
+                                self.get_type(*variant).and_then(|product| {
+                                    if let Type::Product {
+                                        name: variant_name, ..
+                                    } = product
+                                        && name.kind() == variant_name
+                                    {
+                                        Some((i, *variant))
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                        {
+                            let mut context = context.clone();
+
+                            match self.check(ast, names, rhs, variant_type, &mut context, true) {
+                                Ok(type_index) => {
+                                    let Some(Type::Sum {
+                                        name,
+                                        variants,
+                                        generics,
+                                    }) = names
+                                        .get(&lhs_span)
+                                        .and_then(|span| self.get_type_index(*span))
+                                        .and_then(|type_index| self.get_type(type_index))
+                                        .cloned()
+                                    else {
+                                        unreachable!(
+                                            "the outer if condition guarantees this is true"
+                                        );
+                                    };
+
+                                    let ty = Type::Sum {
+                                        name,
+                                        variants: variants
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(i, variant)| {
+                                                if i == variant_index {
+                                                    type_index
+                                                } else {
+                                                    variant
+                                                }
+                                            })
+                                            .collect::<Vec<_>>(),
+                                        generics: generics
+                                            .into_iter()
+                                            .map(|generic| self.apply(generic, &mut context))
+                                            .collect::<Vec<_>>(),
+                                    };
+
+                                    self.push_type(ty)
+                                }
+                                Err(error) => {
+                                    self.errors.push(Spanned::new(error, rhs_span));
+
+                                    self.type_unknown()
+                                }
+                            }
+                        } else {
+                            self.errors
+                                .push(Spanned::new(Error::NonExistentSumVariant, rhs_span));
+
+                            self.type_unknown()
+                        }
+                    } else {
+                        self.errors
+                            .push(Spanned::new(Error::InvalidSumVariant, rhs_span));
+
+                        self.type_unknown()
+                    }
+                } else {
+                    self.errors.push(Spanned::new(Error::NotASum, lhs_span));
+
+                    self.type_unknown()
+                }
+            }
             BinaryOp::Access => {
                 let lhs_type = self.infer(ast, names, lhs, context);
 
@@ -1278,8 +1567,8 @@ impl TypeChecker {
             | BinaryOp::Add
             | BinaryOp::Subtract => {
                 match self
-                    .check(ast, names, lhs, self.type_integer(), context)
-                    .or_else(|_| self.check(ast, names, lhs, self.type_float(), context))
+                    .check(ast, names, lhs, self.type_integer(), context, true)
+                    .or_else(|_| self.check(ast, names, lhs, self.type_float(), context, true))
                 {
                     Err(_) => {
                         let span = ast
@@ -1292,8 +1581,8 @@ impl TypeChecker {
 
                         self.type_unknown()
                     }
-                    Ok(lhs_type) => {
-                        if let Err(error) = self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context, true) {
+                        Err(error) => {
                             let span = ast
                                 .get_expr(rhs)
                                 .map(Spanned::span)
@@ -1302,10 +1591,9 @@ impl TypeChecker {
                             self.errors.push(Spanned::new(error, span));
 
                             self.type_unknown()
-                        } else {
-                            lhs_type
                         }
-                    }
+                        Ok(rhs_type) => rhs_type,
+                    },
                 }
             }
             BinaryOp::Less
@@ -1313,8 +1601,8 @@ impl TypeChecker {
             | BinaryOp::LessOrEqual
             | BinaryOp::GreaterOrEqual => {
                 match self
-                    .check(ast, names, lhs, self.type_integer(), context)
-                    .or_else(|_| self.check(ast, names, lhs, self.type_float(), context))
+                    .check(ast, names, lhs, self.type_integer(), context, true)
+                    .or_else(|_| self.check(ast, names, lhs, self.type_float(), context, true))
                 {
                     Err(_) => {
                         let span = ast
@@ -1326,8 +1614,8 @@ impl TypeChecker {
 
                         self.type_unknown()
                     }
-                    Ok(lhs_type) => {
-                        if let Err(error) = self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context, true) {
+                        Err(error) => {
                             let span = ast
                                 .get_expr(rhs)
                                 .map(Spanned::span)
@@ -1336,14 +1624,13 @@ impl TypeChecker {
                             self.errors.push(Spanned::new(error, span));
 
                             self.type_unknown()
-                        } else {
-                            self.type_boolean()
                         }
-                    }
+                        Ok(_) => self.type_boolean(),
+                    },
                 }
             }
             BinaryOp::And | BinaryOp::Or => {
-                match self.check(ast, names, lhs, self.type_boolean(), context) {
+                match self.check(ast, names, lhs, self.type_boolean(), context, true) {
                     Err(_) => {
                         let span = ast
                             .get_expr(lhs)
@@ -1355,8 +1642,8 @@ impl TypeChecker {
 
                         self.type_unknown()
                     }
-                    Ok(lhs_type) => {
-                        if let Err(error) = self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context, true) {
+                        Err(error) => {
                             let span = ast
                                 .get_expr(rhs)
                                 .map(Spanned::span)
@@ -1365,42 +1652,151 @@ impl TypeChecker {
                             self.errors.push(Spanned::new(error, span));
 
                             self.type_unknown()
-                        } else {
-                            self.type_boolean()
                         }
-                    }
+                        Ok(rhs_type) => rhs_type,
+                    },
                 }
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
                 let lhs_type = self.infer(ast, names, lhs, context);
 
-                if let Err(error) = self.check(ast, names, rhs, lhs_type, context) {
-                    let span = ast
-                        .get_expr(rhs)
-                        .map(Spanned::span)
-                        .expect("all expressions exist");
+                match self.check(ast, names, rhs, lhs_type, context, true) {
+                    Err(error) => {
+                        let span = ast
+                            .get_expr(rhs)
+                            .map(Spanned::span)
+                            .expect("all expressions exist");
 
-                    self.errors.push(Spanned::new(error, span));
+                        self.errors.push(Spanned::new(error, span));
 
-                    self.type_unknown()
-                } else {
-                    self.type_boolean()
+                        self.type_unknown()
+                    }
+                    Ok(_) => self.type_boolean(),
                 }
             }
             BinaryOp::Assign => {
                 let lhs_type = self.infer(ast, names, lhs, context);
 
-                if let Err(error) = self.check(ast, names, rhs, lhs_type, context) {
-                    let span = ast
-                        .get_expr(rhs)
-                        .map(Spanned::span)
-                        .expect("all expressions exist");
+                match self.check(ast, names, rhs, lhs_type, context, true) {
+                    Err(error) => {
+                        let span = ast
+                            .get_expr(rhs)
+                            .map(Spanned::span)
+                            .expect("all expressions exist");
 
-                    self.errors.push(Spanned::new(error, span));
+                        self.errors.push(Spanned::new(error, span));
 
-                    self.type_unknown()
-                } else {
-                    lhs_type
+                        self.type_unknown()
+                    }
+                    Ok(rhs_type) => {
+                        let rhs_span = ast
+                            .get_expr(rhs)
+                            .map(Spanned::span)
+                            .expect("if the expression exists, the span does too");
+
+                        match ast.get_expr(lhs).map(Spanned::kind) {
+                            Some(Expr::Name(_)) => {
+                                let lhs_span = ast
+                                    .get_expr(lhs)
+                                    .map(Spanned::span)
+                                    .and_then(|span| names.get(&span))
+                                    .expect("all expressions exist");
+
+                                self.type_map.insert(*lhs_span, rhs_type);
+                            }
+                            Some(Expr::Binary {
+                                op: BinaryOp::Access,
+                                lhs,
+                                rhs,
+                            }) => {
+                                if self
+                                    .check_inferred(lhs_type, self.type_unknown(), context)
+                                    .is_err()
+                                {
+                                    return self.type_unknown();
+                                }
+
+                                let lhs_span = ast
+                                    .get_expr(*lhs)
+                                    .map(Spanned::span)
+                                    .expect("all expressions exist");
+
+                                let Some(Expr::Name(accessor)) =
+                                    ast.get_expr(*rhs).map(Spanned::kind)
+                                else {
+                                    unreachable!("accessors are always names");
+                                };
+
+                                let mut context = context.clone();
+
+                                let Some(Type::Product {
+                                    fields, generics, ..
+                                }) = names
+                                    .get(&lhs_span)
+                                    .and_then(|span| self.get_type_from_span(*span))
+                                else {
+                                    unreachable!("accessees are always products");
+                                };
+
+                                let mut applied_generics = generics.clone();
+
+                                let field_index = fields
+                                    .iter()
+                                    .position(|(field_name, _)| field_name == accessor)
+                                    .expect("the field is guaranteed to exist");
+
+                                match self.check_inferred(
+                                    fields[field_index].1,
+                                    rhs_type,
+                                    &mut context,
+                                ) {
+                                    Err(type_index) => {
+                                        let error = Spanned::new(
+                                            Error::TypeMismatch {
+                                                expected: self
+                                                    .get_type(type_index)
+                                                    .map(|ty| ty.to_string(self.types.as_slice()))
+                                                    .expect("the type will exist by this point"),
+                                                got: self
+                                                    .get_type(rhs_type)
+                                                    .map(|ty| ty.to_string(self.types.as_slice()))
+                                                    .expect("the type will exist by this point"),
+                                            },
+                                            rhs_span,
+                                        );
+
+                                        self.errors.push(error);
+
+                                        return self.type_unknown();
+                                    }
+                                    Ok(type_index) => {
+                                        for generic in &mut applied_generics {
+                                            *generic = self.apply(*generic, &mut context);
+                                        }
+
+                                        let Some(Type::Product {
+                                            fields, generics, ..
+                                        }) = names
+                                            .get(&lhs_span)
+                                            .and_then(|span| self.get_type_index(*span))
+                                            .and_then(|type_index| {
+                                                self.types.get_mut(usize::from(type_index))
+                                            })
+                                        else {
+                                            unreachable!("accessees are always products");
+                                        };
+
+                                        fields[field_index].1 = type_index;
+
+                                        *generics = applied_generics;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        rhs_type
+                    }
                 }
             }
         }
@@ -1413,18 +1809,44 @@ impl TypeChecker {
         expr: ExprIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
+        overwrite: bool,
     ) -> Result<TypeIndex, Error> {
         let expr_type_index = self.infer(ast, names, expr, context);
 
         self.check_inferred(expr_type_index, should_be, context)
+            .map_err(|type_index| Error::TypeMismatch {
+                expected: self
+                    .get_type(should_be)
+                    .map(|ty| ty.to_string(self.types.as_slice()))
+                    .expect("all expressions have a type"),
+                got: self
+                    .get_type(type_index)
+                    .map(|ty| ty.to_string(self.types.as_slice()))
+                    .expect("all types exist"),
+            })
+            .inspect(|type_index| {
+                if overwrite {
+                    let ty = self
+                        .get_type(*type_index)
+                        .cloned()
+                        .expect("we just got this type, it'll exist");
+
+                    let Some(replace) = self.types.get_mut(usize::from(expr_type_index)) else {
+                        unreachable!("the type was just inferred, it'll exist");
+                    };
+
+                    *replace = ty;
+                }
+            })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_inferred(
         &mut self,
         inferred: TypeIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
-    ) -> Result<TypeIndex, Error> {
+    ) -> Result<TypeIndex, TypeIndex> {
         match (
             self.get_type(inferred).expect("all types exist"),
             self.get_type(should_be).expect("all types exist"),
@@ -1434,26 +1856,25 @@ impl TypeChecker {
                 if a == b {
                     Ok(should_be)
                 } else {
-                    Err(Error::TypeMismatch {
-                        expected: Type::Primitive(*b).to_string(self.types.as_slice()),
-                        got: Type::Primitive(*a).to_string(self.types.as_slice()),
-                    })
+                    Err(inferred)
                 }
             }
-            (Type::Generic(a), Type::Generic(b)) => {
+            (Type::Generic(a), Type::Generic(b)) | (Type::Existential(a), Type::Existential(b)) => {
                 if a == b {
                     Ok(should_be)
                 } else {
-                    Err(Error::TypeMismatch {
-                        expected: Type::Generic(b.clone()).to_string(self.types.as_slice()),
-                        got: Type::Generic(a.clone()).to_string(self.types.as_slice()),
-                    })
+                    Err(inferred)
                 }
             }
             (_, Type::Existential(name)) => {
                 context.push((name.clone(), inferred));
 
                 Ok(inferred)
+            }
+            (Type::Existential(name), _) => {
+                context.push((name.clone(), should_be));
+
+                Ok(should_be)
             }
             (
                 Type::Fn {
@@ -1473,37 +1894,57 @@ impl TypeChecker {
 
                 let mut return_type = *return_type;
 
+                let mut errored = false;
+
                 for (inferred_parameter, parameter) in
                     inferred_parameters.into_iter().zip(&mut parameters)
                 {
-                    *parameter = self.check_inferred(inferred_parameter, *parameter, context)?;
+                    match self.check_inferred(inferred_parameter, *parameter, context) {
+                        Ok(type_index) => {
+                            *parameter = type_index;
+                        }
+                        Err(type_index) => {
+                            *parameter = type_index;
+                            errored = true;
+                        }
+                    }
                 }
 
-                return_type = self.check_inferred(inferred_return_type, return_type, context)?;
+                match self.check_inferred(inferred_return_type, return_type, context) {
+                    Ok(type_index) => {
+                        return_type = type_index;
+                    }
+                    Err(type_index) => {
+                        return_type = type_index;
+                        errored = true;
+                    }
+                }
 
-                Ok(self.push_type(Type::Fn {
-                    parameters,
-                    return_type,
-                }))
+                if errored {
+                    Err(self.push_type(Type::Fn {
+                        parameters,
+                        return_type,
+                    }))
+                } else {
+                    Ok(self.push_type(Type::Fn {
+                        parameters,
+                        return_type,
+                    }))
+                }
             }
             (
-                a @ Type::Product {
+                Type::Product {
                     name: inferred_name,
                     fields: inferred_fields,
                     generics: inferred_generics,
                 },
-                b @ Type::Product {
+                Type::Product {
                     name,
                     fields,
                     generics,
                 },
             ) => {
-                if inferred_name != name {
-                    return Err(Error::TypeMismatch {
-                        expected: b.to_string(self.types.as_slice()),
-                        got: a.to_string(self.types.as_slice()),
-                    });
-                }
+                let mut errored = inferred_name != name;
 
                 let inferred_fields = inferred_fields.clone();
 
@@ -1518,24 +1959,109 @@ impl TypeChecker {
                 for ((_, inferred_field), (_, field)) in
                     inferred_fields.into_iter().zip(&mut fields)
                 {
-                    *field = self.check_inferred(inferred_field, *field, context)?;
+                    match self.check_inferred(inferred_field, *field, context) {
+                        Ok(type_index) => {
+                            *field = type_index;
+                        }
+                        Err(type_index) => {
+                            *field = type_index;
+                            errored = true;
+                        }
+                    }
                 }
 
                 for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
                 {
-                    *generic = self.check_inferred(inferred_generic, *generic, context)?;
+                    match self.check_inferred(inferred_generic, *generic, context) {
+                        Ok(type_index) => {
+                            *generic = type_index;
+                        }
+                        Err(type_index) => {
+                            *generic = type_index;
+                            errored = true;
+                        }
+                    }
                 }
 
-                Ok(self.push_type(Type::Product {
-                    name,
-                    fields,
-                    generics,
-                }))
+                if errored {
+                    Err(self.push_type(Type::Product {
+                        name,
+                        fields,
+                        generics,
+                    }))
+                } else {
+                    Ok(self.push_type(Type::Product {
+                        name,
+                        fields,
+                        generics,
+                    }))
+                }
             }
-            (a, b) => Err(Error::TypeMismatch {
-                expected: b.to_string(self.types.as_slice()),
-                got: a.to_string(self.types.as_slice()),
-            }),
+            (
+                Type::Sum {
+                    name: inferred_name,
+                    variants: inferred_variants,
+                    generics: inferred_generics,
+                },
+                Type::Sum {
+                    name,
+                    variants,
+                    generics,
+                },
+            ) => {
+                let mut errored = inferred_name != name;
+
+                let inferred_variants = inferred_variants.clone();
+
+                let inferred_generics = inferred_generics.clone();
+
+                let name = name.clone();
+
+                let mut variants = variants.clone();
+
+                let mut generics = generics.clone();
+
+                for (inferred_variant, variant) in inferred_variants.into_iter().zip(&mut variants)
+                {
+                    match self.check_inferred(inferred_variant, *variant, context) {
+                        Ok(type_index) => {
+                            *variant = type_index;
+                        }
+                        Err(type_index) => {
+                            *variant = type_index;
+                            errored = true;
+                        }
+                    }
+                }
+
+                for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
+                {
+                    match self.check_inferred(inferred_generic, *generic, context) {
+                        Ok(type_index) => {
+                            *generic = type_index;
+                        }
+                        Err(type_index) => {
+                            *generic = type_index;
+                            errored = true;
+                        }
+                    }
+                }
+
+                if errored {
+                    Err(self.push_type(Type::Sum {
+                        name,
+                        variants,
+                        generics,
+                    }))
+                } else {
+                    Ok(self.push_type(Type::Sum {
+                        name,
+                        variants,
+                        generics,
+                    }))
+                }
+            }
+            (_, _) => Ok(self.apply(inferred, context)),
         }
     }
 
@@ -1543,13 +2069,13 @@ impl TypeChecker {
         &mut self,
         type_index: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
-    ) -> Result<TypeIndex, Error> {
+    ) -> TypeIndex {
         match self.get_type(type_index).expect("all types exist") {
-            Type::Primitive(_) | Type::Generic(_) | Type::Unknown => Ok(type_index),
-            Type::Existential(name) => Ok(context
+            Type::Primitive(_) | Type::Generic(_) | Type::Unknown => type_index,
+            Type::Existential(name) => context
                 .iter()
                 .rfind(|(context_name, _)| context_name == name)
-                .map_or(type_index, |(_, type_index)| *type_index)),
+                .map_or(type_index, |(_, type_index)| *type_index),
             Type::Fn {
                 parameters,
                 return_type,
@@ -1559,15 +2085,15 @@ impl TypeChecker {
                 let mut return_type = *return_type;
 
                 for parameter in &mut parameters {
-                    *parameter = self.apply(*parameter, context)?;
+                    *parameter = self.apply(*parameter, context);
                 }
 
-                return_type = self.apply(return_type, context)?;
+                return_type = self.apply(return_type, context);
 
-                Ok(self.push_type(Type::Fn {
+                self.push_type(Type::Fn {
                     parameters,
                     return_type,
-                }))
+                })
             }
             Type::Product {
                 name,
@@ -1581,18 +2107,43 @@ impl TypeChecker {
                 let mut generics = generics.clone();
 
                 for (_, field) in &mut fields {
-                    *field = self.apply(*field, context)?;
+                    *field = self.apply(*field, context);
                 }
 
                 for generic in &mut generics {
-                    *generic = self.apply(*generic, context)?;
+                    *generic = self.apply(*generic, context);
                 }
 
-                Ok(self.push_type(Type::Product {
+                self.push_type(Type::Product {
                     name,
                     fields,
                     generics,
-                }))
+                })
+            }
+            Type::Sum {
+                name,
+                variants,
+                generics,
+            } => {
+                let name = name.clone();
+
+                let mut variants = variants.clone();
+
+                let mut generics = generics.clone();
+
+                for variant in &mut variants {
+                    *variant = self.apply(*variant, context);
+                }
+
+                for generic in &mut generics {
+                    *generic = self.apply(*generic, context);
+                }
+
+                self.push_type(Type::Sum {
+                    name,
+                    variants,
+                    generics,
+                })
             }
         }
     }

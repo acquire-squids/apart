@@ -239,7 +239,7 @@ mod product_equality {
     ));
 
     #[test]
-    fn product_three_or_four() {
+    fn product_equality() {
         let mut out = vec![];
 
         let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
@@ -249,7 +249,7 @@ mod product_equality {
     }
 
     #[test]
-    fn product_three_or_four_register() {
+    fn product_equality_register() {
         let mut out = vec![];
 
         let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)

@@ -99,3 +99,73 @@ mod callee_is_call_invalid {
         );
     }
 }
+
+#[cfg(test)]
+mod sum_equality_0 {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "sum_equality_0.txt"
+    ));
+
+    #[test]
+    fn sum_equality_0() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::TypeMismatch {
+                    expected,
+                    got,
+                },
+            )]) if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sum_equality_1 {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "sum_equality_1.txt"
+    ));
+
+    #[test]
+    fn sum_equality_1() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::TypeMismatch {
+                    expected,
+                    got,
+                },
+            )]) if expected == "Option[Result[bool, E]]" && got == "Option[Result[unit, i64]]"
+        );
+    }
+}

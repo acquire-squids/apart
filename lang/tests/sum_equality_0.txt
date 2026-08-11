@@ -1,0 +1,14 @@
+funky main() {
+	let
+		ok = Option~Some { value <- Result~Ok { value <- true, }, },
+		other = Option~Some { value <- Result~Err { error <- 21, }, },
+	in {
+		print_bool(ok == other);
+
+		other = Option~Some {
+			value <- Result~Ok {
+				value <- {},
+			},
+		};
+	}
+}

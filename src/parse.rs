@@ -69,6 +69,16 @@ pub enum Error {
     ProductFieldWithoutLeftArrow,
     ProductFieldsWithoutComma,
     UnclosedProduct,
+    SumWithoutName,
+    SumWithoutVariants,
+    SumVariantWithoutName,
+    SumVariantWithoutFields,
+    SumVariantFieldWithoutName,
+    SumVariantFieldWithoutLeftArrow,
+    SumVariantFieldsWithoutComma,
+    UnclosedSumVariant,
+    SumVariantsWithoutComma,
+    UnclosedSum,
 }
 
 impl fmt::Display for Error {
@@ -234,6 +244,51 @@ impl fmt::Display for Error {
             Self::UnclosedProduct => {
                 write!(f, "this product was never closed")
             }
+            Self::SumWithoutName => {
+                write!(f, "expected a sum name")
+            }
+            Self::SumWithoutVariants => {
+                write!(
+                    f,
+                    "the sum's variants should be here, within curly brackets"
+                )
+            }
+            Self::SumVariantWithoutName => {
+                write!(f, "expected a name for the sum variant")
+            }
+            Self::SumVariantWithoutFields => {
+                write!(
+                    f,
+                    "the sum's variant's fields should be here, within curly brackets"
+                )
+            }
+            Self::SumVariantFieldWithoutName => {
+                write!(f, "expected a sum variant field name")
+            }
+            Self::SumVariantFieldWithoutLeftArrow => {
+                write!(
+                    f,
+                    "expected a \"<-\" after the sum variant field name, and then a type signature"
+                )
+            }
+            Self::SumVariantFieldsWithoutComma => {
+                write!(
+                    f,
+                    "if there is another sum variant field here, a comma should be between it and the previous field"
+                )
+            }
+            Self::UnclosedSumVariant => {
+                write!(f, "this sum variant was never closed")
+            }
+            Self::SumVariantsWithoutComma => {
+                write!(
+                    f,
+                    "if there is another sum variant here, a comma should be between it and the previous variant"
+                )
+            }
+            Self::UnclosedSum => {
+                write!(f, "this sum was never closed")
+            }
         }
     }
 }
@@ -335,6 +390,11 @@ pub enum Item {
         fields: Vec<Parameter>,
         generics: Vec<Spanned<String>>,
     },
+    Sum {
+        name: Spanned<String>,
+        variants: Vec<ItemIndex>,
+        generics: Vec<Spanned<String>>,
+    },
 }
 
 #[derive(Debug)]
@@ -373,6 +433,7 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
+    VariantAccess,
     Access,
     Multiply,
     Divide,
@@ -484,7 +545,7 @@ impl Ast {
             | Expr::Name(_)
             | Expr::AsUnitNoValue
             | Expr::BinaryNoLhs {
-                op: BinaryOp::Access,
+                op: BinaryOp::Access | BinaryOp::VariantAccess,
                 ..
             } => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
@@ -494,7 +555,7 @@ impl Ast {
                 f(self, *rhs);
             }
             Expr::Binary {
-                op: BinaryOp::Access,
+                op: BinaryOp::Access | BinaryOp::VariantAccess,
                 lhs,
                 ..
             } => {
@@ -674,7 +735,7 @@ impl Parser {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" => Some(lexeme),
+            | "product" | "sum" => Some(lexeme),
             _ => None,
         }
     }
@@ -885,7 +946,12 @@ impl Parser {
                 Some("product") => {
                     self.advance(lexer);
 
-                    self.parse_product(lexer, ast, span)
+                    self.parse_product(lexer, ast, span, true)
+                }
+                Some("sum") => {
+                    self.advance(lexer);
+
+                    self.parse_sum(lexer, ast, span)
                 }
                 _ => Err(Spanned::new(Error::ExpectedItem, span)),
             }
@@ -1110,6 +1176,7 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
+        allow_generics: bool,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
             .name_lexeme(lexer)
@@ -1118,7 +1185,9 @@ impl Parser {
 
         let mut generics = vec![];
 
-        self.parse_generics(lexer, &mut generics)?;
+        if allow_generics {
+            self.parse_generics(lexer, &mut generics)?;
+        }
 
         let fields_span = self
             .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
@@ -1171,16 +1240,88 @@ impl Parser {
             )?
             .span();
 
-        let funky = ast.push_item(Spanned::new(
+        Ok(ast.push_item(Spanned::new(
             Item::Product {
                 name,
                 generics,
                 fields,
             },
             span.combine_with(fields_end).unwrap_or(span),
-        ));
+        )))
+    }
 
-        Ok(funky)
+    fn parse_sum(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        span: Span,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let name = self
+            .name_lexeme(lexer)
+            .map_err(|error| error.transmute(|_| Error::ProductWithoutName))
+            .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+        let mut generics = vec![];
+
+        self.parse_generics(lexer, &mut generics)?;
+
+        let variants_span = self
+            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
+            .span();
+
+        let mut variants = vec![];
+
+        while let Some(span) = self.peek(lexer).map(Spanned::span)
+            && self.check_next(lexer, Token::CloseBracket).is_none()
+        {
+            variants.push(
+                self.parse_product(lexer, ast, span, false)
+                    .map_err(|error| {
+                        error.transmute(|error| match error {
+                            Error::ProductWithoutName => Error::SumVariantWithoutName,
+                            Error::ProductWithoutFields => Error::SumVariantWithoutFields,
+                            Error::ProductFieldWithoutName => Error::SumVariantFieldWithoutName,
+                            Error::ProductFieldWithoutLeftArrow => {
+                                Error::SumVariantFieldWithoutLeftArrow
+                            }
+                            Error::ProductFieldsWithoutComma => Error::SumVariantFieldsWithoutComma,
+                            Error::UnclosedProduct => Error::UnclosedSumVariant,
+                            _ => unreachable!("no other errors are produced by `parse_product`"),
+                        })
+                    })?,
+            );
+
+            if self.check_next(lexer, Token::CloseBracket).is_none() {
+                self.consume_next(lexer, Token::Comma, Error::SumVariantsWithoutComma)?;
+            }
+        }
+
+        // sort variants to keep the order consistent in other passes
+        variants.sort_by_key(|a| {
+            let Some(Item::Product { name, .. }) = ast.get_item(*a).map(Spanned::kind) else {
+                unreachable!("only products are sum variants");
+            };
+
+            name.kind()
+        });
+
+        let variants_end = self
+            .consume_next_with_span(
+                lexer,
+                Token::CloseBracket,
+                Error::UnclosedSum,
+                variants_span,
+            )?
+            .span();
+
+        Ok(ast.push_item(Spanned::new(
+            Item::Sum {
+                name,
+                generics,
+                variants,
+            },
+            span.combine_with(variants_end).unwrap_or(span),
+        )))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1334,6 +1475,9 @@ mod precedence {
         fn(&mut Parser, &mut Lexer, &mut Ast, u16, Span) -> Result<ExprIndex, Spanned<Error>>;
 
     pub const PRIMARY: u16 = 0xEE00;
+
+    pub const LEFT_VARIANT_ACCESS: u16 = 0xCC00;
+    pub const RIGHT_VARIANT_ACCESS: u16 = 0xCC50;
 
     pub const CALL: u16 = 0xBB00;
 
@@ -1674,6 +1818,10 @@ impl Parser {
         let token = self.peek(lexer)?;
 
         match token.kind() {
+            Token::Tilde => infix_op_precedence!(
+                self, lexer;
+                variant_access (LEFT_VARIANT_ACCESS, RIGHT_VARIANT_ACCESS),
+            ),
             Token::Dot => infix_op_precedence!(
                 self, lexer;
                 access (LEFT_ACCESS, RIGHT_ACCESS),
@@ -1893,6 +2041,7 @@ impl Parser {
     unary_op!(negate, Negate);
     unary_op!(not, Not);
 
+    binary_op!(variant_access, VariantAccess);
     binary_op!(access, Access);
     binary_op!(multiply, Multiply);
     binary_op!(divide, Divide);

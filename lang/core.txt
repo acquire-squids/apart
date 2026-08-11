@@ -8,3 +8,19 @@ native funky print_f64 = funky(f64) -> unit;
 native funky print_bool = funky(bool) -> unit;
 native funky print_unit = funky(unit) -> unit;
 
+sum Option[T] {
+	Some {
+		value <- T,
+	},
+	None {},
+}
+
+sum Result[T, E] {
+	Ok {
+		value <- T,
+	},
+	Err {
+		error <- E,
+	},
+}
+

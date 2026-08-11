@@ -44,6 +44,8 @@ pub enum Error {
     DuplicateFnName,
     DuplicateProductName,
     InvalidAssignTarget,
+    DuplicateSumName,
+    DuplicateSumVariant,
 }
 
 impl fmt::Display for Error {
@@ -72,6 +74,12 @@ impl fmt::Display for Error {
             }
             Self::InvalidAssignTarget => {
                 write!(f, "only names and fields may be assigned to")
+            }
+            Self::DuplicateSumName => {
+                write!(f, "this sum name is already in use in this scope")
+            }
+            Self::DuplicateSumVariant => {
+                write!(f, "this sum variant name is already in use by its sum")
             }
         }
     }
@@ -175,20 +183,26 @@ impl NameResolver {
         self.errors.push(Spanned::new(Error::NameNotDeclared, span));
     }
 
-    fn resolve_and_insert_name(&mut self, associated_with: Option<Span>, name: &str, span: Span) {
+    fn resolve_and_insert_name(
+        &mut self,
+        associated_with: Option<Span>,
+        name: &str,
+        span: Span,
+    ) -> Result<(), Spanned<Error>> {
         if let Some((name_span, defined)) = self.resolve_name(name) {
             if defined == Defined::No {
-                self.errors
-                    .push(Spanned::new(Error::NameUsedInItsDeclaration, span));
+                Err(Spanned::new(Error::NameUsedInItsDeclaration, span))
             } else {
                 self.names.insert(span, name_span);
+                Ok(())
             }
         } else if let Some(name_span) = associated_with
             .and_then(|associated_with| self.resolve_associated_name(associated_with, name))
         {
             self.names.insert(span, name_span);
+            Ok(())
         } else {
-            self.errors.push(Spanned::new(Error::NameNotDeclared, span));
+            Err(Spanned::new(Error::NameNotDeclared, span))
         }
     }
 
@@ -206,13 +220,14 @@ impl NameResolver {
                     );
                 }
 
-                self.resolve_and_insert_name(
-                    associated_with_inner.map_or(associated_with_outer, |associated_with| {
-                        Some(associated_with)
-                    }),
-                    name.kind(),
-                    ty.span(),
-                );
+                if let Err(error) =
+                    self.resolve_and_insert_name(associated_with_inner, name.kind(), ty.span())
+                    && self
+                        .resolve_and_insert_name(associated_with_outer, name.kind(), ty.span())
+                        .is_err()
+                {
+                    self.errors.push(error);
+                }
             }
             TypeSignature::Fn {
                 parameters,
@@ -314,6 +329,56 @@ impl NameResolver {
                     self.define_name(name.kind());
                 }
             }
+            Some(Item::Sum {
+                name,
+                variants,
+                generics,
+            }) => {
+                if self.resolve_name(name.kind()).is_some() {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicateSumName, name.span()));
+                } else {
+                    self.declare_name(name.kind().clone(), name.span());
+
+                    self.define_name(name.kind());
+                }
+
+                for generic in generics {
+                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
+                }
+
+                for variant in variants {
+                    let Some(Item::Product {
+                        name: variant_name,
+                        fields,
+                        ..
+                    }) = ast.get_item(*variant).map(Spanned::kind)
+                    else {
+                        unreachable!("variants are only products");
+                    };
+
+                    for field in fields {
+                        self.resolve_type_signature(
+                            (Some(name.span()), Some(variant_name.span())),
+                            field.ty(),
+                        );
+                    }
+
+                    if self
+                        .resolve_associated_name(name.span(), variant_name.kind())
+                        .is_some()
+                    {
+                        self.errors
+                            .push(Spanned::new(Error::DuplicateSumVariant, name.span()));
+                    } else {
+                        self.associate_name(
+                            name.span(),
+                            variant_name.kind().clone(),
+                            variant_name.span(),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -343,10 +408,7 @@ impl NameResolver {
     fn resolve(&mut self, ast: &Ast) {
         for root in ast.roots() {
             if let Some(Item::Fn {
-                name,
-                body,
-                parameters,
-                ..
+                body, parameters, ..
             }) = ast.get_item(*root).map(Spanned::kind)
             {
                 self.variable_scopes.push(HashMap::new());
@@ -371,7 +433,7 @@ impl NameResolver {
                     }
                 }
 
-                self.resolve_names(ast, *body, Some(name.span()));
+                self.resolve_names(ast, *body, None);
 
                 self.variable_scopes.pop();
             }
@@ -399,9 +461,19 @@ impl NameResolver {
             _ => {}
         }
 
-        ast.for_children_exprs(expr, |ast, expr| {
-            self.resolve_names(ast, expr, associated_with);
-        });
+        if let Some(Expr::Binary {
+            op: BinaryOp::VariantAccess,
+            lhs,
+            rhs,
+        }) = ast.get_expr(expr).map(Spanned::kind)
+        {
+            self.resolve_names(ast, *lhs, associated_with);
+            self.resolve_names(ast, *rhs, ast.get_expr(*lhs).map(Spanned::span));
+        } else {
+            ast.for_children_exprs(expr, |ast, expr| {
+                self.resolve_names(ast, expr, associated_with);
+            });
+        }
 
         match ast.get_expr(expr).map(Spanned::kind) {
             Some(Expr::Let { name, .. }) => {
@@ -450,10 +522,16 @@ impl NameResolver {
                     .map(Spanned::span)
                     .expect("if the expression exists, the span does too");
 
-                self.resolve_and_insert_name(associated_with, name, span);
+                if let Err(error) = self.resolve_and_insert_name(associated_with, name, span) {
+                    self.errors.push(error);
+                }
             }
             Some(Expr::Product { name, .. }) => {
-                self.resolve_and_insert_name(None, name.kind(), name.span());
+                if let Err(error) =
+                    self.resolve_and_insert_name(associated_with, name.kind(), name.span())
+                {
+                    self.errors.push(error);
+                }
             }
             _ => {}
         }

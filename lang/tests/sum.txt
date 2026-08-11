@@ -1,0 +1,12 @@
+funky main() {
+	let
+		ok = Result~Ok { value <- 1, },
+		error = Result~Err { error <- 0 },
+		other = Result~Ok { value <- 1, },
+	in {
+		print_bool(ok == error);
+		print_bool(ok == other);
+	}
+}
+
+

@@ -276,6 +276,7 @@ pub enum Value {
     CallArgument(usize),
     Register(usize),
     Compound(Vec<Self>),
+    TaggedCompound { fields: Vec<Self>, tag: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -347,7 +348,7 @@ impl Translator {
 
                 self.next_block();
             }
-            Some(Item::Primitive(_) | Item::Product { .. }) => {}
+            Some(Item::Primitive(_) | Item::Product { .. } | Item::Sum { .. }) => {}
             Some(Item::NativeFn { name, .. }) => {
                 self.addresses
                     .insert(name.span(), Addresslike::NativeFn(name.span()));
@@ -457,6 +458,13 @@ impl Translator {
                 rhs,
             }) => {
                 self.translate_assign(ast, names, types, (*lhs, *rhs));
+            }
+            Some(Expr::Binary {
+                op: BinaryOp::VariantAccess,
+                lhs,
+                rhs,
+            }) => {
+                self.translate_variant_access(ast, names, types, (*lhs, *rhs));
             }
             Some(Expr::Binary {
                 op: BinaryOp::Access,
@@ -1371,6 +1379,73 @@ impl Translator {
         });
 
         self.values.push(Value::Address(address));
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn find_variant_index(
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        (lhs, rhs): (ExprIndex, ExprIndex),
+    ) -> u16 {
+        let lhs_span = ast
+            .get_expr(lhs)
+            .map(Spanned::span)
+            .expect("if the expression exists, the span does too");
+
+        match names
+            .get(&lhs_span)
+            .and_then(|span| types.get_type_index(*span))
+            .and_then(|type_index| types.get_type(type_index))
+        {
+            Some(Type::Sum {
+                variants: type_variants,
+                ..
+            }) => match ast.get_expr(rhs).map(Spanned::kind) {
+                Some(Expr::Product { name, .. }) => {
+                    let Some(variant_index) = type_variants
+                        .iter()
+                        .position(|variant| matches!(types.get_type(*variant), Some(Type::Product { name: variant_name, .. }) if variant_name == name.kind())).and_then(|index| u16::try_from(index).ok())
+                    else {
+                        unreachable!("type checking guarantees the variant exists on the type");
+                    };
+
+                    variant_index
+                }
+                _ => unreachable!("for now, only names can be accessors"),
+            },
+            _ => unreachable!("for now, only products can be accessees"),
+        }
+    }
+
+    fn translate_variant_access(
+        &mut self,
+        ast: &Ast,
+        names: &HashMap<Span, Span>,
+        types: &TypeChecker,
+        (lhs, rhs): (ExprIndex, ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let variant_index = Self::find_variant_index(ast, names, types, (lhs, rhs));
+
+        self.translate_expr(ast, names, types, rhs);
+
+        let Some(Value::Compound(fields)) = self.values.pop() else {
+            unreachable!("type checking guarantees the right operand is a product literal");
+        };
+
+        self.values.push(Value::TaggedCompound {
+            fields,
+            tag: variant_index,
+        });
 
         self.last_in_fn = last_in_fn;
 
