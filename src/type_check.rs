@@ -1500,8 +1500,8 @@ impl TypeChecker {
             ) => {
                 if inferred_name != name {
                     return Err(Error::TypeMismatch {
-                        expected: a.to_string(self.types.as_slice()),
-                        got: b.to_string(self.types.as_slice()),
+                        expected: b.to_string(self.types.as_slice()),
+                        got: a.to_string(self.types.as_slice()),
                     });
                 }
 
