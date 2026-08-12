@@ -3,9 +3,9 @@ use crate::{
     parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature},
 };
 
-use std::{collections::HashMap, error, fmt};
+use std::{collections::HashMap, error, fmt, ops::Index};
 
-pub fn resolve_names(ast: &Ast) -> Result<HashMap<Span, Span>, Vec<Spanned<Error>>> {
+pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
     let mut resolver = NameResolver::new();
 
     // primitives should be resolved before anything else
@@ -21,7 +21,7 @@ pub fn resolve_names(ast: &Ast) -> Result<HashMap<Span, Span>, Vec<Spanned<Error
     resolver.resolve(ast);
 
     if resolver.errors.is_empty() {
-        Ok(resolver.names)
+        Ok(Names(resolver.names))
     } else {
         Err(resolver.errors)
     }
@@ -93,6 +93,24 @@ impl Reportable for Error {}
 enum Defined {
     Yes,
     No,
+}
+
+pub struct Names(HashMap<Span, Span>);
+
+impl Index<Span> for Names {
+    type Output = Span;
+
+    fn index(&self, index: Span) -> &Self::Output {
+        self.0.get(&index).unwrap_or_else(|| {
+            panic!("unresolved span: {index:?}");
+        })
+    }
+}
+
+impl Names {
+    pub fn get(&self, span: Span) -> Option<Span> {
+        self.0.get(&span).copied()
+    }
 }
 
 impl NameResolver {
@@ -168,15 +186,12 @@ impl NameResolver {
     }
 
     fn assign_name(&mut self, target: Span, span: Span) {
-        // if let Some((name, _)) = self
         if let Some((_, _)) = self
             .variable_scopes
             .iter_mut()
             .rev()
             .find_map(|scope| scope.values_mut().find(|(name, _)| *name == target))
         {
-            // *name = span;
-
             return;
         }
 
@@ -252,7 +267,7 @@ impl NameResolver {
 impl NameResolver {
     fn resolve_primitives(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            if let Some(Item::Primitive(name)) = ast.get_item(*root).map(Spanned::kind) {
+            if let Item::Primitive(name) = ast[*root].kind() {
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
                         .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
@@ -267,8 +282,7 @@ impl NameResolver {
 
     fn resolve_native_functions(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            if let Some(Item::NativeFn { name, signature }) = ast.get_item(*root).map(Spanned::kind)
-            {
+            if let Item::NativeFn { name, signature } = ast[*root].kind() {
                 self.resolve_type_signature((None, None), signature);
 
                 if self.resolve_name(name.kind()).is_some() {
@@ -284,15 +298,15 @@ impl NameResolver {
     }
 
     fn resolve_types(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
-        match ast.get_item(item).map(Spanned::kind) {
-            None | Some(Item::Primitive(_) | Item::NativeFn { .. }) => {}
-            Some(Item::Fn {
+        match ast[item].kind() {
+            Item::Primitive(_) | Item::NativeFn { .. } => {}
+            Item::Fn {
                 name,
                 parameters,
                 return_type,
                 generics,
                 ..
-            }) => {
+            } => {
                 for generic in generics {
                     self.associate_name(name.span(), generic.kind().clone(), generic.span());
                 }
@@ -307,11 +321,11 @@ impl NameResolver {
 
                 self.resolve_function_name(ast, item, associated_with);
             }
-            Some(Item::Product {
+            Item::Product {
                 name,
                 fields,
                 generics,
-            }) => {
+            } => {
                 for generic in generics {
                     self.associate_name(name.span(), generic.kind().clone(), generic.span());
                 }
@@ -329,11 +343,11 @@ impl NameResolver {
                     self.define_name(name.kind());
                 }
             }
-            Some(Item::Sum {
+            Item::Sum {
                 name,
                 variants,
                 generics,
-            }) => {
+            } => {
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
                         .push(Spanned::new(Error::DuplicateSumName, name.span()));
@@ -348,11 +362,11 @@ impl NameResolver {
                 }
 
                 for variant in variants {
-                    let Some(Item::Product {
+                    let Item::Product {
                         name: variant_name,
                         fields,
                         ..
-                    }) = ast.get_item(*variant).map(Spanned::kind)
+                    } = ast[*variant].kind()
                     else {
                         unreachable!("variants are only products");
                     };
@@ -383,7 +397,7 @@ impl NameResolver {
     }
 
     fn resolve_function_name(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
-        if let Some(Item::Fn { name, .. }) = ast.get_item(item).map(Spanned::kind) {
+        if let Item::Fn { name, .. } = ast[item].kind() {
             if let Some(associated_with) = associated_with {
                 if self
                     .resolve_associated_name(associated_with, name.kind())
@@ -407,9 +421,9 @@ impl NameResolver {
 
     fn resolve(&mut self, ast: &Ast) {
         for root in ast.roots() {
-            if let Some(Item::Fn {
+            if let Item::Fn {
                 body, parameters, ..
-            }) = ast.get_item(*root).map(Spanned::kind)
+            } = ast[*root].kind()
             {
                 self.variable_scopes.push(HashMap::new());
 
@@ -443,90 +457,79 @@ impl NameResolver {
 
 impl NameResolver {
     fn resolve_names(&mut self, ast: &Ast, expr: ExprIndex, associated_with: Option<Span>) {
-        match ast.get_expr(expr).map(Spanned::kind) {
-            Some(Expr::Let {
+        match ast[expr].kind() {
+            Expr::Let {
                 name,
                 type_signature,
                 ..
-            }) => {
+            } => {
                 if let Some(type_signature) = type_signature {
                     self.resolve_type_signature((associated_with, None), type_signature);
                 }
 
                 self.declare_name(name.kind().clone(), name.span());
             }
-            Some(Expr::Block(_)) => {
+            Expr::Block(_) => {
                 self.variable_scopes.push(HashMap::new());
             }
             _ => {}
         }
 
-        if let Some(Expr::Binary {
+        if let Expr::Binary {
             op: BinaryOp::VariantAccess,
             lhs,
             rhs,
-        }) = ast.get_expr(expr).map(Spanned::kind)
+        } = ast[expr].kind()
         {
             self.resolve_names(ast, *lhs, associated_with);
-            self.resolve_names(ast, *rhs, ast.get_expr(*lhs).map(Spanned::span));
+            self.resolve_names(ast, *rhs, Some(ast[*lhs].span()));
         } else {
             ast.for_children_exprs(expr, |ast, expr| {
                 self.resolve_names(ast, expr, associated_with);
             });
         }
 
-        match ast.get_expr(expr).map(Spanned::kind) {
-            Some(Expr::Let { name, .. }) => {
+        match ast[expr].kind() {
+            Expr::Let { name, .. } => {
                 self.define_name(name.kind());
             }
-            Some(Expr::Block(_)) => {
+            Expr::Block(_) => {
                 self.variable_scopes.pop();
             }
-            Some(Expr::Binary {
+            Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 ..
-            }) => {
+            } => {
                 let lhs = *lhs;
 
-                match ast.get_expr(lhs).map(Spanned::kind) {
-                    None => unreachable!("parsing ensures all binary left operands exist"),
-                    Some(Expr::Name(name)) => {
+                match ast[lhs].kind() {
+                    Expr::Name(name) => {
                         if let Some((name_span, _)) = self.resolve_name(name) {
-                            let span = ast
-                                .get_expr(expr)
-                                .map(Spanned::span)
-                                .expect("parsing ensures all binary left operands exist");
+                            let span = ast[expr].span();
 
                             self.assign_name(name_span, span);
                         }
                     }
-                    Some(Expr::Binary {
+                    Expr::Binary {
                         op: BinaryOp::Access,
                         rhs,
                         ..
-                    }) if matches!(ast.get_expr(*rhs).map(Spanned::kind), Some(Expr::Name(_))) => {}
-                    Some(_) => {
-                        self.errors.push(Spanned::new(
-                            Error::InvalidAssignTarget,
-                            ast.get_expr(lhs)
-                                .map(Spanned::span)
-                                .expect("if the expression exists, the span does too"),
-                        ));
+                    } if matches!(ast[*rhs].kind(), Expr::Name(_)) => {}
+                    _ => {
+                        self.errors
+                            .push(Spanned::new(Error::InvalidAssignTarget, ast[lhs].span()));
                     }
                 }
             }
-            Some(Expr::Name(name)) => {
-                let span = ast
-                    .get_expr(expr)
-                    .map(Spanned::span)
-                    .expect("if the expression exists, the span does too");
+            Expr::Name(name) => {
+                let span = ast[expr].span();
 
                 if let Err(error) = self.resolve_and_insert_name(associated_with, name, span) {
                     self.errors.push(error);
                 }
             }
-            Some(Expr::Product { name, .. }) => {
+            Expr::Product { name, .. } => {
                 if let Err(error) =
                     self.resolve_and_insert_name(associated_with, name.kind(), name.span())
                 {

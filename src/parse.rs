@@ -3,7 +3,10 @@ use crate::{
     lex::{self, Lexer, Token},
 };
 
-use std::{error, fmt, mem};
+use std::{
+    error, fmt, mem,
+    ops::{Index, IndexMut},
+};
 
 pub fn parse(lexer: &mut Lexer, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
     let mut parser = Parser::new(false);
@@ -321,6 +324,78 @@ impl From<ExprIndex> for usize {
     }
 }
 
+impl Index<ExprIndex> for &Ast {
+    type Output = Spanned<Expr>;
+
+    fn index(&self, index: ExprIndex) -> &Self::Output {
+        self.exprs.get(usize::from(index)).unwrap_or_else(|| {
+            panic!(
+                "index out of bounds: the len is {} but the index is {index:?}",
+                self.exprs.len(),
+            );
+        })
+    }
+}
+
+impl Index<ItemIndex> for &Ast {
+    type Output = Spanned<Item>;
+
+    fn index(&self, index: ItemIndex) -> &Self::Output {
+        self.items.get(usize::from(index)).unwrap_or_else(|| {
+            panic!(
+                "index out of bounds: the len is {} but the index is {index:?}",
+                self.exprs.len(),
+            );
+        })
+    }
+}
+
+impl Index<ExprIndex> for &mut Ast {
+    type Output = Spanned<Expr>;
+
+    fn index(&self, index: ExprIndex) -> &Self::Output {
+        self.exprs.get(usize::from(index)).unwrap_or_else(|| {
+            panic!(
+                "index out of bounds: the len is {} but the index is {index:?}",
+                self.exprs.len(),
+            );
+        })
+    }
+}
+
+impl Index<ItemIndex> for &mut Ast {
+    type Output = Spanned<Item>;
+
+    fn index(&self, index: ItemIndex) -> &Self::Output {
+        self.items.get(usize::from(index)).unwrap_or_else(|| {
+            panic!(
+                "index out of bounds: the len is {} but the index is {index:?}",
+                self.exprs.len(),
+            );
+        })
+    }
+}
+
+impl IndexMut<ExprIndex> for &mut Ast {
+    fn index_mut(&mut self, index: ExprIndex) -> &mut <Self as Index<ExprIndex>>::Output {
+        let len = self.exprs.len();
+
+        self.exprs.get_mut(usize::from(index)).unwrap_or_else(|| {
+            panic!("index out of bounds: the len is {len} but the index is {index:?}");
+        })
+    }
+}
+
+impl IndexMut<ItemIndex> for &mut Ast {
+    fn index_mut(&mut self, index: ItemIndex) -> &mut <Self as Index<ItemIndex>>::Output {
+        let len = self.items.len();
+
+        self.items.get_mut(usize::from(index)).unwrap_or_else(|| {
+            panic!("index out of bounds: the len is {len} but the index is {index:?}");
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum Expr {
     Integer(i64),
@@ -462,16 +537,6 @@ impl Ast {
     }
 
     #[allow(dead_code)]
-    pub fn get_item(&self, index: ItemIndex) -> Option<&Spanned<Item>> {
-        self.items.get(usize::from(index))
-    }
-
-    #[allow(dead_code)]
-    pub fn get_mut_item(&mut self, index: ItemIndex) -> Option<&mut Spanned<Item>> {
-        self.items.get_mut(usize::from(index))
-    }
-
-    #[allow(dead_code)]
     pub const fn roots(&self) -> &[ItemIndex] {
         self.roots.as_slice()
     }
@@ -482,16 +547,6 @@ impl Ast {
         self.items.push(item);
 
         index
-    }
-
-    #[allow(dead_code)]
-    pub fn get_expr(&self, index: ExprIndex) -> Option<&Spanned<Expr>> {
-        self.exprs.get(usize::from(index))
-    }
-
-    #[allow(dead_code)]
-    pub fn get_mut_expr(&mut self, index: ExprIndex) -> Option<&mut Spanned<Expr>> {
-        self.exprs.get_mut(usize::from(index))
     }
 
     fn push_expr(&mut self, expr: Spanned<Expr>) -> ExprIndex {
@@ -533,11 +588,7 @@ impl Ast {
     where
         F: FnMut(&Self, ExprIndex),
     {
-        let Some(expr) = self.get_expr(expr) else {
-            return;
-        };
-
-        match expr.kind() {
+        match self[expr].kind() {
             Expr::Integer(_)
             | Expr::Float(_)
             | Expr::Boolean(_)
@@ -556,102 +607,6 @@ impl Ast {
             }
             Expr::Binary {
                 op: BinaryOp::Access | BinaryOp::VariantAccess,
-                lhs,
-                ..
-            } => {
-                f(self, *lhs);
-            }
-            Expr::Binary { lhs, rhs, .. } => {
-                let (lhs, rhs) = (*lhs, *rhs);
-
-                f(self, lhs);
-                f(self, rhs);
-            }
-            Expr::Block(exprs) => {
-                let exprs = exprs.clone();
-
-                for expr in exprs {
-                    f(self, expr);
-                }
-            }
-            Expr::Let { value, .. } | Expr::Return(value) | Expr::AsUnit(value) => {
-                f(self, *value);
-            }
-            Expr::If {
-                condition,
-                when_true,
-                otherwise,
-            } => {
-                let (condition, when_true, otherwise) = (*condition, *when_true, *otherwise);
-
-                f(self, condition);
-                f(self, when_true);
-                f(self, otherwise);
-            }
-            Expr::CallNoCallee(arguments) => {
-                let arguments = arguments.clone();
-
-                for argument in arguments {
-                    f(self, argument);
-                }
-            }
-            Expr::Call { callee, arguments } => {
-                let callee = *callee;
-                let arguments = arguments.clone();
-
-                f(self, callee);
-
-                for argument in arguments {
-                    f(self, argument);
-                }
-            }
-            Expr::While {
-                condition,
-                when_true,
-            } => {
-                let (condition, when_true) = (*condition, *when_true);
-
-                f(self, condition);
-                f(self, when_true);
-            }
-            Expr::Product { fields, .. } => {
-                let fields = fields.iter().map(|(_, value)| *value).collect::<Vec<_>>();
-
-                for value in fields {
-                    f(self, value);
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn for_children_exprs_mut<F>(&mut self, expr: ExprIndex, mut f: F)
-    where
-        F: FnMut(&mut Self, ExprIndex),
-    {
-        let Some(expr) = self.get_expr(expr) else {
-            return;
-        };
-
-        match expr.kind() {
-            Expr::Integer(_)
-            | Expr::Float(_)
-            | Expr::Boolean(_)
-            | Expr::Unit
-            | Expr::Name(_)
-            | Expr::AsUnitNoValue
-            | Expr::BinaryNoLhs {
-                op: BinaryOp::Access,
-                ..
-            } => {}
-            Expr::Unary { expr, .. } | Expr::Group(expr) => {
-                f(self, *expr);
-            }
-            Expr::BinaryNoLhs { rhs, .. } => {
-                f(self, *rhs);
-            }
-            Expr::Binary {
-                op: BinaryOp::Access,
                 lhs,
                 ..
             } => {
@@ -1298,7 +1253,7 @@ impl Parser {
 
         // sort variants to keep the order consistent in other passes
         variants.sort_by_key(|a| {
-            let Some(Item::Product { name, .. }) = ast.get_item(*a).map(Spanned::kind) else {
+            let Item::Product { name, .. } = ast[*a].kind() else {
                 unreachable!("only products are sum variants");
             };
 
@@ -1592,7 +1547,7 @@ macro_rules! unary_op {
                     op: $crate::parse::UnaryOp::$op,
                     expr,
                 },
-                span.combine_with(ast.get_expr(expr).map_or(span, $crate::Spanned::span))
+                span.combine_with(ast[expr].span())
                     .expect("these spans are from the same source"),
             )))
         }
@@ -1617,7 +1572,7 @@ macro_rules! binary_op {
                     op: $crate::parse::BinaryOp::$op,
                     rhs,
                 },
-                span.combine_with(ast.get_expr(rhs).map_or(span, $crate::Spanned::span))
+                span.combine_with(ast[rhs].span())
                     .expect("These spans are from the same source"),
             )))
         }
@@ -1628,7 +1583,7 @@ impl Parser {
     fn parse_expression(
         &mut self,
         lexer: &mut Lexer,
-        ast: &mut Ast,
+        mut ast: &mut Ast,
         min_precedence: u16,
     ) -> Result<ExprIndex, Spanned<Error>> {
         let Some((precedence, (prefix_fn, prefix_span))) = self.prefix_precedence(lexer) else {
@@ -1658,34 +1613,32 @@ impl Parser {
                 let unfinished_postfix =
                     postfix_fn(self, lexer, ast, left_precedence, postfix_span)?;
 
-                if let Some(unfinished_postfix) = ast.get_mut_expr(unfinished_postfix) {
-                    match unfinished_postfix.kind() {
-                        Expr::CallNoCallee(arguments) => {
-                            let arguments = arguments.clone();
+                match ast[unfinished_postfix].kind() {
+                    Expr::CallNoCallee(arguments) => {
+                        let arguments = arguments.clone();
 
-                            *unfinished_postfix = Spanned::new(
-                                Expr::Call {
-                                    callee: lhs,
-                                    arguments,
-                                },
-                                unfinished_postfix
-                                    .span()
-                                    .combine_with(prefix_span)
-                                    .expect("these spans are from the same source"),
-                            );
-                        }
-                        Expr::AsUnitNoValue => {
-                            *unfinished_postfix = Spanned::new(
-                                Expr::AsUnit(lhs),
-                                unfinished_postfix
-                                    .span()
-                                    .combine_with(prefix_span)
-                                    .expect("these spans are from the same source"),
-                            );
-                        }
-                        _ => {
-                            unreachable!("a postfix expression was unaccounted for")
-                        }
+                        ast[unfinished_postfix] = Spanned::new(
+                            Expr::Call {
+                                callee: lhs,
+                                arguments,
+                            },
+                            ast[unfinished_postfix]
+                                .span()
+                                .combine_with(prefix_span)
+                                .expect("these spans are from the same source"),
+                        );
+                    }
+                    Expr::AsUnitNoValue => {
+                        ast[unfinished_postfix] = Spanned::new(
+                            Expr::AsUnit(lhs),
+                            ast[unfinished_postfix]
+                                .span()
+                                .combine_with(prefix_span)
+                                .expect("these spans are from the same source"),
+                        );
+                    }
+                    _ => {
+                        unreachable!("a postfix expression was unaccounted for")
                     }
                 }
 
@@ -1704,22 +1657,20 @@ impl Parser {
 
                 let unfinished_infix = infix_fn(self, lexer, ast, right_precedence, infix_span)?;
 
-                if let Some(unfinished_infix) = ast.get_mut_expr(unfinished_infix) {
-                    match unfinished_infix.kind() {
-                        Expr::BinaryNoLhs { op, rhs } => {
-                            let (op, rhs) = (*op, *rhs);
+                match ast[unfinished_infix].kind() {
+                    Expr::BinaryNoLhs { op, rhs } => {
+                        let (op, rhs) = (*op, *rhs);
 
-                            *unfinished_infix = Spanned::new(
-                                Expr::Binary { lhs, op, rhs },
-                                unfinished_infix
-                                    .span()
-                                    .combine_with(prefix_span)
-                                    .expect("these spans are from the same source"),
-                            );
-                        }
-                        _ => {
-                            unreachable!("an infix expression was unaccounted for");
-                        }
+                        ast[unfinished_infix] = Spanned::new(
+                            Expr::Binary { lhs, op, rhs },
+                            ast[unfinished_infix]
+                                .span()
+                                .combine_with(prefix_span)
+                                .expect("these spans are from the same source"),
+                        );
+                    }
+                    _ => {
+                        unreachable!("an infix expression was unaccounted for");
                     }
                 }
 
@@ -2094,8 +2045,8 @@ impl Parser {
             exprs.push(expr);
 
             if !matches!(
-                ast.get_expr(expr).map(Spanned::kind),
-                Some(Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::AsUnit(_))
+                ast[expr].kind(),
+                Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::AsUnit(_)
             ) && self.check_next(lexer, Token::CloseBracket).is_none()
             {
                 self.consume_next(lexer, Token::Semicolon, Error::BlockWithoutSemicolon)?;
@@ -2194,7 +2145,7 @@ impl Parser {
                 None
             };
 
-            let equal = self.consume_next(lexer, Token::Equal, Error::LetInWithoutEqual)?;
+            self.consume_next(lexer, Token::Equal, Error::LetInWithoutEqual)?;
 
             let value = self.parse_expression(lexer, ast, 0)?;
 
@@ -2206,10 +2157,7 @@ impl Parser {
                         value,
                     },
                     name_span
-                        .combine_with(
-                            ast.get_expr(value)
-                                .map_or_else(|| equal.span(), Spanned::span),
-                        )
+                        .combine_with(ast[value].span())
                         .expect("these spans are from the same source"),
                 )),
             );
@@ -2291,13 +2239,13 @@ impl Parser {
         } else {
             ast.push_expr(Spanned::new(
                 Expr::Unit,
-                span.combine_with(ast.get_expr(when_true).map_or(span, Spanned::span))
+                span.combine_with(ast[when_true].span())
                     .expect("these spans are from the same source"),
             ))
         };
 
         let span = span
-            .combine_with(ast.get_expr(otherwise).map_or(span, Spanned::span))
+            .combine_with(ast[otherwise].span())
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(
@@ -2341,7 +2289,7 @@ impl Parser {
         let when_true = self.block(lexer, ast, 0, when_true_span)?;
 
         let span = span
-            .combine_with(ast.get_expr(when_true).map_or(span, Spanned::span))
+            .combine_with(ast[when_true].span())
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(
@@ -2418,11 +2366,7 @@ impl Parser {
             .map_err(|error| error.transmute(|_| Error::ReturnWithoutValue))?;
 
         let span = span
-            .combine_with(
-                ast.get_expr(value)
-                    .expect("an expression is guaranteed since we made it to here")
-                    .span(),
-            )
+            .combine_with(ast[value].span())
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Return(value), span)))

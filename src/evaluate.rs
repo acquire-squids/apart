@@ -515,12 +515,12 @@ fn collect_block_arguments(
                 Argument::Address(_) => {
                     unreachable!("only registers and stack slots can be block arguments")
                 }
-                Argument::Passthrough(i) => call_frames
-                    .last()
-                    .expect("there will always be a call frame")
-                    .block_arguments
-                    .get(*i)
-                    .expect("passthrough block argument didn't exist"),
+                Argument::Passthrough(i) => {
+                    &call_frames
+                        .last()
+                        .expect("there will always be a call frame")
+                        .block_arguments[*i]
+                }
             }
             .clone()
         })
@@ -537,11 +537,11 @@ fn dereference_value<'a>(
     match value {
         Value::BlockArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .map(|call_frame| &call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .map(|call_frame| &call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
@@ -565,14 +565,14 @@ fn dereference_address<'a>(
     registers: &'a [Value],
     offset: usize,
 ) -> &'a Value {
-    match stack.get(offset).expect("value doesn't exist") {
+    match &stack[offset] {
         Value::BlockArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .map(|call_frame| &call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .map(|call_frame| &call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
@@ -596,14 +596,14 @@ fn dereference_register<'a>(
     registers: &'a [Value],
     index: usize,
 ) -> &'a Value {
-    match registers.get(index).expect("value doesn't exist") {
+    match &registers[index] {
         Value::BlockArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.block_arguments.get(*index))
+            .map(|call_frame| &call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last()
-            .and_then(|call_frame| call_frame.call_arguments.get(*index))
+            .map(|call_frame| &call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => dereference_address(
             stack,
@@ -630,11 +630,11 @@ fn dereference_value_mut<'a>(
     match value {
         Value::BlockArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => {
             let offset = call_frames
@@ -659,14 +659,14 @@ fn dereference_address_mut<'a>(
     registers: &'a mut [Value],
     offset: usize,
 ) -> &'a mut Value {
-    match stack.get(offset).expect("value doesn't exist") {
+    match &mut stack[offset] {
         Value::BlockArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => {
             let address = *address;
@@ -687,7 +687,7 @@ fn dereference_address_mut<'a>(
 
             dereference_register_mut(stack, call_frames, registers, index)
         }
-        _ => stack.get_mut(offset).expect("value doesn't exist"),
+        _ => &mut stack[offset],
     }
 }
 
@@ -698,14 +698,14 @@ fn dereference_register_mut<'a>(
     registers: &'a mut [Value],
     index: usize,
 ) -> &'a mut Value {
-    match registers.get(index).expect("value doesn't exist") {
+    match &mut registers[index] {
         Value::BlockArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.block_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.block_arguments[*index])
             .expect("the block argument should exist"),
         Value::CallArgument(index) => call_frames
             .last_mut()
-            .and_then(|call_frame| call_frame.call_arguments.get_mut(*index))
+            .map(|call_frame| &mut call_frame.call_arguments[*index])
             .expect("the call argument should exist"),
         Value::Address(address) => {
             let address = *address;
@@ -726,7 +726,7 @@ fn dereference_register_mut<'a>(
 
             dereference_register_mut(stack, call_frames, registers, index)
         }
-        _ => registers.get_mut(index).expect("value doesn't exist"),
+        _ => &mut registers[index],
     }
 }
 
