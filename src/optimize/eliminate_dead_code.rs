@@ -56,7 +56,7 @@ fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
     for block in ssa.blocks() {
         for instruction in block.instructions() {
             match instruction {
-                Instruction::NoOp | Instruction::Pop => {}
+                Instruction::NoOp => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Assign { value, .. }
                 | Instruction::Push(value)
@@ -132,7 +132,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
     for (b, block) in ssa.blocks().iter().enumerate() {
         for (i, instruction) in block.instructions().iter().enumerate() {
             match instruction {
-                Instruction::NoOp | Instruction::Pop => {
+                Instruction::NoOp => {
                     addresses_used.insert((BlockIndex(b), i));
                 }
                 Instruction::Unary { operand: value, .. } | Instruction::Assign { value, .. } => {

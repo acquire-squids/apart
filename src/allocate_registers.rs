@@ -69,7 +69,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
 
             for instruction in block.instructions_mut() {
                 match instruction {
-                    Instruction::NoOp | Instruction::Pop => {}
+                    Instruction::NoOp => {}
                     Instruction::Push(value) => {
                         self.value_to_allocation(&addresses, value);
                     }
@@ -85,6 +85,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                     | Instruction::Call {
                         callee: value,
                         temporary: to,
+                        ..
                     }
                     | Instruction::Assign { value, to }
                     | Instruction::Access {

@@ -358,7 +358,7 @@ impl Ssa {
     ) {
         for (i, instruction) in block.instructions_mut().iter_mut().enumerate().rev() {
             match instruction {
-                Instruction::NoOp | Instruction::Pop => {}
+                Instruction::NoOp => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }
@@ -479,7 +479,7 @@ impl Ssa {
 
             for instruction in &block.instructions {
                 match instruction {
-                    Instruction::NoOp | Instruction::Pop => {}
+                    Instruction::NoOp => {}
                     Instruction::Unary { operand: value, .. }
                     | Instruction::Assign { value, .. }
                     | Instruction::Push(value)
@@ -531,7 +531,7 @@ impl Ssa {
     ) {
         for instruction in block.instructions_mut().iter_mut().rev() {
             match instruction {
-                Instruction::NoOp | Instruction::Pop => {}
+                Instruction::NoOp => {}
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }

@@ -57,8 +57,6 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
                 translator.switch_to_block(block_index);
 
                 for (p, parameter) in parameters.iter().enumerate() {
-                    translator.push_instruction(Instruction::Pop);
-
                     translator
                         .addresses
                         .insert(parameter.name().span(), Addresslike::CallArgument(p));
@@ -299,9 +297,9 @@ pub enum Instruction {
         to: Value,
     },
     Push(Value),
-    Pop,
     Call {
         callee: Value,
+        arity: usize,
         temporary: Value,
     },
     Access {
@@ -1108,7 +1106,9 @@ impl Translator {
             })
             .collect::<Vec<_>>();
 
-        for argument in arguments.into_iter().rev() {
+        let arity = arguments.len();
+
+        for argument in arguments {
             self.push_instruction(Instruction::Push(argument));
         }
 
@@ -1120,6 +1120,7 @@ impl Translator {
 
         self.push_instruction(Instruction::Call {
             callee,
+            arity,
             temporary: Value::Address(address),
         });
 

@@ -15,7 +15,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     .and_then(|block| block.instructions().get(i))
                 {
                     match instruction {
-                        Instruction::NoOp | Instruction::Pop => {}
+                        Instruction::NoOp => {}
                         Instruction::Unary { operand: value, .. }
                         | Instruction::Assign { value, .. }
                         | Instruction::Push(value)

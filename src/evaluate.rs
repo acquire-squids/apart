@@ -48,8 +48,6 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
     where
         O: Write,
     {
-        let mut fp = None;
-
         let mut b = 0;
         let mut i = 0;
 
@@ -112,61 +110,54 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         self.assign(to, value);
                     }
                     Instruction::Push(value) => {
-                        if fp.is_none() {
-                            fp = Some(self.stack.len());
-                        }
-
                         let cloned = self.dereference_value(value).clone();
 
                         self.stack.push(cloned);
                     }
-                    Instruction::Pop => {
-                        let value = self.stack.pop().expect("call argument stack underflow");
-
-                        let Some(call_frame) = self.call_frames.last_mut() else {
-                            unreachable!("cannot pop outside of a call");
-                        };
-
-                        call_frame.call_arguments.push(value);
-                    }
                     Instruction::Call {
                         callee,
+                        arity,
                         temporary: to,
-                    } => {
-                        let fp = fp.take().unwrap_or(self.stack.len());
+                    } => match self.dereference_value(callee) {
+                        Value::Fn(callee) => {
+                            let callee = *callee;
 
-                        match self.dereference_value(callee) {
-                            Value::Fn(callee) => {
-                                let callee = *callee;
+                            let call_frame = CallFrame {
+                                block_arguments: vec![],
+                                call_arguments: self
+                                    .stack
+                                    .drain((self.stack.len() - *arity)..)
+                                    .collect::<Vec<_>>(),
+                                from: (b, i),
+                                fp: self.stack.len(),
+                                block_index: callee,
+                                previous_registers: vec![],
+                            };
 
-                                self.call_frames.push(CallFrame {
-                                    block_arguments: vec![],
-                                    call_arguments: vec![],
-                                    from: (b, i),
-                                    fp,
-                                    block_index: callee,
-                                    previous_registers: vec![],
-                                });
+                            self.call_frames.push(call_frame);
 
-                                b = usize::from(callee);
-                                i = 0;
+                            b = usize::from(callee);
+                            i = 0;
 
-                                continue 'block;
-                            }
-                            Value::NativeFn(span) => {
-                                let span = *span;
-
-                                let value = self.native_fn_call(sources, span, out);
-
-                                self.assign(to, value);
-                            }
-                            _ => {
-                                unreachable!(
-                                    "type checking would have caught calling an uncallable"
-                                );
-                            }
+                            continue 'block;
                         }
-                    }
+                        Value::NativeFn(span) => {
+                            let span = *span;
+
+                            let call_arguments = self
+                                .stack
+                                .drain((self.stack.len() - *arity)..)
+                                .collect::<Vec<_>>();
+
+                            let value =
+                                Self::native_fn_call(call_arguments.as_slice(), sources, span, out);
+
+                            self.assign(to, value);
+                        }
+                        _ => {
+                            unreachable!("type checking would have caught calling an uncallable");
+                        }
+                    },
                 }
 
                 i += 1;
@@ -297,7 +288,12 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
     }
 
     #[must_use]
-    fn native_fn_call<O>(&mut self, sources: &[(usize, &str)], span: Span, out: &mut O) -> Value
+    fn native_fn_call<O>(
+        call_arguments: &[Value],
+        sources: &[(usize, &str)],
+        span: Span,
+        out: &mut O,
+    ) -> Value
     where
         O: Write,
     {
@@ -308,11 +304,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             .expect("this span should be from a matching source")
         {
             "print_i64" => {
-                let value = self.stack.pop();
-
-                let Some(Value::Integer(value)) =
-                    value.as_ref().map(|value| self.dereference_value(value))
-                else {
+                let Value::Integer(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
@@ -321,11 +313,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                 Value::Unit
             }
             "print_f64" => {
-                let value = self.stack.pop();
-
-                let Some(Value::Float(value)) =
-                    value.as_ref().map(|value| self.dereference_value(value))
-                else {
+                let Value::Float(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
@@ -334,11 +322,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                 Value::Unit
             }
             "print_bool" => {
-                let value = self.stack.pop();
-
-                let Some(Value::Boolean(value)) =
-                    value.as_ref().map(|value| self.dereference_value(value))
-                else {
+                let Value::Boolean(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
@@ -347,10 +331,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                 Value::Unit
             }
             "print_unit" => {
-                let value = self.stack.pop();
-
-                let Some(Value::Unit) = value.as_ref().map(|value| self.dereference_value(value))
-                else {
+                let Value::Unit = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 

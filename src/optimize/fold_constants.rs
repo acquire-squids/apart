@@ -11,7 +11,6 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
             match instruction {
                 Instruction::NoOp
-                | Instruction::Pop
                 | Instruction::Assign { .. }
                 | Instruction::Push(_)
                 | Instruction::Call { .. }
