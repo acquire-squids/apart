@@ -70,11 +70,20 @@ where
         )
         .map_or_else(
             || {
-                source_ids.iter().rev().find_map(|source_id| {
-                    source_id
-                        .checked_add(1)
-                        .map_or_else(|| source_id.checked_sub(1), Some)
-                })
+                source_ids
+                    .iter()
+                    .rev()
+                    .filter_map(|source_id| {
+                        source_id
+                            .checked_add(1)
+                            .map_or_else(|| source_id.checked_sub(1), Some)
+                    })
+                    .find(|source_id| {
+                        !source_ids
+                            .iter()
+                            .rev()
+                            .any(|existing_source_id| source_id == existing_source_id)
+                    })
             },
             Some,
         )
