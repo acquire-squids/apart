@@ -1900,7 +1900,7 @@ impl TypeChecker {
                     }))
                 }
             }
-            (_, _) => Ok(self.apply(inferred, context)),
+            (_, _) => Err(self.apply(inferred, context)),
         }
     }
 
