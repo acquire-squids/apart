@@ -169,3 +169,134 @@ mod sum_equality_1 {
         );
     }
 }
+
+#[cfg(test)]
+mod path_explicit_self {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "path_explicit_self.txt"
+    ));
+
+    #[test]
+    fn path_explicit_self() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::NameResolve(
+                apart::NameResolveError::PathDoesNotExist,
+            )])
+        );
+    }
+}
+
+#[cfg(test)]
+mod path_incorrect_argument {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "path_incorrect_argument.txt"
+    ));
+
+    #[test]
+    fn path_incorrect_argument() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::TypeMismatch {
+                    expected,
+                    got,
+                }
+            )]) if expected == "i64" && got == "funky(T) -> T"
+        );
+    }
+}
+
+#[cfg(test)]
+mod path_invalid {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "path_invalid.txt"
+    ));
+
+    #[test]
+    fn path_invalid() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::NameResolve(
+                apart::NameResolveError::InvalidPath
+            )])
+        );
+    }
+}
+
+#[cfg(test)]
+mod path_nonexistent {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "path_nonexistent.txt"
+    ));
+
+    #[test]
+    fn path_nonexistent() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::NameResolve(
+                apart::NameResolveError::PathCannotAssociate,
+            )])
+        );
+    }
+}

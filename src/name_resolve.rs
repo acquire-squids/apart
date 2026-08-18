@@ -1,6 +1,6 @@
 use crate::{
     Reportable, Span, Spanned,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature},
+    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature, Visibility},
 };
 
 use std::{collections::HashMap, error, fmt, ops::Index};
@@ -8,17 +8,15 @@ use std::{collections::HashMap, error, fmt, ops::Index};
 pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
     let mut resolver = NameResolver::new();
 
-    // primitives should be resolved before anything else
-    resolver.resolve_primitives(ast);
-
-    // now that all the types are resolved, resolve their uses
     for root in ast.roots() {
-        resolver.resolve_types(ast, *root, None);
+        resolver.associate_types(ast, *root);
     }
 
-    resolver.resolve_native_functions(ast);
+    for root in ast.roots() {
+        resolver.resolve_types(ast, *root);
+    }
 
-    resolver.resolve(ast);
+    resolver.resolve_items(ast, ast.roots());
 
     if resolver.errors.is_empty() {
         Ok(Names(resolver.names))
@@ -27,9 +25,14 @@ pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
     }
 }
 
+// TODO: is it okay to use this span?
+const ROOT_SPAN: Span = Span::new(0, 0, 0);
+
 struct NameResolver {
-    variable_scopes: Vec<HashMap<String, (Span, Defined)>>,
-    persistent_scopes: HashMap<Span, HashMap<String, Span>>,
+    variable_scopes: Vec<HashMap<String, Definition>>,
+    persistent_scopes: HashMap<Span, HashMap<String, Definition>>,
+    associated_with: Option<Span>,
+    current_mod: (usize, Span),
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
 }
@@ -46,6 +49,20 @@ pub enum Error {
     InvalidAssignTarget,
     DuplicateSumName,
     DuplicateSumVariant,
+    InvalidPath,
+    DuplicateModName,
+    ExpectedType,
+    NameIsType,
+    UnassociatedName,
+    PathDoesNotExist,
+    PathIsValue,
+    NameIsMod,
+    PathCannotAssociate,
+    AssignmentTargetIsMod,
+    AssignmentTargetIsType,
+    AssignmentTargetIsFunction,
+    PathIsPrivate,
+    RootDeeperThanPathStart,
 }
 
 impl fmt::Display for Error {
@@ -81,6 +98,54 @@ impl fmt::Display for Error {
             Self::DuplicateSumVariant => {
                 write!(f, "this sum variant name is already in use by its sum")
             }
+            Self::InvalidPath => {
+                write!(f, "paths can only be made up of names")
+            }
+            Self::DuplicateModName => {
+                write!(f, "this mod name is already in use in this scope")
+            }
+            Self::ExpectedType => {
+                write!(f, "expected a type, but got a variable")
+            }
+            Self::NameIsType => {
+                write!(f, "this is a type, but it should be a variable")
+            }
+            Self::UnassociatedName => {
+                write!(f, "this name is not associated with this scope")
+            }
+            Self::PathDoesNotExist => {
+                write!(f, "this path does not exist at this depth")
+            }
+            Self::PathIsValue => {
+                write!(f, "this path must be a mod or a type, but it is a variable")
+            }
+            Self::NameIsMod => {
+                write!(f, "this name is a module, but it should be a variable")
+            }
+            Self::PathCannotAssociate => {
+                write!(
+                    f,
+                    "only modules and types can be the leading part of a path"
+                )
+            }
+            Self::AssignmentTargetIsMod => {
+                write!(f, "you cannot assign to a module")
+            }
+            Self::AssignmentTargetIsType => {
+                write!(f, "you cannot assign to a type")
+            }
+            Self::AssignmentTargetIsFunction => {
+                write!(f, "you cannot assign to a function")
+            }
+            Self::PathIsPrivate => {
+                write!(f, "this is private and cannot be accessed from here")
+            }
+            Self::RootDeeperThanPathStart => {
+                write!(
+                    f,
+                    "\"root\" can only be used in a path if it is the very beginning"
+                )
+            }
         }
     }
 }
@@ -90,9 +155,22 @@ impl error::Error for Error {}
 impl Reportable for Error {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Defined {
-    Yes,
-    No,
+enum DefinitionKind {
+    Type,
+    Mod,
+    Function,
+    Product,
+    Sum,
+    SumVariant,
+    DefinedName,
+    DeclaredOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Definition {
+    kind: DefinitionKind,
+    visibility: Visibility,
+    span: Span,
 }
 
 pub struct Names(HashMap<Span, Span>);
@@ -118,27 +196,29 @@ impl NameResolver {
         Self {
             variable_scopes: vec![HashMap::new()],
             persistent_scopes: HashMap::new(),
+            associated_with: None,
+            current_mod: (0, ROOT_SPAN),
             errors: vec![],
             names: HashMap::new(),
         }
     }
 
-    fn associate_name(&mut self, of: Span, name: String, span: Span) {
+    fn associate_name(&mut self, of: Span, name: String, definition: Definition) {
         self.persistent_scopes
             .entry(of)
             .and_modify(|associated_with| {
-                associated_with.insert(name.clone(), span);
+                associated_with.insert(name.clone(), definition);
             })
             .or_insert_with(|| {
                 let mut hash_map = HashMap::new();
 
-                hash_map.insert(name, span);
+                hash_map.insert(name, definition);
 
                 hash_map
             });
     }
 
-    fn resolve_associated_name(&self, of: Span, name: &str) -> Option<Span> {
+    fn resolve_associated_name(&self, of: Span, name: &str) -> Option<Definition> {
         self.persistent_scopes
             .get(&self.names.get(&of).map_or(of, |span| *span))
             .and_then(|associated_with| associated_with.get(name))
@@ -150,98 +230,193 @@ impl NameResolver {
             unreachable!("there will always be at least one scope");
         };
 
-        scope.insert(name, (span, Defined::No));
+        scope.insert(
+            name,
+            Definition {
+                kind: DefinitionKind::DeclaredOnly,
+                visibility: Visibility::Public,
+                span,
+            },
+        );
     }
 
     fn define_name(&mut self, name: &str) {
-        if let Some((_, defined)) = self
+        if let Some(definition) = self
             .variable_scopes
             .iter_mut()
             .filter_map(|scope| scope.get_mut(name))
             .next_back()
         {
-            *defined = Defined::Yes;
+            definition.kind = DefinitionKind::DefinedName;
         }
     }
 
-    fn resolve_name(&self, name: &str) -> Option<(Span, Defined)> {
+    fn declare_type(&mut self, name: String, span: Span) {
+        let Some(scope) = self.variable_scopes.last_mut() else {
+            unreachable!("there will always be at least one scope");
+        };
+
+        scope.insert(
+            name,
+            Definition {
+                kind: DefinitionKind::Type,
+                visibility: Visibility::Public,
+                span,
+            },
+        );
+    }
+
+    fn undeclare(&mut self, name: &str) {
+        let Some(scope) = self.variable_scopes.last_mut() else {
+            unreachable!("there will always be at least one scope");
+        };
+
+        scope.remove(name);
+    }
+
+    fn resolve_name(&self, name: &str) -> Option<Definition> {
         let mut found = None;
 
-        for (span, defined) in self
+        for definition in self
             .variable_scopes
             .iter()
             .rev()
             .filter_map(|scope| scope.get(name))
         {
             if found.is_none() {
-                found = Some(span);
+                found = Some(definition.span);
             }
 
-            if *defined == Defined::Yes {
-                return Some((*span, *defined));
+            if definition.kind != DefinitionKind::DeclaredOnly {
+                return Some(*definition);
             }
         }
 
-        found.map(|span| (*span, Defined::No))
-    }
-
-    fn assign_name(&mut self, target: Span, span: Span) {
-        if let Some((_, _)) = self
-            .variable_scopes
-            .iter_mut()
-            .rev()
-            .find_map(|scope| scope.values_mut().find(|(name, _)| *name == target))
-        {
-            return;
-        }
-
-        self.errors.push(Spanned::new(Error::NameNotDeclared, span));
+        found.map_or_else(
+            || {
+                self.associated_with
+                    .and_then(|associated_with| self.resolve_associated_name(associated_with, name))
+                    .map_or_else(
+                        || self.resolve_associated_name(self.current_mod.1, name),
+                        Some,
+                    )
+            },
+            |span| {
+                Some(Definition {
+                    kind: DefinitionKind::DeclaredOnly,
+                    visibility: Visibility::Public,
+                    span,
+                })
+            },
+        )
     }
 
     fn resolve_and_insert_name(
         &mut self,
-        associated_with: Option<Span>,
         name: &str,
         span: Span,
-    ) -> Result<(), Spanned<Error>> {
-        if let Some((name_span, defined)) = self.resolve_name(name) {
-            if defined == Defined::No {
+    ) -> Result<Definition, Spanned<Error>> {
+        if let Some(definition) = self.resolve_name(name) {
+            if definition.kind == DefinitionKind::DeclaredOnly {
                 Err(Spanned::new(Error::NameUsedInItsDeclaration, span))
             } else {
-                self.names.insert(span, name_span);
-                Ok(())
+                self.names.insert(span, definition.span);
+                Ok(definition)
             }
-        } else if let Some(name_span) = associated_with
-            .and_then(|associated_with| self.resolve_associated_name(associated_with, name))
-        {
-            self.names.insert(span, name_span);
-            Ok(())
         } else {
             Err(Spanned::new(Error::NameNotDeclared, span))
         }
     }
 
-    fn resolve_type_signature(
-        &mut self,
-        (associated_with_outer, associated_with_inner): (Option<Span>, Option<Span>),
-        ty: &Spanned<TypeSignature>,
-    ) {
+    fn resolve_type_signature(&mut self, ty: &Spanned<TypeSignature>) {
         match ty.kind() {
-            TypeSignature::Normal { name, generics } => {
-                for generic in generics {
-                    self.resolve_type_signature(
-                        (associated_with_outer, associated_with_inner),
-                        generic,
-                    );
+            TypeSignature::Path {
+                path,
+                name,
+                generics,
+            } => {
+                let associated_with = self.associated_with.take();
+
+                let mut found_root = None;
+
+                for (i, element) in path.iter().enumerate() {
+                    let deeper_than_here = i > 0
+                        && found_root
+                            .is_none_or(|found_root| i - (found_root + 1) > self.current_mod.0);
+
+                    let error_count = self.errors.len();
+
+                    self.resolve_path_element(element.kind(), element.span(), deeper_than_here);
+
+                    if self.errors.len() > error_count {
+                        break;
+                    } else if element.kind() == "root" {
+                        if deeper_than_here {
+                            self.errors
+                                .push(Spanned::new(Error::RootDeeperThanPathStart, element.span()));
+
+                            break;
+                        }
+
+                        found_root = Some(i);
+
+                        self.associated_with = Some(ROOT_SPAN);
+
+                        continue;
+                    }
+
+                    if let Some(span) = self.names.get(&element.span()) {
+                        self.associated_with = Some(*span);
+                    } else {
+                        break;
+                    }
                 }
 
-                if let Err(error) =
-                    self.resolve_and_insert_name(associated_with_inner, name.kind(), ty.span())
-                    && self
-                        .resolve_and_insert_name(associated_with_outer, name.kind(), ty.span())
-                        .is_err()
-                {
-                    self.errors.push(error);
+                match self.resolve_and_insert_name(name.kind(), name.span()) {
+                    Err(error) => {
+                        self.errors.push(error);
+                    }
+                    Ok(definition)
+                        if matches!(
+                            definition.kind,
+                            DefinitionKind::DefinedName
+                                | DefinitionKind::Function
+                                | DefinitionKind::Mod
+                        ) =>
+                    {
+                        self.errors
+                            .push(Spanned::new(Error::ExpectedType, ty.span()));
+                    }
+                    Ok(_) => {}
+                }
+
+                self.associated_with = associated_with;
+
+                for generic in generics {
+                    self.resolve_type_signature(generic);
+                }
+            }
+            TypeSignature::Normal { name, generics } => {
+                for generic in generics {
+                    self.resolve_type_signature(generic);
+                }
+
+                match self.resolve_and_insert_name(name.kind(), name.span()) {
+                    Err(error) => {
+                        self.errors.push(error);
+                    }
+                    Ok(definition)
+                        if matches!(
+                            definition.kind,
+                            DefinitionKind::DefinedName
+                                | DefinitionKind::Function
+                                | DefinitionKind::Mod
+                        ) =>
+                    {
+                        self.errors
+                            .push(Spanned::new(Error::ExpectedType, ty.span()));
+                    }
+                    Ok(_) => {}
                 }
             }
             TypeSignature::Fn {
@@ -249,134 +424,180 @@ impl NameResolver {
                 return_type,
             } => {
                 for parameter in parameters {
-                    self.resolve_type_signature(
-                        (associated_with_outer, associated_with_inner),
-                        parameter,
-                    );
+                    self.resolve_type_signature(parameter);
                 }
 
-                self.resolve_type_signature(
-                    (associated_with_outer, associated_with_inner),
-                    return_type,
-                );
+                self.resolve_type_signature(return_type);
             }
         }
     }
 }
 
 impl NameResolver {
-    fn resolve_primitives(&mut self, ast: &Ast) {
-        for root in ast.roots() {
-            if let Item::Primitive(name) = ast[*root].kind() {
+    #[allow(clippy::too_many_lines)]
+    fn associate_types(&mut self, ast: &Ast, item: ItemIndex) {
+        match ast[item].kind() {
+            Item::NativeFn { .. } => {}
+            Item::Primitive(name) => {
+                let associated_with = self.associated_with.take();
+
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
                         .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
-                } else {
-                    self.declare_name(name.kind().clone(), name.span());
-
-                    self.define_name(name.kind());
                 }
+
+                self.declare_type(name.kind().clone(), name.span());
+
+                self.associated_with = associated_with;
             }
-        }
-    }
+            Item::Fn { name, generics, .. } => {
+                let associated_with = self.associated_with.take();
 
-    fn resolve_native_functions(&mut self, ast: &Ast) {
-        for root in ast.roots() {
-            if let Item::NativeFn { name, signature } = ast[*root].kind() {
-                self.resolve_type_signature((None, None), signature);
+                self.associated_with = Some(name.span());
 
-                if self.resolve_name(name.kind()).is_some() {
-                    self.errors
-                        .push(Spanned::new(Error::DuplicateNativeFnName, name.span()));
-                } else {
-                    self.declare_name(name.kind().clone(), name.span());
-
-                    self.define_name(name.kind());
-                }
-            }
-        }
-    }
-
-    fn resolve_types(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
-        match ast[item].kind() {
-            Item::Primitive(_) | Item::NativeFn { .. } => {}
-            Item::Fn {
-                name,
-                parameters,
-                return_type,
-                generics,
-                ..
-            } => {
                 for generic in generics {
-                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                }
-                for parameter in parameters {
-                    self.resolve_type_signature(
-                        (associated_with, Some(name.span())),
-                        parameter.ty(),
+                    self.associate_name(
+                        name.span(),
+                        generic.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Type,
+                            visibility: Visibility::Private,
+                            span: generic.span(),
+                        },
                     );
                 }
 
-                self.resolve_type_signature((associated_with, Some(name.span())), return_type);
+                self.associated_with = associated_with;
+            }
+            Item::Mod {
+                name,
+                generics,
+                contents,
+                visibility,
+            } => {
+                if self.resolve_name(name.kind()).is_some() {
+                    self.errors
+                        .push(Spanned::new(Error::DuplicateModName, name.span()));
+                } else {
+                    self.associate_name(
+                        self.current_mod.1,
+                        name.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Mod,
+                            visibility: *visibility,
+                            span: name.span(),
+                        },
+                    );
+                }
 
-                self.resolve_function_name(ast, item, associated_with);
+                let associated_with = self.associated_with.take();
+                let current_mod = self.current_mod;
+
+                self.current_mod = (current_mod.0 + 1, name.span());
+
+                for generic in generics {
+                    self.associate_name(
+                        name.span(),
+                        generic.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Type,
+                            visibility: Visibility::Private,
+                            span: generic.span(),
+                        },
+                    );
+                }
+
+                for item in contents {
+                    self.associate_types(ast, *item);
+                }
+
+                self.current_mod = current_mod;
+                self.associated_with = associated_with;
             }
             Item::Product {
                 name,
-                fields,
                 generics,
+                visibility,
+                ..
             } => {
-                for generic in generics {
-                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
-                }
-
-                for field in fields {
-                    self.resolve_type_signature((Some(name.span()), None), field.ty());
-                }
-
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
                         .push(Spanned::new(Error::DuplicateProductName, name.span()));
                 } else {
-                    self.declare_name(name.kind().clone(), name.span());
-
-                    self.define_name(name.kind());
+                    self.associate_name(
+                        self.current_mod.1,
+                        name.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Product,
+                            visibility: *visibility,
+                            span: name.span(),
+                        },
+                    );
                 }
+
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
+                for generic in generics {
+                    self.associate_name(
+                        name.span(),
+                        generic.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Type,
+                            visibility: Visibility::Private,
+                            span: generic.span(),
+                        },
+                    );
+                }
+
+                self.associated_with = associated_with;
             }
             Item::Sum {
                 name,
                 variants,
                 generics,
+                visibility,
+                ..
             } => {
                 if self.resolve_name(name.kind()).is_some() {
                     self.errors
                         .push(Spanned::new(Error::DuplicateSumName, name.span()));
                 } else {
-                    self.declare_name(name.kind().clone(), name.span());
-
-                    self.define_name(name.kind());
+                    self.associate_name(
+                        self.current_mod.1,
+                        name.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Sum,
+                            visibility: *visibility,
+                            span: name.span(),
+                        },
+                    );
                 }
 
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
                 for generic in generics {
-                    self.associate_name(name.span(), generic.kind().clone(), generic.span());
+                    self.associate_name(
+                        name.span(),
+                        generic.kind().clone(),
+                        Definition {
+                            kind: DefinitionKind::Type,
+                            visibility: Visibility::Private,
+                            span: generic.span(),
+                        },
+                    );
                 }
 
                 for variant in variants {
                     let Item::Product {
-                        name: variant_name,
-                        fields,
-                        ..
+                        name: variant_name, ..
                     } = ast[*variant].kind()
                     else {
                         unreachable!("variants are only products");
                     };
-
-                    for field in fields {
-                        self.resolve_type_signature(
-                            (Some(name.span()), Some(variant_name.span())),
-                            field.ty(),
-                        );
-                    }
 
                     if self
                         .resolve_associated_name(name.span(), variant_name.kind())
@@ -388,43 +609,197 @@ impl NameResolver {
                         self.associate_name(
                             name.span(),
                             variant_name.kind().clone(),
-                            variant_name.span(),
+                            Definition {
+                                kind: DefinitionKind::SumVariant,
+                                visibility: *visibility,
+                                span: variant_name.span(),
+                            },
                         );
                     }
                 }
+
+                self.associated_with = associated_with;
             }
         }
     }
 
-    fn resolve_function_name(&mut self, ast: &Ast, item: ItemIndex, associated_with: Option<Span>) {
-        if let Item::Fn { name, .. } = ast[item].kind() {
-            if let Some(associated_with) = associated_with {
-                if self
-                    .resolve_associated_name(associated_with, name.kind())
-                    .is_some()
-                {
-                    self.errors
-                        .push(Spanned::new(Error::DuplicateFnName, name.span()));
-                } else {
-                    self.associate_name(associated_with, name.kind().clone(), name.span());
-                }
-            } else if self.resolve_name(name.kind()).is_some() {
-                self.errors
-                    .push(Spanned::new(Error::DuplicateFnName, name.span()));
-            } else {
+    fn resolve_types(&mut self, ast: &Ast, item: ItemIndex) {
+        match ast[item].kind() {
+            Item::Primitive(_) => {}
+            Item::NativeFn {
+                name,
+                signature,
+                visibility,
+            } => {
+                let associated_with = self.associated_with.take();
+
+                self.resolve_type_signature(signature);
+
+                self.resolve_function_name(name, *visibility, Error::DuplicateNativeFnName);
+
                 self.declare_name(name.kind().clone(), name.span());
-
                 self.define_name(name.kind());
+
+                self.associated_with = associated_with;
+            }
+            Item::Mod {
+                name,
+                contents,
+                generics,
+                ..
+            } => {
+                let current_mod = self.current_mod;
+
+                self.current_mod = (current_mod.0 + 1, name.span());
+
+                for generic in generics {
+                    self.declare_type(generic.kind().clone(), generic.span());
+                }
+
+                for item in contents {
+                    self.resolve_types(ast, *item);
+                }
+
+                for generic in generics {
+                    self.undeclare(generic.kind());
+                }
+
+                self.current_mod = current_mod;
+            }
+            Item::Fn {
+                name,
+                parameters,
+                return_type,
+                visibility,
+                ..
+            } => {
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
+                for parameter in parameters {
+                    self.resolve_type_signature(parameter.ty());
+                }
+
+                self.resolve_type_signature(return_type);
+
+                self.associated_with = associated_with;
+
+                self.resolve_function_name(name, *visibility, Error::DuplicateFnName);
+            }
+            Item::Product { name, fields, .. } => {
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
+                for field in fields {
+                    self.resolve_type_signature(field.ty());
+                }
+
+                self.associated_with = associated_with;
+            }
+            Item::Sum { name, variants, .. } => {
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
+                for variant in variants {
+                    let Item::Product { fields, .. } = ast[*variant].kind() else {
+                        unreachable!("variants are only products");
+                    };
+
+                    for field in fields {
+                        self.resolve_type_signature(field.ty());
+                    }
+                }
+
+                self.associated_with = associated_with;
             }
         }
     }
 
-    fn resolve(&mut self, ast: &Ast) {
-        for root in ast.roots() {
-            if let Item::Fn {
-                body, parameters, ..
-            } = ast[*root].kind()
+    fn resolve_function_name(
+        &mut self,
+        name: &Spanned<String>,
+        visibility: Visibility,
+        error: Error,
+    ) {
+        if let Some(associated_with) = self.associated_with {
+            if self
+                .resolve_associated_name(associated_with, name.kind())
+                .is_some()
             {
+                self.errors.push(Spanned::new(error, name.span()));
+            } else {
+                self.associate_name(
+                    associated_with,
+                    name.kind().clone(),
+                    Definition {
+                        kind: DefinitionKind::Function,
+                        visibility,
+                        span: name.span(),
+                    },
+                );
+            }
+        } else if self.resolve_name(name.kind()).is_some() {
+            self.errors.push(Spanned::new(error, name.span()));
+        } else {
+            self.associate_name(
+                self.current_mod.1,
+                name.kind().clone(),
+                Definition {
+                    kind: DefinitionKind::Function,
+                    visibility,
+                    span: name.span(),
+                },
+            );
+        }
+    }
+
+    fn resolve_items(&mut self, ast: &Ast, items: &[ItemIndex]) {
+        for item in items {
+            self.resolve_item(ast, *item);
+        }
+    }
+
+    fn resolve_item(&mut self, ast: &Ast, item: ItemIndex) {
+        match ast[item].kind() {
+            Item::Primitive(_)
+            | Item::NativeFn { .. }
+            | Item::Product { .. }
+            | Item::Sum { .. } => {}
+            Item::Mod {
+                name,
+                contents,
+                generics,
+                ..
+            } => {
+                let current_mod = self.current_mod;
+
+                self.current_mod = (current_mod.0 + 1, name.span());
+
+                for generic in generics {
+                    self.declare_type(generic.kind().clone(), generic.span());
+                }
+
+                self.resolve_items(ast, contents);
+
+                for generic in generics {
+                    self.undeclare(generic.kind());
+                }
+
+                self.current_mod = current_mod;
+            }
+            Item::Fn {
+                name,
+                parameters,
+                body,
+                ..
+            } => {
+                let associated_with = self.associated_with.take();
+
+                self.associated_with = Some(name.span());
+
                 self.variable_scopes.push(HashMap::new());
 
                 for (p, parameter) in parameters.iter().enumerate() {
@@ -447,16 +822,19 @@ impl NameResolver {
                     }
                 }
 
-                self.resolve_names(ast, *body, None);
+                self.resolve_expr(ast, *body, false);
 
                 self.variable_scopes.pop();
+
+                self.associated_with = associated_with;
             }
         }
     }
 }
 
 impl NameResolver {
-    fn resolve_names(&mut self, ast: &Ast, expr: ExprIndex, associated_with: Option<Span>) {
+    #[allow(clippy::too_many_lines)]
+    fn resolve_expr(&mut self, ast: &Ast, expr: ExprIndex, check_visibility: bool) {
         match ast[expr].kind() {
             Expr::Let {
                 name,
@@ -464,7 +842,7 @@ impl NameResolver {
                 ..
             } => {
                 if let Some(type_signature) = type_signature {
-                    self.resolve_type_signature((associated_with, None), type_signature);
+                    self.resolve_type_signature(type_signature);
                 }
 
                 self.declare_name(name.kind().clone(), name.span());
@@ -476,16 +854,14 @@ impl NameResolver {
         }
 
         if let Expr::Binary {
-            op: BinaryOp::VariantAccess,
-            lhs,
-            rhs,
+            op: BinaryOp::PathAccess,
+            ..
         } = ast[expr].kind()
         {
-            self.resolve_names(ast, *lhs, associated_with);
-            self.resolve_names(ast, *rhs, Some(ast[*lhs].span()));
+            self.resolve_path(ast, expr);
         } else {
             ast.for_children_exprs(expr, |ast, expr| {
-                self.resolve_names(ast, expr, associated_with);
+                self.resolve_expr(ast, expr, false);
             });
         }
 
@@ -504,13 +880,34 @@ impl NameResolver {
                 let lhs = *lhs;
 
                 match ast[lhs].kind() {
-                    Expr::Name(name) => {
-                        if let Some((name_span, _)) = self.resolve_name(name) {
-                            let span = ast[expr].span();
-
-                            self.assign_name(name_span, span);
+                    Expr::Name(name) => match self.resolve_and_insert_name(name, ast[lhs].span()) {
+                        Err(error) => {
+                            self.errors.push(error);
                         }
-                    }
+                        Ok(definition)
+                            if matches!(
+                                definition.kind,
+                                DefinitionKind::Type
+                                    | DefinitionKind::Product
+                                    | DefinitionKind::Sum
+                                    | DefinitionKind::SumVariant
+                            ) =>
+                        {
+                            self.errors
+                                .push(Spanned::new(Error::AssignmentTargetIsType, ast[lhs].span()));
+                        }
+                        Ok(definition) if matches!(definition.kind, DefinitionKind::Mod) => {
+                            self.errors
+                                .push(Spanned::new(Error::AssignmentTargetIsMod, ast[lhs].span()));
+                        }
+                        Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
+                            self.errors.push(Spanned::new(
+                                Error::AssignmentTargetIsFunction,
+                                ast[lhs].span(),
+                            ));
+                        }
+                        Ok(_) => {}
+                    },
                     Expr::Binary {
                         op: BinaryOp::Access,
                         rhs,
@@ -525,18 +922,184 @@ impl NameResolver {
             Expr::Name(name) => {
                 let span = ast[expr].span();
 
-                if let Err(error) = self.resolve_and_insert_name(associated_with, name, span) {
-                    self.errors.push(error);
+                match self.resolve_and_insert_name(name, ast[expr].span()) {
+                    Err(error) => {
+                        self.errors.push(error);
+                    }
+                    Ok(definition)
+                        if matches!(
+                            definition.kind,
+                            DefinitionKind::Type
+                                | DefinitionKind::Product
+                                | DefinitionKind::Sum
+                                | DefinitionKind::SumVariant
+                        ) =>
+                    {
+                        self.errors.push(Spanned::new(Error::NameIsType, span));
+                    }
+                    Ok(definition) if matches!(definition.kind, DefinitionKind::Mod) => {
+                        self.errors.push(Spanned::new(Error::NameIsMod, span));
+                    }
+                    Ok(definition)
+                        if check_visibility
+                            && matches!(definition.visibility, Visibility::Private) =>
+                    {
+                        self.errors.push(Spanned::new(Error::PathIsPrivate, span));
+                    }
+                    Ok(_) => {}
                 }
             }
             Expr::Product { name, .. } => {
-                if let Err(error) =
-                    self.resolve_and_insert_name(associated_with, name.kind(), name.span())
-                {
-                    self.errors.push(error);
+                match self.resolve_and_insert_name(name.kind(), name.span()) {
+                    Err(error) => {
+                        self.errors.push(error);
+                    }
+                    Ok(definition)
+                        if !matches!(
+                            definition.kind,
+                            DefinitionKind::Product | DefinitionKind::SumVariant
+                        ) =>
+                    {
+                        self.errors
+                            .push(Spanned::new(Error::ExpectedType, name.span()));
+                    }
+                    Ok(definition)
+                        if check_visibility
+                            && matches!(definition.visibility, Visibility::Private)
+                            && matches!(definition.kind, DefinitionKind::Product) =>
+                    {
+                        self.errors
+                            .push(Spanned::new(Error::PathIsPrivate, name.span()));
+                    }
+                    Ok(_) => {}
                 }
             }
             _ => {}
+        }
+    }
+
+    fn resolve_path(&mut self, ast: &Ast, expr: ExprIndex) {
+        let mut path = vec![];
+
+        let mut lhs = expr;
+
+        let error_count = self.errors.len();
+
+        while let Expr::Binary {
+            op: BinaryOp::PathAccess,
+            lhs: lhs_of_lhs,
+            rhs: rhs_of_lhs,
+        } = ast[lhs].kind()
+        {
+            match ast[*lhs_of_lhs].kind() {
+                Expr::Name(_)
+                | Expr::Binary {
+                    op: BinaryOp::PathAccess,
+                    ..
+                } => match ast[*rhs_of_lhs].kind() {
+                    Expr::Name(_) | Expr::Product { .. } => {
+                        path.push(*rhs_of_lhs);
+                    }
+                    _ => {
+                        self.errors
+                            .push(Spanned::new(Error::InvalidPath, ast[*rhs_of_lhs].span()));
+                    }
+                },
+                _ => {
+                    self.errors
+                        .push(Spanned::new(Error::InvalidPath, ast[*lhs_of_lhs].span()));
+                }
+            }
+
+            lhs = *lhs_of_lhs;
+        }
+
+        if let Expr::Name(_) = ast[lhs].kind() {
+            path.push(lhs);
+        } else {
+            self.errors
+                .push(Spanned::new(Error::InvalidPath, ast[lhs].span()));
+        }
+
+        if self.errors.len() == error_count {
+            let associated_with = self.associated_with.take();
+
+            let path_len = path.len();
+
+            let mut found_root = None;
+
+            while path.len() > 1
+                && let Some(p) = path.pop()
+            {
+                if let Expr::Name(name) = ast[p].kind() {
+                    let deeper_than_here = path.len() < path_len - 1
+                        && found_root.is_none_or(|found_root| {
+                            (path_len - path.len()) - (found_root + 1) > self.current_mod.0
+                        });
+
+                    let error_count = self.errors.len();
+
+                    self.resolve_path_element(name, ast[p].span(), deeper_than_here);
+
+                    if self.errors.len() > error_count {
+                        break;
+                    } else if name == "root" {
+                        if deeper_than_here {
+                            self.errors
+                                .push(Spanned::new(Error::RootDeeperThanPathStart, ast[p].span()));
+
+                            break;
+                        }
+
+                        found_root = Some(path_len - path.len());
+
+                        self.associated_with = Some(ROOT_SPAN);
+
+                        continue;
+                    }
+                }
+
+                if let Some(span) = self.names.get(&ast[p].span()) {
+                    self.associated_with = Some(*span);
+                } else {
+                    break;
+                }
+            }
+
+            if self.errors.len() == error_count
+                && path.len() == 1
+                && let Some(rhs) = path.pop()
+            {
+                self.resolve_expr(ast, rhs, true);
+            }
+
+            self.associated_with = associated_with;
+        }
+    }
+
+    fn resolve_path_element(&mut self, name: &str, span: Span, deeper_than_here: bool) {
+        if name == "root" {
+            return;
+        }
+
+        match self.resolve_and_insert_name(name, span) {
+            Err(_) => {
+                self.errors
+                    .push(Spanned::new(Error::PathDoesNotExist, span));
+            }
+            Ok(definition) if matches!(definition.kind, DefinitionKind::DefinedName) => {
+                self.errors.push(Spanned::new(Error::PathIsValue, span));
+            }
+            Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
+                self.errors
+                    .push(Spanned::new(Error::PathCannotAssociate, span));
+            }
+            Ok(definition)
+                if deeper_than_here && matches!(definition.visibility, Visibility::Private) =>
+            {
+                self.errors.push(Spanned::new(Error::PathIsPrivate, span));
+            }
+            Ok(_) => {}
         }
     }
 }

@@ -1,0 +1,29 @@
+funky main() {
+	print_f64(triple_get_y(outer~inner~inner_inner~make_triple(1.0, 3.0, 5.0, {})));
+}
+
+funky triple_get_y[B, C, D, E](triple <- outer~inner~inner_inner~Triple[B, C, D, E]) -> D {
+	triple.y
+}
+
+mod outer[O] {
+	pub mod inner[I] {
+		pub mod inner_inner[T] {
+			pub product Triple[W] {
+				x <- O,
+				y <- I,
+				z <- T,
+				w <- W,
+			}
+
+			pub funky make_triple[A](x <- O, y <- I, z <- T, w <- A) -> Triple[A, O, I, T] {
+				Triple {
+					x <- x,
+					y <- y,
+					z <- z,
+					w <- w,
+				}
+			}
+		}
+	}
+}

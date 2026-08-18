@@ -450,10 +450,12 @@ pub enum Expr {
 pub enum Item {
     Primitive(Spanned<String>),
     NativeFn {
+        visibility: Visibility,
         name: Spanned<String>,
         signature: Spanned<TypeSignature>,
     },
     Fn {
+        visibility: Visibility,
         name: Spanned<String>,
         parameters: Vec<Parameter>,
         return_type: Spanned<TypeSignature>,
@@ -461,15 +463,29 @@ pub enum Item {
         body: ExprIndex,
     },
     Product {
+        visibility: Visibility,
         name: Spanned<String>,
         fields: Vec<Parameter>,
         generics: Vec<Spanned<String>>,
     },
     Sum {
+        visibility: Visibility,
         name: Spanned<String>,
         variants: Vec<ItemIndex>,
         generics: Vec<Spanned<String>>,
     },
+    Mod {
+        visibility: Visibility,
+        name: Spanned<String>,
+        generics: Vec<Spanned<String>>,
+        contents: Vec<ItemIndex>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Public,
+    Private,
 }
 
 #[derive(Debug)]
@@ -490,6 +506,11 @@ impl Parameter {
 
 #[derive(Debug)]
 pub enum TypeSignature {
+    Path {
+        path: Vec<Spanned<String>>,
+        name: Spanned<String>,
+        generics: Vec<Spanned<Self>>,
+    },
     Normal {
         name: Spanned<String>,
         generics: Vec<Spanned<Self>>,
@@ -508,7 +529,7 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
-    VariantAccess,
+    PathAccess,
     Access,
     Multiply,
     Divide,
@@ -596,7 +617,7 @@ impl Ast {
             | Expr::Name(_)
             | Expr::AsUnitNoValue
             | Expr::BinaryNoLhs {
-                op: BinaryOp::Access | BinaryOp::VariantAccess,
+                op: BinaryOp::Access | BinaryOp::PathAccess,
                 ..
             } => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
@@ -606,7 +627,7 @@ impl Ast {
                 f(self, *rhs);
             }
             Expr::Binary {
-                op: BinaryOp::Access | BinaryOp::VariantAccess,
+                op: BinaryOp::Access,
                 lhs,
                 ..
             } => {
@@ -690,7 +711,7 @@ impl Parser {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" | "sum" => Some(lexeme),
+            | "product" | "sum" | "pub" | "mod" => Some(lexeme),
             _ => None,
         }
     }
@@ -865,6 +886,12 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
     ) -> Result<ItemIndex, Spanned<Error>> {
+        let visibility = if self.match_keyword_next(lexer, "pub").is_some() {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+
         let token = self
             .peek(lexer)
             .expect("items are only parsed in the main loop");
@@ -888,7 +915,7 @@ impl Parser {
                     let span = token.span();
 
                     if self.keyword(lexer, span) == Some("funky") {
-                        self.parse_native_function(lexer, ast, native_span)
+                        self.parse_native_function(lexer, ast, native_span, visibility)
                     } else {
                         Err(Spanned::new(Error::UnknownNativeItem, token.span()))
                     }
@@ -896,17 +923,22 @@ impl Parser {
                 Some("funky") => {
                     self.advance(lexer);
 
-                    self.parse_fn(lexer, ast, span)
+                    self.parse_fn(lexer, ast, span, visibility)
                 }
                 Some("product") => {
                     self.advance(lexer);
 
-                    self.parse_product(lexer, ast, span, true)
+                    self.parse_product(lexer, ast, span, visibility, true)
                 }
                 Some("sum") => {
                     self.advance(lexer);
 
-                    self.parse_sum(lexer, ast, span)
+                    self.parse_sum(lexer, ast, span, visibility)
+                }
+                Some("mod") => {
+                    self.advance(lexer);
+
+                    self.parse_mod(lexer, ast, span, visibility)
                 }
                 _ => Err(Spanned::new(Error::ExpectedItem, span)),
             }
@@ -942,6 +974,7 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
+        visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
             .name_lexeme(lexer)
@@ -962,7 +995,14 @@ impl Parser {
             .combine_with(semicolon_span)
             .expect("these spans are from the same source");
 
-        Ok(ast.push_item(Spanned::new(Item::NativeFn { name, signature }, span)))
+        Ok(ast.push_item(Spanned::new(
+            Item::NativeFn {
+                visibility,
+                name,
+                signature,
+            },
+            span,
+        )))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -971,6 +1011,7 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
+        visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
             .name_lexeme(lexer)
@@ -1078,6 +1119,7 @@ impl Parser {
 
         let funky = ast.push_item(Spanned::new(
             Item::Fn {
+                visibility,
                 name,
                 parameters,
                 return_type,
@@ -1131,6 +1173,7 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
+        visibility: Visibility,
         allow_generics: bool,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
@@ -1197,6 +1240,7 @@ impl Parser {
 
         Ok(ast.push_item(Spanned::new(
             Item::Product {
+                visibility,
                 name,
                 generics,
                 fields,
@@ -1210,6 +1254,7 @@ impl Parser {
         lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
+        visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
             .name_lexeme(lexer)
@@ -1230,7 +1275,7 @@ impl Parser {
             && self.check_next(lexer, Token::CloseBracket).is_none()
         {
             variants.push(
-                self.parse_product(lexer, ast, span, false)
+                self.parse_product(lexer, ast, span, visibility, false)
                     .map_err(|error| {
                         error.transmute(|error| match error {
                             Error::ProductWithoutName => Error::SumVariantWithoutName,
@@ -1271,11 +1316,59 @@ impl Parser {
 
         Ok(ast.push_item(Spanned::new(
             Item::Sum {
+                visibility,
                 name,
                 generics,
                 variants,
             },
             span.combine_with(variants_end).unwrap_or(span),
+        )))
+    }
+
+    fn parse_mod(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        span: Span,
+        visibility: Visibility,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let name = self
+            .name_lexeme(lexer)
+            .map_err(|error| error.transmute(|_| Error::ProductWithoutName))
+            .map(|(name, name_span)| Spanned::new(name, name_span))?;
+
+        let mut generics = vec![];
+
+        self.parse_generics(lexer, &mut generics)?;
+
+        let contents_span = self
+            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
+            .span();
+
+        let mut contents = vec![];
+
+        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
+            contents.push(self.parse_item(lexer, ast)?);
+        }
+
+        let contents_end = self
+            .consume_next_with_span(
+                lexer,
+                Token::CloseBracket,
+                Error::UnclosedSum,
+                contents_span,
+            )?
+            .span();
+
+        Ok(ast.push_item(Spanned::new(
+            Item::Mod {
+                visibility,
+                name,
+                generics,
+                contents,
+            },
+            span.combine_with(contents_end)
+                .expect("these spans are from the same source"),
         )))
     }
 
@@ -1375,9 +1468,19 @@ impl Parser {
                     None => {
                         let (name, span) = self.name_lexeme(lexer)?;
 
+                        let mut path = vec![Spanned::new(name, span)];
+
+                        while self.peek(lexer).is_some()
+                            && self.match_next(lexer, Token::Tilde).is_some()
+                        {
+                            let (name, span) = self.name_lexeme(lexer)?;
+
+                            path.push(Spanned::new(name, span));
+                        }
+
                         let mut generics = vec![];
 
-                        if let Some(open_span) = self
+                        let span = if let Some(open_span) = self
                             .match_next(lexer, Token::OpenSquareBracket)
                             .map(|token| token.span())
                         {
@@ -1385,6 +1488,14 @@ impl Parser {
                                 && self.check_next(lexer, Token::CloseSquareBracket).is_none()
                             {
                                 generics.push(self.parse_type_signature(lexer)?);
+
+                                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
+                                    self.consume_next(
+                                        lexer,
+                                        Token::Comma,
+                                        Error::GenericsWithoutComma,
+                                    )?;
+                                }
                             }
 
                             self.consume_next_with_span(
@@ -1392,13 +1503,30 @@ impl Parser {
                                 Token::CloseSquareBracket,
                                 Error::UnclosedGenerics,
                                 open_span,
-                            )?;
-                        }
+                            )?
+                            .span()
+                        } else {
+                            path[0].span()
+                        };
+
+                        let name = path
+                            .pop()
+                            .expect("the path is guaranteed to have at least one name");
+
+                        let span = name
+                            .span()
+                            .combine_with(span)
+                            .expect("these spans are from the same source");
 
                         Ok(Spanned::new(
-                            TypeSignature::Normal {
-                                name: Spanned::new(name, span),
-                                generics,
+                            if path.is_empty() {
+                                TypeSignature::Normal { name, generics }
+                            } else {
+                                TypeSignature::Path {
+                                    path,
+                                    name,
+                                    generics,
+                                }
                             },
                             span,
                         ))
@@ -1431,8 +1559,8 @@ mod precedence {
 
     pub const PRIMARY: u16 = 0xEE00;
 
-    pub const LEFT_VARIANT_ACCESS: u16 = 0xCC00;
-    pub const RIGHT_VARIANT_ACCESS: u16 = 0xCC50;
+    pub const LEFT_PATH_ACCESS: u16 = 0xCC00;
+    pub const RIGHT_PATH_ACCESS: u16 = 0xCC50;
 
     pub const CALL: u16 = 0xBB00;
 
@@ -1771,7 +1899,7 @@ impl Parser {
         match token.kind() {
             Token::Tilde => infix_op_precedence!(
                 self, lexer;
-                variant_access (LEFT_VARIANT_ACCESS, RIGHT_VARIANT_ACCESS),
+                path_access (LEFT_PATH_ACCESS, RIGHT_PATH_ACCESS),
             ),
             Token::Dot => infix_op_precedence!(
                 self, lexer;
@@ -1992,7 +2120,7 @@ impl Parser {
     unary_op!(negate, Negate);
     unary_op!(not, Not);
 
-    binary_op!(variant_access, VariantAccess);
+    binary_op!(path_access, PathAccess);
     binary_op!(access, Access);
     binary_op!(multiply, Multiply);
     binary_op!(divide, Divide);

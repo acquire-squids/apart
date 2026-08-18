@@ -1,0 +1,35 @@
+funky main() {
+	print_i64(outer~bingus(97));
+}
+
+mod outer {
+	mod inner {
+		pub funky identity[I](value <- I) -> I {
+			value
+		}
+
+		pub funky wrap[W](value <- W) -> root~outer~inner~Wrapper[W] {
+			identity(Wrapper {
+				value <- value,
+			})
+		}
+
+		pub product Wrapper[T] {
+			value <- T,
+		}
+
+		pub funky unwrap[U](wrapped <- root~outer~inner~Wrapper[U]) -> U {
+			identity(wrapped.value)
+		}
+	}
+
+	pub funky bingus(binglings <- i64) -> i64 {
+		inner~unwrap(
+			inner~wrap(
+				root~outer~inner~identity(
+					binglings
+				)
+			)
+		)
+	}
+}

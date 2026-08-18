@@ -472,7 +472,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *changed = true;
             }
             (
-                BinaryOp::VariantAccess
+                BinaryOp::PathAccess
                 | BinaryOp::Access
                 | BinaryOp::Multiply
                 | BinaryOp::Divide

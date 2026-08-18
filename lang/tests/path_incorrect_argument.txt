@@ -1,0 +1,11 @@
+funky main() {
+	print_i64(outer~inner~identity);
+}
+
+mod outer {
+	pub mod inner {
+		pub funky identity[T](value <- T) -> T {
+			value
+		}
+	}
+}

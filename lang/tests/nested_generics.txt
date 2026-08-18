@@ -2,20 +2,20 @@ funky main() {
 	print_f64(double_unwrap(double_wrap(3.14)));
 }
 
-product Wrapper[T] {
-	value <- T,
-}
-
-product OtherWrapper[O] {
-	value <- O,
-}
-
 funky double_wrap[W](value <- W) -> OtherWrapper[Wrapper[W]] {
 	OtherWrapper {
 		value <- Wrapper {
 			value <- value,
 		},
 	}
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+product OtherWrapper[O] {
+	value <- O,
 }
 
 funky double_unwrap[U](value <- OtherWrapper[Wrapper[U]]) -> U {

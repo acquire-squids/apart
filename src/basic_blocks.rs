@@ -22,72 +22,11 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
         translator.label_function(ast, *root);
     }
 
-    for root in ast.roots() {
-        if let Item::Fn { name, .. } | Item::NativeFn { name, .. } = ast[*root].kind()
-            && name.kind() != "main"
-        {
-            translator.label_function(ast, *root);
-        }
-    }
+    translator.label_items(ast, ast.roots());
 
     let function_count = translator.blocks.len();
 
-    for root in ast.roots() {
-        if let Item::Fn {
-            name,
-            parameters,
-            body,
-            ..
-        } = ast[*root].kind()
-            && let Some(block_index) = translator
-                .addresses
-                .get(&name.span())
-                .and_then(|address| {
-                    if let Addresslike::Block(block_index) = address {
-                        Some(block_index)
-                    } else {
-                        None
-                    }
-                })
-                .copied()
-        {
-            let block_index = if parameters.is_empty() {
-                block_index
-            } else {
-                translator.switch_to_block(block_index);
-
-                for (p, parameter) in parameters.iter().enumerate() {
-                    translator
-                        .addresses
-                        .insert(parameter.name().span(), Addresslike::CallArgument(p));
-                }
-
-                let after_arguments = translator.next_block();
-
-                let Some(block) = translator.blocks.get_mut(usize::from(block_index)) else {
-                    unreachable!("we're guaranteed to have a block by now");
-                };
-
-                if block.terminator.is_none() {
-                    block.terminator = Some(BlockTerminator::Jump(after_arguments));
-                }
-
-                after_arguments
-            };
-
-            translator.switch_to_block(block_index);
-
-            let last_in_fn = translator.last_in_fn;
-
-            translator.last_in_fn = true;
-
-            translator.translate_expr(ast, names, types, *body);
-
-            translator.last_in_fn = last_in_fn;
-
-            assert_eq!(translator.values.as_slice(), &[]);
-        }
-    }
+    translator.translate_items(ast, names, types, ast.roots());
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -348,6 +287,11 @@ impl Translator {
                 self.addresses
                     .insert(name.span(), Addresslike::NativeFn(name.span()));
             }
+            Item::Mod { contents, .. } => {
+                for item in contents {
+                    self.label_function(ast, *item);
+                }
+            }
         }
     }
 
@@ -379,6 +323,98 @@ impl Translator {
             .expect("instructions only get checked within blocks")
             .instructions
             .len()
+    }
+
+    fn label_items(&mut self, ast: &Ast, items: &[ItemIndex]) {
+        for item in items {
+            match ast[*item].kind() {
+                Item::Mod { contents, .. } => {
+                    self.label_items(ast, contents);
+                }
+                Item::Fn { name, .. } | Item::NativeFn { name, .. } if name.kind() != "main" => {
+                    self.label_function(ast, *item);
+                }
+                Item::Primitive(_)
+                | Item::Product { .. }
+                | Item::Sum { .. }
+                | Item::Fn { .. }
+                | Item::NativeFn { .. } => {}
+            }
+        }
+    }
+
+    fn translate_items(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        types: &TypeChecker,
+        items: &[ItemIndex],
+    ) {
+        for item in items {
+            match ast[*item].kind() {
+                Item::Primitive(_)
+                | Item::NativeFn { .. }
+                | Item::Product { .. }
+                | Item::Sum { .. } => {}
+                Item::Mod { contents, .. } => {
+                    self.translate_items(ast, names, types, contents.as_slice());
+                }
+                Item::Fn {
+                    name,
+                    parameters,
+                    body,
+                    ..
+                } => {
+                    if let Some(block_index) = self
+                        .addresses
+                        .get(&name.span())
+                        .and_then(|address| {
+                            if let Addresslike::Block(block_index) = address {
+                                Some(block_index)
+                            } else {
+                                None
+                            }
+                        })
+                        .copied()
+                    {
+                        let block_index = if parameters.is_empty() {
+                            block_index
+                        } else {
+                            self.switch_to_block(block_index);
+
+                            for (p, parameter) in parameters.iter().enumerate() {
+                                self.addresses
+                                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
+                            }
+
+                            let after_arguments = self.next_block();
+
+                            let Some(block) = self.blocks.get_mut(usize::from(block_index)) else {
+                                unreachable!("we're guaranteed to have a block by now");
+                            };
+
+                            if block.terminator.is_none() {
+                                block.terminator = Some(BlockTerminator::Jump(after_arguments));
+                            }
+
+                            after_arguments
+                        };
+
+                        self.switch_to_block(block_index);
+
+                        let last_in_fn = self.last_in_fn;
+
+                        self.last_in_fn = true;
+
+                        self.translate_expr(ast, names, types, *body);
+
+                        self.last_in_fn = last_in_fn;
+
+                        assert_eq!(self.values.as_slice(), &[]);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -449,11 +485,11 @@ impl Translator {
                 self.translate_assign(ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
-                op: BinaryOp::VariantAccess,
+                op: BinaryOp::PathAccess,
                 lhs,
                 rhs,
             } => {
-                self.translate_variant_access(ast, names, types, (*lhs, *rhs));
+                self.translate_path_access(ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::Access,
@@ -1361,36 +1397,7 @@ impl Translator {
         }
     }
 
-    fn find_variant_index(
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
-        (lhs, rhs): (ExprIndex, ExprIndex),
-    ) -> u16 {
-        let lhs_span = ast[lhs].span();
-
-        match &types[types[names[lhs_span]]] {
-            Type::Sum {
-                variants: type_variants,
-                ..
-            } => match ast[rhs].kind() {
-                Expr::Product { name, .. } => {
-                    let Some(variant_index) = type_variants
-                        .iter()
-                        .position(|variant| matches!(&types[*variant], Type::Product { name: variant_name, .. } if variant_name == name.kind())).and_then(|index| u16::try_from(index).ok())
-                    else {
-                        unreachable!("type checking guarantees the variant exists on the type");
-                    };
-
-                    variant_index
-                }
-                _ => unreachable!("for now, only names can be accessors"),
-            },
-            _ => unreachable!("for now, only products can be accessees"),
-        }
-    }
-
-    fn translate_variant_access(
+    fn translate_path_access(
         &mut self,
         ast: &Ast,
         names: &Names,
@@ -1401,18 +1408,67 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        let variant_index = Self::find_variant_index(ast, names, types, (lhs, rhs));
-
-        self.translate_expr(ast, names, types, rhs);
-
-        let Some(Value::Compound(fields)) = self.values.pop() else {
-            unreachable!("type checking guarantees the right operand is a product literal");
+        let lhs = match ast[lhs].kind() {
+            Expr::Name(_) => lhs,
+            Expr::Binary {
+                op: BinaryOp::PathAccess,
+                rhs,
+                ..
+            } => {
+                if let Expr::Name(_) = ast[*rhs].kind() {
+                    *rhs
+                } else {
+                    unreachable!("name resolution verifies the path is correct");
+                }
+            }
+            _ => {
+                unreachable!("name resolution verifies the path is correct");
+            }
         };
 
-        self.values.push(Value::TaggedCompound {
-            fields,
-            tag: variant_index,
-        });
+        let lhs_span = ast[lhs].span();
+
+        match types.get_type(names[lhs_span]) {
+            Some(Type::Sum {
+                variants: type_variants,
+                ..
+            }) => {
+                let variant_index = match ast[rhs].kind() {
+                    Expr::Product { name, .. } => {
+                        let Some(variant_index) = type_variants
+                            .iter()
+                            .position(|variant| {
+                                matches!(
+                                    &types[*variant],
+                                    Type::Product { name: variant_name, .. }
+                                        if variant_name == name.kind()
+                                )
+                            })
+                            .and_then(|index| u16::try_from(index).ok())
+                        else {
+                            unreachable!("type checking guarantees the variant exists on the type");
+                        };
+
+                        variant_index
+                    }
+                    _ => unreachable!("for now, only products can be variants"),
+                };
+
+                self.translate_expr(ast, names, types, rhs);
+
+                let Some(Value::Compound(fields)) = self.values.pop() else {
+                    unreachable!("type checking guarantees the right operand is a product literal");
+                };
+
+                self.values.push(Value::TaggedCompound {
+                    fields,
+                    tag: variant_index,
+                });
+            }
+            _ => {
+                self.translate_name(ast, names, rhs);
+            }
+        }
 
         self.last_in_fn = last_in_fn;
 

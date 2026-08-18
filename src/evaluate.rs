@@ -110,7 +110,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         self.assign(to, value);
                     }
                     Instruction::Push(value) => {
-                        let cloned = self.dereference_value(value).clone();
+                        let cloned = self.clone_value(value);
 
                         self.stack.push(cloned);
                     }
@@ -351,7 +351,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             .arguments()
             .iter()
             .map(|argument| {
-                match argument {
+                self.clone_value(match argument {
                     Argument::Address(Value::Address(address)) => self.dereference_address(
                         self.call_frames
                             .iter()
@@ -370,8 +370,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                             .expect("there will always be a call frame")
                             .block_arguments[*i]
                     }
-                }
-                .clone()
+                })
             })
             .collect::<Vec<_>>()
     }
