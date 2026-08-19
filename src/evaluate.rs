@@ -1,6 +1,6 @@
 use crate::{
     Span,
-    basic_blocks::{BlockIndex, Instruction, Value},
+    basic_blocks::{BlockIndex, Instruction, Value as IrValue},
     parse::{BinaryOp, UnaryOp},
     ssa::{Argument, BlockTerminator, JumpTo, Ssa},
 };
@@ -8,18 +8,49 @@ use crate::{
 use std::{io::Write, mem};
 
 struct CallFrame<const MAX_REGISTERS: usize> {
-    call_arguments: Vec<Value>,
-    block_arguments: Vec<Value>,
+    call_arguments: Vec<CopyableValue>,
+    block_arguments: Vec<CopyableValue>,
     from: (usize, usize),
     fp: usize,
     block_index: BlockIndex,
-    previous_registers: Vec<(usize, Value)>,
+    previous_registers: Vec<(usize, CopyableValue)>,
 }
 
 struct Evaluator<const MAX_REGISTERS: usize> {
-    stack: Vec<Value>,
-    registers: [Value; MAX_REGISTERS],
+    stack: Vec<CopyableValue>,
+    // TODO: remove dead values from this vec while running (garbage collection)
+    values: Vec<Value>,
+    registers: [CopyableValue; MAX_REGISTERS],
     call_frames: Vec<CallFrame<MAX_REGISTERS>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CopyableValue {
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    Unit,
+    Fn(BlockIndex),
+    Runtime,
+    ValueIndex(ValueIndex),
+}
+
+enum Value {
+    NativeFn(Span),
+    Compound(Vec<CopyableValue>),
+    TaggedCompound {
+        fields: Vec<CopyableValue>,
+        tag: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ValueIndex(usize);
+
+impl From<ValueIndex> for usize {
+    fn from(value: ValueIndex) -> Self {
+        value.0
+    }
 }
 
 pub fn run<const MAX_REGISTERS: usize, O>(ssa: &Ssa, sources: &[(usize, &str)], out: &mut O)
@@ -28,7 +59,8 @@ where
 {
     let mut evaluator = Evaluator {
         stack: vec![],
-        registers: [const { Value::Runtime }; MAX_REGISTERS],
+        values: vec![],
+        registers: [const { CopyableValue::Runtime }; MAX_REGISTERS],
         call_frames: vec![CallFrame {
             call_arguments: vec![],
             block_arguments: vec![],
@@ -87,30 +119,39 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         of,
                         temporary: to,
                     } => {
-                        let Value::Compound(values) = self.dereference_value(of) else {
+                        let CopyableValue::ValueIndex(value_index) = self.convert_ir_value(of)
+                        else {
                             unreachable!("type checking guarantees an accessee is a compound");
                         };
 
-                        let value = self.dereference_value(&values[*index]).clone();
+                        let Value::Compound(values) = &self.values[usize::from(value_index)] else {
+                            unreachable!("type checking guarantees an accessee is a compound");
+                        };
 
-                        self.assign(to, value);
+                        self.assign(to, values[*index]);
                     }
                     Instruction::AccessAssign { index, of, value } => {
-                        let value = self.dereference_value(value).clone();
+                        let value = self.convert_ir_value(value);
 
-                        let Value::Compound(values) = self.dereference_value_mut(of) else {
+                        let CopyableValue::ValueIndex(value_index) = self.convert_ir_value(of)
+                        else {
+                            unreachable!("type checking guarantees an accessee is a compound");
+                        };
+
+                        let Value::Compound(values) = &mut self.values[usize::from(value_index)]
+                        else {
                             unreachable!("type checking guarantees an accessee is a compound");
                         };
 
                         values[*index] = value;
                     }
                     Instruction::Assign { value, to } => {
-                        let value = self.dereference_value(value).clone();
+                        let value = self.convert_ir_value(value);
 
                         self.assign(to, value);
                     }
                     Instruction::Push(value) => {
-                        let cloned = self.clone_value(value);
+                        let cloned = self.convert_ir_value(value);
 
                         self.stack.push(cloned);
                     }
@@ -118,10 +159,8 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         callee,
                         arity,
                         temporary: to,
-                    } => match self.dereference_value(callee) {
-                        Value::Fn(callee) => {
-                            let callee = *callee;
-
+                    } => match self.convert_ir_value(callee) {
+                        CopyableValue::Fn(callee) => {
                             let call_frame = CallFrame {
                                 block_arguments: vec![],
                                 call_arguments: self
@@ -141,8 +180,10 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
 
                             continue 'block;
                         }
-                        Value::NativeFn(span) => {
-                            let span = *span;
+                        CopyableValue::ValueIndex(index) => {
+                            let Value::NativeFn(span) = self.values[usize::from(index)] else {
+                                unreachable!("type checking guarantees callees are functions");
+                            };
 
                             let call_arguments = self
                                 .stack
@@ -179,8 +220,8 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                     condition,
                     when_true,
                     otherwise,
-                } => match self.dereference_value(condition) {
-                    Value::Boolean(true) => {
+                } => match self.convert_ir_value(condition) {
+                    CopyableValue::Boolean(true) => {
                         b = usize::from(when_true.block());
                         i = 0;
 
@@ -191,7 +232,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                             .expect("there will always be a call frame")
                             .block_arguments = block_args;
                     }
-                    Value::Boolean(false) => {
+                    CopyableValue::Boolean(false) => {
                         b = usize::from(otherwise.block());
                         i = 0;
 
@@ -207,7 +248,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                     }
                 },
                 BlockTerminator::Return(value) => {
-                    let value = self.clone_value(value);
+                    let value = self.convert_ir_value(value);
 
                     if let Some(call_frame) = self.call_frames.pop() {
                         b = call_frame.from.0;
@@ -242,21 +283,9 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
         }
     }
 
-    fn clone_value(&self, value: &Value) -> Value {
-        match self.dereference_value(value).clone() {
-            Value::Compound(values) => Value::Compound(
-                values
-                    .iter()
-                    .map(|value| self.clone_value(value))
-                    .collect::<Vec<_>>(),
-            ),
-            value => value,
-        }
-    }
-
-    fn assign(&mut self, to: &Value, value: Value) {
+    fn assign(&mut self, to: &IrValue, value: CopyableValue) {
         match to {
-            Value::Register(index) => {
+            IrValue::Register(index) => {
                 if let Some(call_frame) = self.call_frames.last_mut()
                     && !call_frame
                         .previous_registers
@@ -270,7 +299,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                     self.registers[*index] = value;
                 }
             }
-            Value::Address(address) => {
+            IrValue::Address(address) => {
                 if let Some(stack_value) = self
                     .call_frames
                     .iter()
@@ -289,11 +318,11 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
 
     #[must_use]
     fn native_fn_call<O>(
-        call_arguments: &[Value],
+        call_arguments: &[CopyableValue],
         sources: &[(usize, &str)],
         span: Span,
         out: &mut O,
-    ) -> Value
+    ) -> CopyableValue
     where
         O: Write,
     {
@@ -304,40 +333,40 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             .expect("this span should be from a matching source")
         {
             "print_i64" => {
-                let Value::Integer(value) = &call_arguments[0] else {
+                let CopyableValue::Integer(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
                 writeln!(out, "{value}").expect("failed to write to output");
 
-                Value::Unit
+                CopyableValue::Unit
             }
             "print_f64" => {
-                let Value::Float(value) = &call_arguments[0] else {
+                let CopyableValue::Float(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
                 writeln!(out, "{value:?}").expect("failed to write to output");
 
-                Value::Unit
+                CopyableValue::Unit
             }
             "print_bool" => {
-                let Value::Boolean(value) = &call_arguments[0] else {
+                let CopyableValue::Boolean(value) = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
                 writeln!(out, "{value}").expect("failed to write to output");
 
-                Value::Unit
+                CopyableValue::Unit
             }
             "print_unit" => {
-                let Value::Unit = &call_arguments[0] else {
+                let CopyableValue::Unit = &call_arguments[0] else {
                     unreachable!("type checking would have caught an incorrect argument");
                 };
 
                 writeln!(out, "{{}}").expect("failed to write to output");
 
-                Value::Unit
+                CopyableValue::Unit
             }
             _ => {
                 unreachable!("tried to call an unknown native function");
@@ -346,265 +375,200 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
     }
 
     #[must_use]
-    fn collect_block_arguments(&self, jump_to: &JumpTo) -> Vec<Value> {
+    fn collect_block_arguments(&mut self, jump_to: &JumpTo) -> Vec<CopyableValue> {
         jump_to
             .arguments()
             .iter()
-            .map(|argument| {
-                self.clone_value(match argument {
-                    Argument::Address(Value::Address(address)) => self.dereference_address(
-                        self.call_frames
-                            .iter()
-                            .rfind(|frame| frame.block_index == address.block_index)
-                            .map(|frame| frame.fp + address.offset)
-                            .expect("couldn't calculate offset from fp"),
-                    ),
-                    Argument::Address(Value::Register(index)) => self.dereference_register(*index),
-                    Argument::Address(_) => {
-                        unreachable!("only registers and stack slots can be block arguments")
-                    }
-                    Argument::Passthrough(i) => {
-                        &self
-                            .call_frames
-                            .last()
-                            .expect("there will always be a call frame")
-                            .block_arguments[*i]
-                    }
-                })
+            .map(|argument| match argument {
+                Argument::Address(ir_value) => self.convert_ir_value(ir_value),
+                Argument::Passthrough(i) => {
+                    self.call_frames
+                        .last()
+                        .expect("there will always be a call frame")
+                        .block_arguments[*i]
+                }
             })
             .collect::<Vec<_>>()
     }
 
     #[must_use]
-    fn dereference_value<'a>(&'a self, value: &'a Value) -> &'a Value {
-        match value {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => self.dereference_address(
-                self.call_frames
-                    .iter()
-                    .rfind(|frame| frame.block_index == address.block_index)
-                    .map(|frame| frame.fp + address.offset)
-                    .expect("couldn't calculate offset from fp"),
-            ),
-            Value::Register(index) => self.dereference_register(*index),
-            _ => value,
-        }
-    }
-
-    #[must_use]
-    fn dereference_address(&self, offset: usize) -> &Value {
-        match &self.stack[offset] {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => self.dereference_address(
-                self.call_frames
-                    .iter()
-                    .rfind(|frame| frame.block_index == address.block_index)
-                    .map(|frame| frame.fp + address.offset)
-                    .expect("couldn't calculate offset from fp"),
-            ),
-            Value::Register(index) => self.dereference_register(*index),
-            value => value,
-        }
-    }
-
-    #[must_use]
-    fn dereference_register(&self, index: usize) -> &Value {
-        match &self.registers[index] {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last()
-                .map(|call_frame| &call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => self.dereference_address(
-                self.call_frames
-                    .iter()
-                    .rfind(|frame| frame.block_index == address.block_index)
-                    .map(|frame| frame.fp + address.offset)
-                    .expect("couldn't calculate offset from fp"),
-            ),
-            Value::Register(index) => self.dereference_register(*index),
-            value => value,
-        }
-    }
-
-    #[must_use]
-    fn dereference_value_mut<'a>(&'a mut self, value: &Value) -> &'a mut Value {
-        match value {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => {
-                let offset = self
-                    .call_frames
-                    .iter()
-                    .rfind(|frame| frame.block_index == address.block_index)
-                    .map(|frame| frame.fp + address.offset)
-                    .expect("couldn't calculate offset from fp");
-
-                self.dereference_address_mut(offset)
-            }
-            Value::Register(index) => self.dereference_register_mut(*index),
-            _ => {
-                unreachable!("dereference_value_mut should never be used with a normal value");
-            }
-        }
-    }
-
-    #[must_use]
-    fn dereference_address_mut(&mut self, offset: usize) -> &mut Value {
-        match &mut self.stack[offset] {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => {
-                let address = *address;
-
-                self.dereference_address_mut(
-                    self.call_frames
-                        .iter()
-                        .rfind(|frame| frame.block_index == address.block_index)
-                        .map(|frame| frame.fp + address.offset)
-                        .expect("couldn't calculate offset from fp"),
-                )
-            }
-            Value::Register(index) => {
-                let index = *index;
-
-                self.dereference_register_mut(index)
-            }
-            _ => &mut self.stack[offset],
-        }
-    }
-
-    #[must_use]
-    fn dereference_register_mut(&mut self, index: usize) -> &mut Value {
-        match &mut self.registers[index] {
-            Value::BlockArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.block_arguments[*index])
-                .expect("the block argument should exist"),
-            Value::CallArgument(index) => self
-                .call_frames
-                .last_mut()
-                .map(|call_frame| &mut call_frame.call_arguments[*index])
-                .expect("the call argument should exist"),
-            Value::Address(address) => {
-                let address = *address;
-
-                self.dereference_address_mut(
-                    self.call_frames
-                        .iter()
-                        .rfind(|frame| frame.block_index == address.block_index)
-                        .map(|frame| frame.fp + address.offset)
-                        .expect("couldn't calculate offset from fp"),
-                )
-            }
-            Value::Register(index) => {
-                let index = *index;
-
-                self.dereference_register_mut(index)
-            }
-            _ => &mut self.registers[index],
-        }
-    }
-
-    #[must_use]
-    fn evaluate_unary(&self, (op, operand): (UnaryOp, &Value)) -> Value {
-        match (op, self.dereference_value(operand)) {
-            (UnaryOp::Not, Value::Boolean(value)) => Value::Boolean(!value),
-            (UnaryOp::Negate, Value::Integer(value)) => Value::Integer(-value),
-            (UnaryOp::Negate, Value::Float(value)) => Value::Float(-value),
+    fn evaluate_unary(&mut self, (op, operand): (UnaryOp, &IrValue)) -> CopyableValue {
+        match (op, self.convert_ir_value(operand)) {
+            (UnaryOp::Not, CopyableValue::Boolean(value)) => CopyableValue::Boolean(!value),
+            (UnaryOp::Negate, CopyableValue::Integer(value)) => CopyableValue::Integer(-value),
+            (UnaryOp::Negate, CopyableValue::Float(value)) => CopyableValue::Float(-value),
             (_, _) => unreachable!("type checking would have caught the wrong operand type"),
         }
     }
 
     #[allow(clippy::too_many_lines)]
     #[must_use]
-    fn evaluate_binary(&self, (op, lhs, rhs): (BinaryOp, &Value, &Value)) -> Value {
-        match (op, self.dereference_value(lhs), self.dereference_value(rhs)) {
-            (BinaryOp::Multiply, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Integer(lhs * rhs)
+    fn evaluate_binary(&mut self, (op, lhs, rhs): (BinaryOp, &IrValue, &IrValue)) -> CopyableValue {
+        match (op, self.convert_ir_value(lhs), self.convert_ir_value(rhs)) {
+            (BinaryOp::Multiply, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Integer(lhs * rhs)
             }
-            (BinaryOp::Divide, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Integer(lhs / rhs)
+            (BinaryOp::Divide, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Integer(lhs / rhs)
             }
-            (BinaryOp::Remainder, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Integer(lhs % rhs)
+            (BinaryOp::Remainder, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Integer(lhs % rhs)
             }
-            (BinaryOp::Add, Value::Integer(lhs), Value::Integer(rhs)) => Value::Integer(lhs + rhs),
-            (BinaryOp::Subtract, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Integer(lhs - rhs)
+            (BinaryOp::Add, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Integer(lhs + rhs)
             }
-            (BinaryOp::Less, Value::Integer(lhs), Value::Integer(rhs)) => Value::Boolean(lhs < rhs),
-            (BinaryOp::Greater, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Boolean(lhs > rhs)
+            (BinaryOp::Subtract, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Integer(lhs - rhs)
             }
-            (BinaryOp::LessOrEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Boolean(lhs <= rhs)
+            (BinaryOp::Less, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Boolean(lhs < rhs)
             }
-            (BinaryOp::GreaterOrEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
-                Value::Boolean(lhs >= rhs)
+            (BinaryOp::Greater, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Boolean(lhs > rhs)
             }
-            (BinaryOp::Multiply, Value::Float(lhs), Value::Float(rhs)) => Value::Float(lhs * rhs),
-            (BinaryOp::Divide, Value::Float(lhs), Value::Float(rhs)) => Value::Float(lhs / rhs),
-            (BinaryOp::Remainder, Value::Float(lhs), Value::Float(rhs)) => Value::Float(lhs % rhs),
-            (BinaryOp::Add, Value::Float(lhs), Value::Float(rhs)) => Value::Float(lhs + rhs),
-            (BinaryOp::Subtract, Value::Float(lhs), Value::Float(rhs)) => Value::Float(lhs - rhs),
-            (BinaryOp::Less, Value::Float(lhs), Value::Float(rhs)) => Value::Boolean(lhs < rhs),
-            (BinaryOp::Greater, Value::Float(lhs), Value::Float(rhs)) => Value::Boolean(lhs > rhs),
-            (BinaryOp::LessOrEqual, Value::Float(lhs), Value::Float(rhs)) => {
-                Value::Boolean(lhs <= rhs)
+            (BinaryOp::LessOrEqual, CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => {
+                CopyableValue::Boolean(lhs <= rhs)
             }
-            (BinaryOp::GreaterOrEqual, Value::Float(lhs), Value::Float(rhs)) => {
-                Value::Boolean(lhs >= rhs)
+            (
+                BinaryOp::GreaterOrEqual,
+                CopyableValue::Integer(lhs),
+                CopyableValue::Integer(rhs),
+            ) => CopyableValue::Boolean(lhs >= rhs),
+            (BinaryOp::Multiply, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Float(lhs * rhs)
             }
-            (BinaryOp::Equal, Value::Float(lhs), Value::Float(rhs)) => {
-                Value::Boolean((lhs - rhs).abs() < f64::EPSILON)
+            (BinaryOp::Divide, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Float(lhs / rhs)
             }
-            (BinaryOp::NotEqual, Value::Float(lhs), Value::Float(rhs)) => {
-                Value::Boolean((lhs - rhs).abs() >= f64::EPSILON)
+            (BinaryOp::Remainder, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Float(lhs % rhs)
             }
-            (BinaryOp::Equal, lhs, rhs) => Value::Boolean(lhs == rhs),
-            (BinaryOp::NotEqual, lhs, rhs) => Value::Boolean(lhs != rhs),
+            (BinaryOp::Add, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Float(lhs + rhs)
+            }
+            (BinaryOp::Subtract, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Float(lhs - rhs)
+            }
+            (BinaryOp::Less, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean(lhs < rhs)
+            }
+            (BinaryOp::Greater, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean(lhs > rhs)
+            }
+            (BinaryOp::LessOrEqual, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean(lhs <= rhs)
+            }
+            (BinaryOp::GreaterOrEqual, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean(lhs >= rhs)
+            }
+            (BinaryOp::Equal, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean((lhs - rhs).abs() < f64::EPSILON)
+            }
+            (BinaryOp::NotEqual, CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => {
+                CopyableValue::Boolean((lhs - rhs).abs() >= f64::EPSILON)
+            }
+            (BinaryOp::Equal, lhs, rhs) => CopyableValue::Boolean(self.values_eq(lhs, rhs)),
+            (BinaryOp::NotEqual, lhs, rhs) => CopyableValue::Boolean(!self.values_eq(lhs, rhs)),
             (_, _, _) => unreachable!("type checking would have caught the wrong operand type"),
+        }
+    }
+
+    fn values_eq(&self, lhs: CopyableValue, rhs: CopyableValue) -> bool {
+        match (lhs, rhs) {
+            (CopyableValue::Integer(lhs), CopyableValue::Integer(rhs)) => lhs == rhs,
+            (CopyableValue::Float(lhs), CopyableValue::Float(rhs)) => lhs == rhs,
+            (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => lhs == rhs,
+            (CopyableValue::Unit, CopyableValue::Unit) => lhs == rhs,
+            (CopyableValue::Fn(lhs), CopyableValue::Fn(rhs)) => lhs == rhs,
+            (CopyableValue::ValueIndex(lhs), CopyableValue::ValueIndex(rhs)) => {
+                match (
+                    &self.values[usize::from(lhs)],
+                    &self.values[usize::from(rhs)],
+                ) {
+                    (Value::NativeFn(lhs), Value::NativeFn(rhs)) => lhs == rhs,
+                    (
+                        Value::TaggedCompound { tag: lhs, .. },
+                        Value::TaggedCompound { tag: rhs, .. },
+                    ) if lhs != rhs => false,
+                    (Value::Compound(lhs), Value::Compound(rhs))
+                    | (
+                        Value::TaggedCompound { fields: lhs, .. },
+                        Value::TaggedCompound { fields: rhs, .. },
+                    ) => {
+                        for (lhs, rhs) in lhs.iter().zip(rhs) {
+                            if !self.values_eq(*lhs, *rhs) {
+                                return false;
+                            }
+                        }
+
+                        true
+                    }
+                    (_, _) => false,
+                }
+            }
+            (_, _) => false,
+        }
+    }
+
+    fn convert_ir_value(&mut self, ir_value: &IrValue) -> CopyableValue {
+        match ir_value {
+            IrValue::Integer(value) => CopyableValue::Integer(*value),
+            IrValue::Float(value) => CopyableValue::Float(*value),
+            IrValue::Boolean(value) => CopyableValue::Boolean(*value),
+            IrValue::Unit => CopyableValue::Unit,
+            IrValue::Fn(value) => CopyableValue::Fn(*value),
+            IrValue::Runtime => CopyableValue::Runtime,
+            IrValue::BlockArgument(value) => self
+                .call_frames
+                .last()
+                .map(|call_frame| call_frame.block_arguments[*value])
+                .expect("the call frame will exist"),
+            IrValue::CallArgument(value) => self
+                .call_frames
+                .last()
+                .map(|call_frame| call_frame.call_arguments[*value])
+                .expect("the call frame will exist"),
+            IrValue::Register(value) => self.registers[*value],
+            IrValue::Address(address) => self
+                .call_frames
+                .iter()
+                .rfind(|frame| frame.block_index == address.block_index)
+                .map(|frame| frame.fp + address.offset)
+                .map(|offset| self.stack[offset])
+                .expect("the stack value will exist"),
+            IrValue::NativeFn(span) => {
+                self.values.push(Value::NativeFn(*span));
+
+                CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
+            }
+            IrValue::Compound(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| self.convert_ir_value(value))
+                    .collect::<Vec<_>>();
+
+                self.values.push(Value::Compound(values));
+
+                CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
+            }
+            IrValue::TaggedCompound {
+                fields: values,
+                tag,
+            } => {
+                let tag = *tag;
+
+                let values = values
+                    .iter()
+                    .map(|value| self.convert_ir_value(value))
+                    .collect::<Vec<_>>();
+
+                self.values.push(Value::TaggedCompound {
+                    fields: values,
+                    tag,
+                });
+
+                CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
+            }
         }
     }
 }
