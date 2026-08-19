@@ -39,7 +39,7 @@ fn value_uses_block(blocks_used: &mut [bool], value: &Value) {
         Value::Fn(block_index) => {
             blocks_used[usize::from(*block_index)] = true;
         }
-        Value::Compound(values) => {
+        Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
             for value in values {
                 value_uses_block(blocks_used, value);
             }
@@ -117,7 +117,7 @@ fn value_uses_address(addresses_used: &mut HashSet<(BlockIndex, usize)>, value: 
         Value::Address(address) => {
             addresses_used.insert((address.block_index, address.offset));
         }
-        Value::Compound(values) => {
+        Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
             for value in values {
                 value_uses_address(addresses_used, value);
             }
