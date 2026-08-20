@@ -18,8 +18,9 @@ struct CallFrame<const MAX_REGISTERS: usize> {
 
 struct Evaluator<const MAX_REGISTERS: usize> {
     stack: Vec<CopyableValue>,
-    // TODO: remove dead values from this vec while running (garbage collection)
     values: Vec<Value>,
+    allocated: usize,
+    next_gc: usize,
     registers: [CopyableValue; MAX_REGISTERS],
     call_frames: Vec<CallFrame<MAX_REGISTERS>>,
 }
@@ -61,6 +62,8 @@ where
     let mut evaluator = Evaluator {
         stack: vec![],
         values: vec![],
+        allocated: 0,
+        next_gc: 1_000_000,
         registers: [const { CopyableValue::Runtime }; MAX_REGISTERS],
         call_frames: vec![CallFrame {
             call_arguments: vec![],
@@ -162,6 +165,10 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         temporary: to,
                     } => match self.convert_ir_value(callee) {
                         CopyableValue::Fn(callee) => {
+                            if self.should_gc() {
+                                self.gc();
+                            }
+
                             let call_frame = CallFrame {
                                 block_arguments: vec![],
                                 call_arguments: self
@@ -276,12 +283,20 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                         i += 1;
                     }
 
+                    if self.should_gc() {
+                        self.gc();
+                    }
+
                     if self.call_frames.is_empty() {
                         break 'block;
                     }
                 }
             }
         }
+
+        self.gc();
+
+        assert_eq!(self.allocated, 0, "{} BYTES LEAKED", self.allocated);
     }
 
     fn assign(&mut self, to: &IrValue, value: CopyableValue) {
@@ -540,15 +555,27 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             IrValue::NativeFn(span) => {
                 self.values.push(Value::NativeFn(*span));
 
+                self.allocated +=
+                    mem::size_of_val(self.values.last().expect("the value was just pushed"));
+
                 CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
             }
             IrValue::Compound(values) => {
                 let values = values
                     .iter()
-                    .map(|value| self.convert_ir_value(value))
+                    .map(|value| {
+                        let element = self.convert_ir_value(value);
+
+                        self.allocated += mem::size_of_val(&element);
+
+                        element
+                    })
                     .collect::<Vec<_>>();
 
                 self.values.push(Value::Compound(values));
+
+                self.allocated +=
+                    mem::size_of_val(self.values.last().expect("the value was just pushed"));
 
                 CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
             }
@@ -560,7 +587,13 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
 
                 let values = values
                     .iter()
-                    .map(|value| self.convert_ir_value(value))
+                    .map(|value| {
+                        let element = self.convert_ir_value(value);
+
+                        self.allocated += mem::size_of_val(&element);
+
+                        element
+                    })
                     .collect::<Vec<_>>();
 
                 self.values.push(Value::TaggedCompound {
@@ -568,8 +601,221 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                     tag,
                 });
 
+                self.allocated +=
+                    mem::size_of_val(self.values.last().expect("the value was just pushed"));
+
                 CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1))
             }
+        }
+    }
+
+    const fn should_gc(&self) -> bool {
+        self.allocated >= self.next_gc
+    }
+
+    fn gc(&mut self) {
+        let (marked, marked_count) = self.mark();
+
+        self.sweep(marked.as_slice(), marked_count);
+
+        self.next_gc *= 2;
+    }
+
+    fn mark(&self) -> (Vec<Option<ValueIndex>>, usize) {
+        let mut marked = vec![const { None }; self.values.len()];
+        let mut marked_count = 0;
+
+        for value in &self.stack {
+            self.mark_value(&mut marked, *value, &mut marked_count);
+        }
+
+        for value in &self.registers {
+            self.mark_value(&mut marked, *value, &mut marked_count);
+        }
+
+        for call_frame in &self.call_frames {
+            for call_argument in &call_frame.call_arguments {
+                self.mark_value(&mut marked, *call_argument, &mut marked_count);
+            }
+
+            for block_argument in &call_frame.block_arguments {
+                self.mark_value(&mut marked, *block_argument, &mut marked_count);
+            }
+
+            for (_, previous_register) in &call_frame.previous_registers {
+                self.mark_value(&mut marked, *previous_register, &mut marked_count);
+            }
+        }
+
+        (marked, marked_count)
+    }
+
+    fn mark_value(
+        &self,
+        marked: &mut [Option<ValueIndex>],
+        value: CopyableValue,
+        marked_count: &mut usize,
+    ) {
+        if let CopyableValue::ValueIndex(index) = value {
+            match &self.values[usize::from(index)] {
+                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                    for value in values {
+                        self.mark_value(marked, *value, marked_count);
+                    }
+                }
+                Value::NativeFn(_) => {}
+            }
+
+            if marked[usize::from(index)].is_none() {
+                marked[usize::from(index)] = Some(ValueIndex(*marked_count));
+
+                *marked_count += 1;
+            }
+        }
+    }
+
+    fn sweep(&mut self, marked: &[Option<ValueIndex>], marked_count: usize) {
+        let mut values = Vec::with_capacity(marked_count);
+
+        self.stack = self
+            .stack
+            .iter()
+            .map(|value| self.retain_value(&mut values, *value, marked))
+            .collect::<Vec<_>>();
+
+        self.registers = self
+            .registers
+            .iter()
+            .map(|value| self.retain_value(&mut values, *value, marked))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("the replacement registers are made from the original registers");
+
+        for c in 0..(self.call_frames.len()) {
+            let Some(call_frame) = self.call_frames.get(c) else {
+                unreachable!("the call frame will exist");
+            };
+
+            let call_arguments = call_frame
+                .call_arguments
+                .iter()
+                .map(|call_argument| self.retain_value(&mut values, *call_argument, marked))
+                .collect::<Vec<_>>();
+
+            let block_arguments = call_frame
+                .block_arguments
+                .iter()
+                .map(|block_argument| self.retain_value(&mut values, *block_argument, marked))
+                .collect::<Vec<_>>();
+
+            let previous_registers = call_frame
+                .previous_registers
+                .iter()
+                .map(|(i, previous_register)| {
+                    (
+                        *i,
+                        self.retain_value(&mut values, *previous_register, marked),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let Some(call_frame) = self.call_frames.get_mut(c) else {
+                unreachable!("the call frame will exist");
+            };
+
+            call_frame.call_arguments = call_arguments;
+            call_frame.block_arguments = block_arguments;
+            call_frame.previous_registers = previous_registers;
+        }
+
+        values.sort_by_key(|(index, _)| *index);
+        values.dedup_by_key(|(index, _)| *index);
+
+        for v in 0..(self.values.len()) {
+            if marked.get(v).is_none_or(Option::is_none) {
+                self.allocated = self
+                    .allocated
+                    .checked_sub(self.size_of_value(CopyableValue::ValueIndex(ValueIndex(v))))
+                    .unwrap_or_else(|| {
+                        panic!("UNDERFLOW");
+                    });
+            }
+        }
+
+        self.values = values
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
+    }
+
+    fn retain_value(
+        &self,
+        replacement_values: &mut Vec<(ValueIndex, Value)>,
+        value: CopyableValue,
+        marked: &[Option<ValueIndex>],
+    ) -> CopyableValue {
+        if let CopyableValue::ValueIndex(index) = value {
+            marked
+                .get(usize::from(index))
+                .and_then(|marked| *marked)
+                .map_or(CopyableValue::Runtime, |replacement_index| {
+                    match &self.values[usize::from(index)] {
+                        Value::NativeFn(span) => {
+                            replacement_values.push((replacement_index, Value::NativeFn(*span)));
+                        }
+                        Value::Compound(values) => {
+                            let values = values
+                                .iter()
+                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((replacement_index, Value::Compound(values)));
+                        }
+                        Value::TaggedCompound {
+                            fields: values,
+                            tag,
+                        } => {
+                            let values = values
+                                .iter()
+                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((
+                                replacement_index,
+                                Value::TaggedCompound {
+                                    fields: values,
+                                    tag: *tag,
+                                },
+                            ));
+                        }
+                    }
+
+                    CopyableValue::ValueIndex(replacement_index)
+                })
+        } else {
+            value
+        }
+    }
+
+    fn size_of_value(&self, value: CopyableValue) -> usize {
+        if let CopyableValue::ValueIndex(index) = value {
+            match &self.values[usize::from(index)] {
+                Value::NativeFn(_) => mem::size_of_val(&self.values[usize::from(index)]),
+                Value::Compound(values) => {
+                    values
+                        .iter()
+                        .fold(0, |accum, value| accum + mem::size_of_val(value))
+                        + mem::size_of_val(&self.values[usize::from(index)])
+                }
+                Value::TaggedCompound { fields: values, .. } => {
+                    values
+                        .iter()
+                        .fold(0, |accum, value| accum + mem::size_of_val(value))
+                        + mem::size_of_val(&self.values[usize::from(index)])
+                }
+            }
+        } else {
+            mem::size_of_val(&value)
         }
     }
 }
