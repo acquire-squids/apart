@@ -35,6 +35,7 @@ enum CopyableValue {
     ValueIndex(ValueIndex),
 }
 
+#[derive(Debug)]
 enum Value {
     NativeFn(Span),
     Compound(Vec<CopyableValue>),
@@ -332,36 +333,36 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             .and_then(|(_, source)| span.lexeme(source.as_ref()))
             .expect("this span should be from a matching source")
         {
-            "print_i64" => {
+            lexeme @ "print_i64" => {
                 let CopyableValue::Integer(value) = &call_arguments[0] else {
-                    unreachable!("type checking would have caught an incorrect argument");
+                    unreachable!("({lexeme:?} {:?} @ 0)", call_arguments[0]);
                 };
 
                 writeln!(out, "{value}").expect("failed to write to output");
 
                 CopyableValue::Unit
             }
-            "print_f64" => {
+            lexeme @ "print_f64" => {
                 let CopyableValue::Float(value) = &call_arguments[0] else {
-                    unreachable!("type checking would have caught an incorrect argument");
+                    unreachable!("({lexeme:?} {:?} @ 0)", call_arguments[0]);
                 };
 
                 writeln!(out, "{value:?}").expect("failed to write to output");
 
                 CopyableValue::Unit
             }
-            "print_bool" => {
+            lexeme @ "print_bool" => {
                 let CopyableValue::Boolean(value) = &call_arguments[0] else {
-                    unreachable!("type checking would have caught an incorrect argument");
+                    unreachable!("({lexeme:?} {:?} @ 0)", call_arguments[0]);
                 };
 
                 writeln!(out, "{value}").expect("failed to write to output");
 
                 CopyableValue::Unit
             }
-            "print_unit" => {
+            lexeme @ "print_unit" => {
                 let CopyableValue::Unit = &call_arguments[0] else {
-                    unreachable!("type checking would have caught an incorrect argument");
+                    unreachable!("({lexeme:?} {:?} @ 0)", call_arguments[0]);
                 };
 
                 writeln!(out, "{{}}").expect("failed to write to output");
@@ -397,7 +398,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             (UnaryOp::Not, CopyableValue::Boolean(value)) => CopyableValue::Boolean(!value),
             (UnaryOp::Negate, CopyableValue::Integer(value)) => CopyableValue::Integer(-value),
             (UnaryOp::Negate, CopyableValue::Float(value)) => CopyableValue::Float(-value),
-            (_, _) => unreachable!("type checking would have caught the wrong operand type"),
+            (op, operand) => unreachable!("({op:?} {operand:?})"),
         }
     }
 
@@ -469,7 +470,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             }
             (BinaryOp::Equal, lhs, rhs) => CopyableValue::Boolean(self.values_eq(lhs, rhs)),
             (BinaryOp::NotEqual, lhs, rhs) => CopyableValue::Boolean(!self.values_eq(lhs, rhs)),
-            (_, _, _) => unreachable!("type checking would have caught the wrong operand type"),
+            (op, lhs, rhs) => unreachable!("({op:?} {lhs:?} {rhs:?})"),
         }
     }
 
