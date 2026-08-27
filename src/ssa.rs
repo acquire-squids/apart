@@ -14,6 +14,7 @@ pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
         ssa.blocks.push(Block {
             parameters: vec![],
             instructions: basic_block.instructions().to_vec(),
+            registers_used: 0,
             terminator: match basic_block.terminator() {
                 BasicBlockTerminator::Jump(block_index) => BlockTerminator::Jump(JumpTo {
                     block_index: *block_index,
@@ -141,6 +142,7 @@ impl Ssa {
 pub struct Block {
     parameters: Vec<Address>,
     instructions: Vec<Instruction>,
+    registers_used: usize,
     terminator: BlockTerminator,
 }
 
@@ -216,6 +218,18 @@ impl Block {
     #[must_use]
     pub const fn parameters_mut(&mut self) -> &mut Vec<Address> {
         &mut self.parameters
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn registers_used(&self) -> usize {
+        self.registers_used
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn registers_used_mut(&mut self) -> &mut usize {
+        &mut self.registers_used
     }
 
     #[allow(dead_code)]

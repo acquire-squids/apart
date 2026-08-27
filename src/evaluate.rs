@@ -13,7 +13,7 @@ struct CallFrame<const MAX_REGISTERS: usize> {
     from: (usize, usize),
     fp: usize,
     block_index: BlockIndex,
-    previous_registers: Vec<(usize, CopyableValue)>,
+    previous_registers: Vec<CopyableValue>,
 }
 
 struct Evaluator<const MAX_REGISTERS: usize> {
@@ -171,14 +171,11 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
 
                             let call_frame = CallFrame {
                                 block_arguments: vec![],
-                                call_arguments: self
-                                    .stack
-                                    .drain((self.stack.len() - *arity)..)
-                                    .collect::<Vec<_>>(),
+                                call_arguments: self.stack.split_off(self.stack.len() - *arity),
                                 from: (b, i),
                                 fp: self.stack.len(),
                                 block_index: callee,
-                                previous_registers: vec![],
+                                previous_registers: Vec::with_capacity(MAX_REGISTERS),
                             };
 
                             self.call_frames.push(call_frame);
@@ -264,9 +261,8 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
 
                         self.stack.truncate(call_frame.fp);
 
-                        for (register_index, value) in call_frame.previous_registers {
-                            self.registers[register_index] = value;
-                        }
+                        self.registers[..(call_frame.previous_registers.len())]
+                            .copy_from_slice(call_frame.previous_registers.as_slice());
 
                         if !self.call_frames.is_empty() {
                             let Some(Instruction::Call { temporary: to, .. }) = ssa
@@ -303,17 +299,14 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
         match to {
             IrValue::Register(index) => {
                 if let Some(call_frame) = self.call_frames.last_mut()
-                    && !call_frame
-                        .previous_registers
-                        .iter()
-                        .any(|(register_index, _)| register_index == index)
+                    && *index >= call_frame.previous_registers.len()
                 {
-                    let old_value = mem::replace(&mut self.registers[*index], value);
+                    let old_value = self.registers[*index];
 
-                    call_frame.previous_registers.push((*index, old_value));
-                } else {
-                    self.registers[*index] = value;
+                    call_frame.previous_registers.push(old_value);
                 }
+
+                self.registers[*index] = value;
             }
             IrValue::Address(address) => {
                 if let Some(stack_value) = self
@@ -642,7 +635,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                 self.mark_value(&mut marked, *block_argument, &mut marked_count);
             }
 
-            for (_, previous_register) in &call_frame.previous_registers {
+            for previous_register in &call_frame.previous_registers {
                 self.mark_value(&mut marked, *previous_register, &mut marked_count);
             }
         }
@@ -711,12 +704,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             let previous_registers = call_frame
                 .previous_registers
                 .iter()
-                .map(|(i, previous_register)| {
-                    (
-                        *i,
-                        self.retain_value(&mut values, *previous_register, marked),
-                    )
-                })
+                .map(|previous_register| self.retain_value(&mut values, *previous_register, marked))
                 .collect::<Vec<_>>();
 
             let Some(call_frame) = self.call_frames.get_mut(c) else {

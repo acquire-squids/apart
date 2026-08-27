@@ -11,12 +11,17 @@ pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
     for b in 0..(ssa.function_count()) {
         let mut allocator = RegisterAllocator::<MAX_REGISTERS> {
             index: 0,
+            registers_used: 0,
             free: vec![],
             stack_size: 0,
             current_fn: BlockIndex(b),
         };
 
         allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
+
+        if let Some(block) = ssa.blocks_mut().get_mut(b) {
+            *block.registers_used_mut() = allocator.registers_used;
+        }
     }
 
     for block in ssa.blocks_mut() {
@@ -28,6 +33,7 @@ pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
 
 struct RegisterAllocator<const MAX_REGISTERS: usize> {
     index: usize,
+    registers_used: usize,
     free: Vec<usize>,
     stack_size: usize,
     current_fn: BlockIndex,
@@ -228,6 +234,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
             for child in children {
                 *self = Self {
                     index: 0,
+                    registers_used: self.registers_used.max(self.index),
                     free: vec![],
                     stack_size: 0,
                     current_fn: self.current_fn,
