@@ -1,9 +1,4 @@
-use std::{
-    env, fs,
-    io::{self, BufRead, Write},
-    path::Path,
-    process::ExitCode,
-};
+use std::{env, fs, io, path::Path, process::ExitCode};
 
 const MAX_REGISTERS: usize = 0;
 
@@ -13,13 +8,11 @@ fn main() -> ExitCode {
 
     arguments.next().map_or_else(
         || {
-            repl::<MAX_REGISTERS>().map_or_else(
-                |error| {
-                    eprintln!("repl input/output error: {error}");
-                    ExitCode::FAILURE
-                },
-                |()| ExitCode::SUCCESS,
-            )
+            eprintln!(
+                "Usage: {} [path_to_source]",
+                option_env!("CARGO_BIN_NAME").unwrap_or("apart")
+            );
+            ExitCode::FAILURE
         },
         |file_path| {
             let input_path = file_path.as_str();
@@ -68,22 +61,4 @@ fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str) {
             }
         }
     }
-}
-
-fn repl<const MAX_REGISTERS: usize>() -> io::Result<()> {
-    print!("> ");
-    io::stdout().lock().flush()?;
-
-    for line in io::stdin().lock().lines() {
-        let source = line?;
-
-        compile::<MAX_REGISTERS>("stdin", source.as_str());
-
-        print!("> ");
-        io::stdout().lock().flush()?;
-    }
-
-    println!();
-
-    Ok(())
 }
