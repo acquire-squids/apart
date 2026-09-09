@@ -82,6 +82,12 @@ pub enum Error {
     UnclosedSumVariant,
     SumVariantsWithoutComma,
     UnclosedSum,
+    ModWithoutName,
+    ModWithoutBody,
+    UnclosedMod,
+    TeachWithoutBody,
+    InvalidAssociatedItem,
+    UnclosedTeach,
 }
 
 impl fmt::Display for Error {
@@ -292,6 +298,30 @@ impl fmt::Display for Error {
             Self::UnclosedSum => {
                 write!(f, "this sum was never closed")
             }
+            Self::ModWithoutName => {
+                write!(f, "expected a module name")
+            }
+            Self::ModWithoutBody => {
+                write!(
+                    f,
+                    "the module's items should be here, within curly brackets"
+                )
+            }
+            Self::UnclosedMod => {
+                write!(f, "this module was never closed")
+            }
+            Self::TeachWithoutBody => {
+                write!(
+                    f,
+                    "the associated items should be here, within curly brackets"
+                )
+            }
+            Self::InvalidAssociatedItem => {
+                write!(f, "only functions can be associated with a type")
+            }
+            Self::UnclosedTeach => {
+                write!(f, "this \"teach\" was never closed")
+            }
         }
     }
 }
@@ -433,6 +463,11 @@ pub enum Expr {
         callee: ExprIndex,
         arguments: Vec<ExprIndex>,
     },
+    MethodCall {
+        target: ExprIndex,
+        method: ExprIndex,
+        arguments: Vec<ExprIndex>,
+    },
     While {
         condition: ExprIndex,
         when_true: ExprIndex,
@@ -480,6 +515,11 @@ pub enum Item {
         generics: Vec<Spanned<String>>,
         contents: Vec<ItemIndex>,
     },
+    Teach {
+        student: Spanned<TypeSignature>,
+        body: Vec<ItemIndex>,
+        generics: Vec<Spanned<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -515,6 +555,7 @@ pub enum TypeSignature {
         name: Spanned<String>,
         generics: Vec<Spanned<Self>>,
     },
+    SelfTy,
     Fn {
         parameters: Vec<Spanned<Self>>,
         return_type: Box<Spanned<Self>>,
@@ -677,6 +718,15 @@ impl Ast {
                     f(self, argument);
                 }
             }
+            Expr::MethodCall {
+                target, arguments, ..
+            } => {
+                f(self, *target);
+
+                for argument in arguments {
+                    f(self, *argument);
+                }
+            }
             Expr::While {
                 condition,
                 when_true,
@@ -711,7 +761,7 @@ impl Parser {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" | "sum" | "pub" | "mod" => Some(lexeme),
+            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" => Some(lexeme),
             _ => None,
         }
     }
@@ -939,6 +989,11 @@ impl Parser {
                     self.advance(lexer);
 
                     self.parse_mod(lexer, ast, span, visibility)
+                }
+                Some("teach") => {
+                    self.advance(lexer);
+
+                    self.parse_teach(lexer, ast, span)
                 }
                 _ => Err(Spanned::new(Error::ExpectedItem, span)),
             }
@@ -1334,7 +1389,7 @@ impl Parser {
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
             .name_lexeme(lexer)
-            .map_err(|error| error.transmute(|_| Error::ProductWithoutName))
+            .map_err(|error| error.transmute(|_| Error::ModWithoutName))
             .map(|(name, name_span)| Spanned::new(name, name_span))?;
 
         let mut generics = vec![];
@@ -1342,7 +1397,7 @@ impl Parser {
         self.parse_generics(lexer, &mut generics)?;
 
         let contents_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
+            .consume_next(lexer, Token::OpenBracket, Error::ModWithoutBody)?
             .span();
 
         let mut contents = vec![];
@@ -1355,7 +1410,7 @@ impl Parser {
             .consume_next_with_span(
                 lexer,
                 Token::CloseBracket,
-                Error::UnclosedSum,
+                Error::UnclosedMod,
                 contents_span,
             )?
             .span();
@@ -1366,6 +1421,62 @@ impl Parser {
                 name,
                 generics,
                 contents,
+            },
+            span.combine_with(contents_end)
+                .expect("these spans are from the same source"),
+        )))
+    }
+
+    fn parse_teach(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        span: Span,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let mut generics = vec![];
+
+        self.parse_generics(lexer, &mut generics)?;
+
+        let student = self.parse_type_signature(lexer)?;
+
+        let contents_span = self
+            .consume_next(lexer, Token::OpenBracket, Error::TeachWithoutBody)?
+            .span();
+
+        let mut body = vec![];
+
+        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
+            let item = self.parse_item(lexer, ast)?;
+
+            match &ast[item].kind() {
+                Item::Primitive(_)
+                | Item::Product { .. }
+                | Item::Sum { .. }
+                | Item::Mod { .. }
+                | Item::Teach { .. } => {
+                    self.errors
+                        .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
+                }
+                Item::NativeFn { .. } | Item::Fn { .. } => {}
+            }
+
+            body.push(item);
+        }
+
+        let contents_end = self
+            .consume_next_with_span(
+                lexer,
+                Token::CloseBracket,
+                Error::UnclosedTeach,
+                contents_span,
+            )?
+            .span();
+
+        Ok(ast.push_item(Spanned::new(
+            Item::Teach {
+                student,
+                body,
+                generics,
             },
             span.combine_with(contents_end)
                 .expect("these spans are from the same source"),
@@ -1463,6 +1574,11 @@ impl Parser {
                             span.combine_with(return_span)
                                 .expect("these spans are from the same source"),
                         ))
+                    }
+                    Some("Self") => {
+                        self.advance(lexer);
+
+                        Ok(Spanned::new(TypeSignature::SelfTy, span))
                     }
                     Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
                     None => {
@@ -1708,6 +1824,7 @@ macro_rules! binary_op {
 }
 
 impl Parser {
+    #[allow(clippy::too_many_lines)]
     fn parse_expression(
         &mut self,
         lexer: &mut Lexer,
@@ -1745,16 +1862,38 @@ impl Parser {
                     Expr::CallNoCallee(arguments) => {
                         let arguments = arguments.clone();
 
-                        ast[unfinished_postfix] = Spanned::new(
-                            Expr::Call {
-                                callee: lhs,
-                                arguments,
-                            },
-                            ast[unfinished_postfix]
-                                .span()
-                                .combine_with(prefix_span)
-                                .expect("these spans are from the same source"),
-                        );
+                        if let Expr::Binary {
+                            op: BinaryOp::Access,
+                            lhs: target,
+                            rhs: method,
+                        } = ast[lhs].kind()
+                        {
+                            let target = *target;
+                            let method = *method;
+
+                            ast[unfinished_postfix] = Spanned::new(
+                                Expr::MethodCall {
+                                    target,
+                                    method,
+                                    arguments,
+                                },
+                                ast[unfinished_postfix]
+                                    .span()
+                                    .combine_with(prefix_span)
+                                    .expect("these spans are from the same source"),
+                            );
+                        } else {
+                            ast[unfinished_postfix] = Spanned::new(
+                                Expr::Call {
+                                    callee: lhs,
+                                    arguments,
+                                },
+                                ast[unfinished_postfix]
+                                    .span()
+                                    .combine_with(prefix_span)
+                                    .expect("these spans are from the same source"),
+                            );
+                        }
                     }
                     Expr::AsUnitNoValue => {
                         ast[unfinished_postfix] = Spanned::new(

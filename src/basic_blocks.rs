@@ -5,7 +5,7 @@ use crate::{
     type_check::{Type, TypeChecker},
 };
 
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, iter};
 
 pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
     let mut translator = Translator::new();
@@ -292,6 +292,11 @@ impl Translator {
                     self.label_function(ast, *item);
                 }
             }
+            Item::Teach { body, .. } => {
+                for item in body {
+                    self.label_function(ast, *item);
+                }
+            }
         }
     }
 
@@ -331,6 +336,9 @@ impl Translator {
                 Item::Mod { contents, .. } => {
                     self.label_items(ast, contents);
                 }
+                Item::Teach { body, .. } => {
+                    self.label_items(ast, body);
+                }
                 Item::Fn { name, .. } | Item::NativeFn { name, .. } if name.kind() != "main" => {
                     self.label_function(ast, *item);
                 }
@@ -358,6 +366,9 @@ impl Translator {
                 | Item::Sum { .. } => {}
                 Item::Mod { contents, .. } => {
                     self.translate_items(ast, names, types, contents.as_slice());
+                }
+                Item::Teach { body, .. } => {
+                    self.translate_items(ast, names, types, body.as_slice());
                 }
                 Item::Fn {
                     name,
@@ -524,6 +535,18 @@ impl Translator {
             }
             Expr::Call { callee, arguments } => {
                 self.translate_call(ast, names, types, (*callee, arguments.as_slice()));
+            }
+            Expr::MethodCall {
+                target,
+                method,
+                arguments,
+            } => {
+                self.translate_method_call(
+                    ast,
+                    names,
+                    types,
+                    (*target, *method, arguments.as_slice()),
+                );
             }
             Expr::While {
                 condition,
@@ -1441,7 +1464,7 @@ impl Translator {
                                 matches!(
                                     &types[*variant],
                                     Type::Product { name: variant_name, .. }
-                                        if variant_name == name.kind()
+                                        if variant_name.kind() == name.kind()
                                 )
                             })
                             .and_then(|index| u16::try_from(index).ok())
@@ -1469,6 +1492,85 @@ impl Translator {
                 self.translate_name(ast, names, rhs);
             }
         }
+
+        self.last_in_fn = last_in_fn;
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    fn translate_method_call(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        types: &TypeChecker,
+        (target, method, arguments): (ExprIndex, ExprIndex, &[ExprIndex]),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        let type_span = match &types[types[ast[target].span()]] {
+            Type::Unknown | Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } => {
+                unreachable!("type checking guarantees these types are not used for method calls");
+            }
+            Type::Primitive(primitive) => primitive.span(),
+            Type::Product { name, .. } | Type::Sum { name, .. } => name.span(),
+        };
+
+        let Expr::Name(method_name) = ast[method].kind() else {
+            unreachable!("methods are only names");
+        };
+
+        let Some(method_definition) = names.get_association(type_span, method_name) else {
+            unreachable!("type checking guarantees the method exists");
+        };
+
+        let callee = match self
+            .addresses
+            .get(&method_definition.span())
+            .expect("type checking guarantees the method exists")
+        {
+            Addresslike::Block(block_index) => Value::Fn(*block_index),
+            Addresslike::NativeFn(span) => Value::NativeFn(*span),
+            Addresslike::CallArgument(_) | Addresslike::Address(_) => {
+                unreachable!("methods are only ever functions or native functions");
+            }
+        };
+
+        let arguments = iter::once(target)
+            .chain(arguments.iter().copied())
+            .map(|argument| {
+                self.translate_expr(ast, names, types, argument);
+
+                self.values
+                    .pop()
+                    .expect("each method call argument should produce a value")
+            })
+            .collect::<Vec<_>>();
+
+        let arity = arguments.len();
+
+        for argument in arguments {
+            self.push_instruction(Instruction::Push(argument));
+        }
+
+        let address = Address {
+            block_index: self
+                .current_block
+                .expect("method calls only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        };
+
+        self.push_instruction(Instruction::Call {
+            callee,
+            arity,
+            temporary: Value::Address(address),
+        });
+
+        self.values.push(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 

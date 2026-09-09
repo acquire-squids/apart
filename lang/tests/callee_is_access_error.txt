@@ -2,7 +2,7 @@ funky main() {
 	let printer = Printer {
 		f <- print_bool,
 	} in {
-		(printer.f)(true);
+		printer.f(true);
 	};
 }
 

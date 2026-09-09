@@ -4,7 +4,7 @@ use crate::{
     parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature, UnaryOp},
 };
 
-use std::{collections::HashMap, error, fmt, ops::Index};
+use std::{collections::HashMap, error, fmt, iter, ops::Index};
 
 pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<Error>>> {
     let mut type_checker = TypeChecker::new();
@@ -43,21 +43,21 @@ pub enum Primitive {
 
 #[derive(Debug, Clone)]
 pub enum Type {
-    Primitive(Primitive),
+    Primitive(Spanned<Primitive>),
     Unknown,
     Fn {
         parameters: Vec<TypeIndex>,
         return_type: TypeIndex,
     },
-    Existential(String),
-    Generic(String),
+    Existential(Spanned<String>),
+    Generic(Spanned<String>),
     Product {
-        name: String,
+        name: Spanned<String>,
         fields: Vec<(String, TypeIndex)>,
         generics: Vec<TypeIndex>,
     },
     Sum {
-        name: String,
+        name: Spanned<String>,
         variants: Vec<TypeIndex>,
         generics: Vec<TypeIndex>,
     },
@@ -76,9 +76,9 @@ impl Type {
     #[allow(clippy::too_many_lines)]
     fn eq(&self, types: &[Self], other: &Self) -> bool {
         match (self, other) {
-            (Self::Primitive(a), Self::Primitive(b)) => a == b,
+            (Self::Primitive(a), Self::Primitive(b)) => a.kind() == b.kind(),
             (Self::Unknown, Self::Unknown) => true,
-            (Self::Generic(a), Self::Generic(b)) => a == b,
+            (Self::Generic(a), Self::Generic(b)) => a.kind() == b.kind(),
             (
                 Self::Fn {
                     parameters: a_parameters,
@@ -97,6 +97,7 @@ impl Type {
                     .is_some_and(|(a_return_type, b_return_type)| {
                         a_return_type.eq(types, b_return_type)
                     })
+                    && a_parameters.len() == b_parameters.len()
                     && a_parameters.iter().zip(b_parameters).all(
                         |(a_parameter_type, b_parameter_type)| {
                             types
@@ -125,7 +126,8 @@ impl Type {
                     generics: b_generics,
                 },
             ) => {
-                a_name == b_name
+                a_name.kind() == b_name.kind()
+                    && a_fields.len() == b_fields.len()
                     && a_fields.iter().zip(b_fields).all(
                         |((a_field_name, a_field_type), (b_field_name, b_field_type))| {
                             a_field_name == b_field_name
@@ -139,6 +141,7 @@ impl Type {
                                     })
                         },
                     )
+                    && a_generics.len() == b_generics.len()
                     && a_generics
                         .iter()
                         .zip(b_generics)
@@ -165,7 +168,8 @@ impl Type {
                     generics: b_generics,
                 },
             ) => {
-                a_name == b_name
+                a_name.kind() == b_name.kind()
+                    && a_variants.len() == b_variants.len()
                     && a_variants
                         .iter()
                         .zip(b_variants)
@@ -179,6 +183,7 @@ impl Type {
                                     a_variant_type.eq(types, b_variant_type)
                                 })
                         })
+                    && a_generics.len() == b_generics.len()
                     && a_generics
                         .iter()
                         .zip(b_generics)
@@ -203,7 +208,7 @@ impl Type {
 
     fn to_string(&self, types: &[Self]) -> String {
         match self {
-            Self::Primitive(p) => match p {
+            Self::Primitive(p) => match p.kind() {
                 Primitive::I64 => "i64",
                 Primitive::F64 => "f64",
                 Primitive::Boolean => "bool",
@@ -211,9 +216,9 @@ impl Type {
             }
             .to_string(),
             Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
-            Self::Generic(name) | Self::Existential(name) => name.clone(),
+            Self::Generic(name) | Self::Existential(name) => name.kind().clone(),
             Self::Product { name, generics, .. } | Self::Sum { name, generics, .. } => {
-                let mut buffer = name.clone();
+                let mut buffer = name.kind().clone();
 
                 if !generics.is_empty() {
                     buffer.push('[');
@@ -266,7 +271,8 @@ impl Type {
                 buffer.push(')');
 
                 if let Some(return_type) = types.get(usize::from(*return_type))
-                    && return_type.ne(types, &Self::Primitive(Primitive::Unit))
+                    // TODO: is it fine to use this span here?
+                    && return_type.ne(types, &Self::Primitive(Spanned::new(Primitive::Unit, Span::new(0, 0, 0))))
                 {
                     buffer.push_str(" -> ");
 
@@ -304,6 +310,11 @@ pub enum Error {
     InvalidSumVariant,
     NonExistentSumVariant,
     TooManyVariants,
+    CannotHaveMethod,
+    NonExistentMethod,
+    MethodCalledUncallable,
+    MethodCallArgumentCountMismatch { expected: usize, got: usize },
+    FnFieldAsMethod,
 }
 
 impl fmt::Display for Error {
@@ -327,7 +338,8 @@ impl fmt::Display for Error {
             Self::ConditionNotBoolean => {
                 write!(f, "conditions can only be booleans")
             }
-            Self::CallArgumentCountMismatch { expected, got } => {
+            Self::CallArgumentCountMismatch { expected, got }
+            | Self::MethodCallArgumentCountMismatch { expected, got } => {
                 write!(f, "expected {expected} arguments, but got {got}")
             }
             Self::CalledUncallable => write!(f, "this expression cannot be called"),
@@ -356,6 +368,21 @@ impl fmt::Display for Error {
             Self::NonExistentSumVariant => write!(f, "this variant does not exist on the sum"),
             Self::TooManyVariants => {
                 write!(f, "a sum may not have more than {} variants", u16::MAX)
+            }
+            Self::CannotHaveMethod => {
+                write!(f, "this type cannot have a method")
+            }
+            Self::NonExistentMethod => {
+                write!(f, "this method does not exist on this type")
+            }
+            Self::MethodCalledUncallable => {
+                write!(f, "this associated name is not a method")
+            }
+            Self::FnFieldAsMethod => {
+                write!(
+                    f,
+                    "you cannot directly use a function field like a method; try wrapping this in parentheses"
+                )
             }
         }
     }
@@ -462,7 +489,7 @@ impl TypeChecker {
         TypeIndex(
             self.types
                 .iter()
-                .position(|ty| matches!(ty, Type::Primitive(Primitive::I64)))
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::I64)))
                 .expect("the i64 type should be initialized before all type checking"),
         )
     }
@@ -471,7 +498,7 @@ impl TypeChecker {
         TypeIndex(
             self.types
                 .iter()
-                .position(|ty| matches!(ty, Type::Primitive(Primitive::F64)))
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::F64)))
                 .expect("the f64 type should be initialized before all type checking"),
         )
     }
@@ -480,7 +507,7 @@ impl TypeChecker {
         TypeIndex(
             self.types
                 .iter()
-                .position(|ty| matches!(ty, Type::Primitive(Primitive::Boolean)))
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::Boolean)))
                 .expect("the bool type should be initialized before all type checking"),
         )
     }
@@ -489,7 +516,7 @@ impl TypeChecker {
         TypeIndex(
             self.types
                 .iter()
-                .position(|ty| matches!(ty, Type::Primitive(Primitive::Unit)))
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::Unit)))
                 .expect("the unit type should be initialized before all type checking"),
         )
     }
@@ -508,15 +535,22 @@ impl TypeChecker {
     fn check_primitives(&mut self, ast: &Ast) {
         for root in ast.roots() {
             if let Item::Primitive(name) = ast[*root].kind() {
-                let type_index = match name.kind().as_str() {
-                    "i64" => self.push_type(Type::Primitive(Primitive::I64)),
-                    "f64" => self.push_type(Type::Primitive(Primitive::F64)),
-                    "bool" => self.push_type(Type::Primitive(Primitive::Boolean)),
-                    "unit" => self.push_type(Type::Primitive(Primitive::Unit)),
-                    _ => {
-                        unreachable!("unknown primitive declared in core");
-                    }
-                };
+                let type_index =
+                    match name.kind().as_str() {
+                        "i64" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::I64, name.span()))),
+                        "f64" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::F64, name.span()))),
+                        "bool" => self.push_type(Type::Primitive(Spanned::new(
+                            Primitive::Boolean,
+                            name.span(),
+                        ))),
+                        "unit" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::Unit, name.span()))),
+                        _ => {
+                            unreachable!("unknown primitive declared in core");
+                        }
+                    };
 
                 self.type_map.insert(name.span(), type_index);
             }
@@ -530,12 +564,27 @@ impl TypeChecker {
                     contents, generics, ..
                 } => {
                     for generic in generics {
-                        let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
 
                         self.type_map.insert(generic.span(), type_index);
                     }
 
                     self.check_types(ast, names, contents.as_slice());
+                }
+                Item::Teach {
+                    student,
+                    body,
+                    generics,
+                } => {
+                    for generic in generics {
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
+
+                        self.type_map.insert(generic.span(), type_index);
+                    }
+
+                    self.check_type_signature(names, student);
+
+                    self.check_types(ast, names, body.as_slice());
                 }
                 Item::Product {
                     name,
@@ -546,7 +595,10 @@ impl TypeChecker {
                     let mut generic_type_indices = vec![];
 
                     for generic in generics {
-                        let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+                        let type_index = self.push_type(Type::Existential(Spanned::new(
+                            generic.kind().clone(),
+                            generic.span(),
+                        )));
 
                         self.type_map.insert(generic.span(), type_index);
 
@@ -570,7 +622,7 @@ impl TypeChecker {
                         .collect::<Vec<_>>();
 
                     let type_index = self.push_type(Type::Product {
-                        name: name.kind().clone(),
+                        name: Spanned::new(name.kind().clone(), name.span()),
                         fields,
                         generics: generic_type_indices,
                     });
@@ -586,7 +638,10 @@ impl TypeChecker {
                     let mut generic_type_indices = vec![];
 
                     for generic in generics {
-                        let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+                        let type_index = self.push_type(Type::Existential(Spanned::new(
+                            generic.kind().clone(),
+                            generic.span(),
+                        )));
 
                         self.type_map.insert(generic.span(), type_index);
 
@@ -613,7 +668,7 @@ impl TypeChecker {
                     }
 
                     let type_index = self.push_type(Type::Sum {
-                        name: name.kind().clone(),
+                        name: Spanned::new(name.kind().clone(), name.span()),
                         variants,
                         generics: generic_type_indices,
                     });
@@ -631,6 +686,10 @@ impl TypeChecker {
                 Item::Primitive(_) | Item::Product { .. } | Item::Sum { .. } => {}
                 Item::Mod { contents, .. } => {
                     self.check_items(ast, names, contents.as_slice());
+                }
+                Item::Teach { body, .. } => {
+                    // TODO: do method name resolution in type_check instead of name_resolve
+                    self.check_items(ast, names, body.as_slice());
                 }
                 Item::NativeFn { .. } => {
                     self.check_native_function(ast, names, *item);
@@ -685,7 +744,7 @@ impl TypeChecker {
             Type::Primitive(_) | Type::Unknown | Type::Generic(_) => type_index,
             Type::Existential(name) => {
                 originals.iter().position(|type_index| {
-                    matches!(&self[*type_index], Type::Existential(original) if original == name)
+                    matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
                 }).map_or(type_index, |index| replacements[index])
             }
             Type::Fn {
@@ -712,7 +771,7 @@ impl TypeChecker {
                 fields,
                 generics,
             } => {
-                let name = name.clone();
+                let name = Spanned::new(name.kind().clone(), name.span());
 
                 let generics = generics.clone();
 
@@ -743,7 +802,7 @@ impl TypeChecker {
                 variants,
                 generics,
             } => {
-                let name = name.clone();
+                let name = Spanned::new(name.kind().clone(), name.span());
 
                 let generics = generics.clone();
 
@@ -772,6 +831,11 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn check_type_signature(&mut self, names: &Names, ty: &Spanned<TypeSignature>) {
         match ty.kind() {
+            TypeSignature::SelfTy => {
+                let type_index = self[names[ty.span()]];
+
+                self.type_map.insert(ty.span(), type_index);
+            }
             TypeSignature::Normal { name, generics }
             | TypeSignature::Path { name, generics, .. } => {
                 let checked_generics = generics.iter().fold(vec![], |mut accum, generic| {
@@ -784,7 +848,7 @@ impl TypeChecker {
 
                 let type_index = self[names[name.span()]];
 
-                match self[type_index].clone() {
+                match &self[type_index] {
                     Type::Primitive(_) if !checked_generics.is_empty() => {
                         self.errors
                             .push(Spanned::new(Error::GenericsOnPrimitive, name.span()));
@@ -819,7 +883,7 @@ impl TypeChecker {
                                                 matches!(
                                                     &self[*generic_type],
                                                     Type::Existential(generic_name)
-                                                        if generic_name == name
+                                                        if generic_name.kind() == name.kind()
                                                 )
                                             })
                                 )
@@ -843,6 +907,9 @@ impl TypeChecker {
 
                             self.type_map.insert(ty.span(), self.type_unknown());
                         } else {
+                            let fields = fields.clone();
+                            let generic_types = generic_types.clone();
+
                             let fields = fields.iter().fold(
                                 vec![],
                                 |mut accum, (field_name, field_type)| {
@@ -859,7 +926,7 @@ impl TypeChecker {
                             );
 
                             let type_index = self.push_type(Type::Product {
-                                name: name.kind().clone(),
+                                name: Spanned::new(name.kind().clone(), name.span()),
                                 fields,
                                 generics: checked_generics,
                             });
@@ -888,6 +955,9 @@ impl TypeChecker {
 
                             self.type_map.insert(ty.span(), self.type_unknown());
                         } else {
+                            let variants = variants.clone();
+                            let generic_types = generic_types.clone();
+
                             let variants =
                                 variants.iter().fold(vec![], |mut accum, variant_type| {
                                     let type_index = self.substitute_type(
@@ -902,7 +972,7 @@ impl TypeChecker {
                                 });
 
                             let type_index = self.push_type(Type::Sum {
-                                name: name.kind().clone(),
+                                name: name.clone(),
                                 variants,
                                 generics: checked_generics,
                             });
@@ -948,7 +1018,7 @@ impl TypeChecker {
         } = ast[item].kind()
         {
             for generic in generics {
-                let type_index = self.push_type(Type::Existential(generic.kind().clone()));
+                let type_index = self.push_type(Type::Existential(generic.clone()));
 
                 self.type_map.insert(generic.span(), type_index);
             }
@@ -996,7 +1066,7 @@ impl TypeChecker {
                 }
 
                 if let Type::Fn { return_type, .. } = &self[self[name.span()]]
-                    && !matches!(self[*return_type], Type::Primitive(Primitive::Unit))
+                    && !matches!(&self[*return_type], Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::Unit))
                 {
                     self.errors
                         .push(Spanned::new(Error::MainFnWithReturnType, name.span()));
@@ -1018,6 +1088,9 @@ impl TypeChecker {
                 | Item::Sum { .. } => {}
                 Item::Mod { contents, .. } => {
                     self.type_check_functions(ast, names, contents.as_slice());
+                }
+                Item::Teach { body, .. } => {
+                    self.type_check_functions(ast, names, body.as_slice());
                 }
                 Item::Fn {
                     name,
@@ -1227,6 +1300,108 @@ impl TypeChecker {
                     self.type_unknown()
                 }
             }
+            Expr::MethodCall {
+                target,
+                method,
+                arguments,
+            } => {
+                let target_type_index = self.infer(ast, names, *target, context);
+
+                let type_span = match self[target_type_index].clone() {
+                    Type::Unknown | Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } => {
+                        None
+                    }
+                    Type::Primitive(primitive) => Some(primitive.span()),
+                    Type::Product { name, .. } | Type::Sum { name, .. } => Some(name.span()),
+                };
+
+                if let Some(type_span) = type_span {
+                    let Expr::Name(method_name) = ast[*method].kind() else {
+                        unreachable!("methods are always names");
+                    };
+
+                    if let Some(method_definition) = names.get_association(type_span, method_name) {
+                        if let Type::Fn {
+                            parameters,
+                            return_type,
+                        } = self[self[method_definition.span()]].clone()
+                        {
+                            if arguments.len() + 1 == parameters.len() {
+                                let mut context = context.clone();
+
+                                for (argument, parameter) in
+                                    iter::once(target).chain(arguments).zip(&parameters)
+                                {
+                                    if let Err(error) = self.check(
+                                        ast,
+                                        names,
+                                        *argument,
+                                        *parameter,
+                                        &mut context,
+                                        false,
+                                    ) {
+                                        self.errors
+                                            .push(Spanned::new(error, ast[*argument].span()));
+                                    }
+                                }
+
+                                self.apply(return_type, &mut context)
+                            } else {
+                                self.errors.push(Spanned::new(
+                                    Error::MethodCallArgumentCountMismatch {
+                                        expected: parameters.len(),
+                                        got: arguments.len() + 1,
+                                    },
+                                    span,
+                                ));
+
+                                self.type_unknown()
+                            }
+                        } else {
+                            if !matches!(self[self[method_definition.span()]], Type::Unknown) {
+                                let callee_span = ast[*target]
+                                    .span()
+                                    .combine_with(ast[*method].span())
+                                    .expect("these spans are from the same source");
+
+                                self.errors
+                                    .push(Spanned::new(Error::MethodCalledUncallable, callee_span));
+                            }
+
+                            self.type_unknown()
+                        }
+                    } else if let Type::Product { fields, .. } = &self[target_type_index]
+                        && let Some(Type::Fn { .. }) =
+                            fields.iter().find_map(|(field_name, field_type)| {
+                                if field_name == method_name {
+                                    Some(&self[*field_type])
+                                } else {
+                                    None
+                                }
+                            })
+                    {
+                        self.errors.push(Spanned::new(
+                            Error::FnFieldAsMethod,
+                            ast[*target]
+                                .span()
+                                .combine_with(ast[*method].span())
+                                .expect("these spans are from the same source"),
+                        ));
+
+                        self.type_unknown()
+                    } else {
+                        self.errors
+                            .push(Spanned::new(Error::NonExistentMethod, ast[*method].span()));
+
+                        self.type_unknown()
+                    }
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::CannotHaveMethod, ast[*target].span()));
+
+                    self.type_unknown()
+                }
+            }
             Expr::Return(expr) => {
                 if let Err(error) = self.check(
                     ast,
@@ -1324,7 +1499,7 @@ impl TypeChecker {
                             .collect::<Vec<_>>();
 
                         self.push_type(Type::Product {
-                            name: name.kind().clone(),
+                            name: name.clone(),
                             fields: checked_fields,
                             generics,
                         })
@@ -1429,7 +1604,7 @@ impl TypeChecker {
                                 if let Type::Product {
                                     name: variant_name, ..
                                 } = &self[*variant]
-                                    && name.kind() == variant_name
+                                    && name.kind() == variant_name.kind()
                                 {
                                     Some((i, *variant))
                                 } else {
@@ -1769,26 +1944,26 @@ impl TypeChecker {
         match (&self[inferred], &self[should_be]) {
             (Type::Unknown, _) | (_, Type::Unknown) => Ok(self.type_unknown()),
             (Type::Primitive(a), Type::Primitive(b)) => {
-                if a == b {
+                if a.kind() == b.kind() {
                     Ok(should_be)
                 } else {
                     Err(inferred)
                 }
             }
             (Type::Generic(a), Type::Generic(b)) => {
-                if a == b {
+                if a.kind() == b.kind() {
                     Ok(should_be)
                 } else {
                     Err(inferred)
                 }
             }
             (_, Type::Existential(name)) => {
-                context.push((name.clone(), inferred));
+                context.push((name.kind().clone(), inferred));
 
                 Ok(inferred)
             }
             (Type::Existential(name), _) => {
-                context.push((name.clone(), should_be));
+                context.push((name.kind().clone(), should_be));
 
                 Ok(should_be)
             }
@@ -1860,7 +2035,7 @@ impl TypeChecker {
                     generics,
                 },
             ) => {
-                let mut errored = inferred_name != name;
+                let mut errored = inferred_name.kind() != name.kind();
 
                 let inferred_fields = inferred_fields.clone();
 
@@ -1925,7 +2100,7 @@ impl TypeChecker {
                     generics,
                 },
             ) => {
-                let mut errored = inferred_name != name;
+                let mut errored = inferred_name.kind() != name.kind();
 
                 let inferred_variants = inferred_variants.clone();
 
@@ -1990,7 +2165,7 @@ impl TypeChecker {
             Type::Primitive(_) | Type::Generic(_) | Type::Unknown => type_index,
             Type::Existential(name) => context
                 .iter()
-                .rfind(|(context_name, _)| context_name == name)
+                .rfind(|(context_name, _)| context_name == name.kind())
                 .map_or(type_index, |(_, type_index)| *type_index),
             Type::Fn {
                 parameters,

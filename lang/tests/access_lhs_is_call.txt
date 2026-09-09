@@ -1,6 +1,6 @@
 funky main() {
 	let printer = double_wrap(print_bool) in {
-		unwrap(printer).value(true);
+		(unwrap(printer).value)(true);
 	};
 }
 

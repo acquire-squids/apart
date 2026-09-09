@@ -1,0 +1,28 @@
+funky main() {
+	let a = 97 in {
+		Wrapper~unwrap_and_print(Wrapper~wrap(a));
+		Wrapper~unwrap_and_print(Wrapper~wrap({}));
+	}
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+teach[T] Wrapper[T] {
+	funky wrap(value <- T) -> Self {
+		Wrapper {
+			value <- value,
+		}
+	}
+
+	funky unwrap(self <- Self) -> T {
+		self.value
+	}
+}
+
+teach Wrapper[i64] {
+	funky unwrap_and_print(self <- Self) {
+		print_i64(Wrapper~unwrap(self));
+	}
+}

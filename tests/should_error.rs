@@ -300,3 +300,95 @@ mod path_nonexistent {
         );
     }
 }
+
+#[cfg(test)]
+mod teach_generic_confusion {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "teach_generic_confusion.txt"
+    ));
+
+    #[test]
+    fn teach_generic_confusion() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(errors, Err([apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected,
+            got,
+        })]) if expected == "Wrapper[i64]" && got == "Wrapper[unit]");
+    }
+}
+
+#[cfg(test)]
+mod teach_generic_confusion_method_access {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "teach_generic_confusion_method_access.txt"
+    ));
+
+    #[test]
+    fn teach_generic_confusion_method_access() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(errors, Err([apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected,
+            got,
+        })]) if expected == "Wrapper[i64]" && got == "Wrapper[unit]");
+    }
+}
+
+#[cfg(test)]
+mod callee_is_access_error {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "callee_is_access_error.txt"
+    ));
+
+    #[test]
+    fn callee_is_access_error() {
+        let mut out = vec![];
+
+        let compiled = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out);
+
+        let errors = compiled.as_ref().map_err(|errors| {
+            errors
+                .iter()
+                .map(reporting::Spanned::kind)
+                .collect::<Vec<_>>()
+        });
+
+        let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+        std::assert_matches!(
+            errors,
+            Err([apart::Error::TypeCheck(
+                apart::TypeCheckError::FnFieldAsMethod
+            )])
+        );
+    }
+}
