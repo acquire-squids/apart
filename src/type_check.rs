@@ -1826,7 +1826,7 @@ impl TypeChecker {
                                 rhs,
                             } => {
                                 if self
-                                    .check_inferred(lhs_type, self.type_unknown(), context)
+                                    .check_inferred(lhs_type, self.type_unknown(), context, false)
                                     .is_err()
                                 {
                                     return self.type_unknown();
@@ -1858,6 +1858,7 @@ impl TypeChecker {
                                     fields[field_index].1,
                                     rhs_type,
                                     &mut context,
+                                    false,
                                 ) {
                                     Err(type_index) => {
                                         let error = Spanned::new(
@@ -1916,21 +1917,10 @@ impl TypeChecker {
     ) -> Result<TypeIndex, Error> {
         let expr_type_index = self.infer(ast, names, expr, context);
 
-        self.check_inferred(expr_type_index, should_be, context)
+        self.check_inferred(expr_type_index, should_be, context, overwrite)
             .map_err(|type_index| Error::TypeMismatch {
                 expected: self[should_be].to_string(self.types.as_slice()),
                 got: self[type_index].to_string(self.types.as_slice()),
-            })
-            .inspect(|type_index| {
-                if overwrite {
-                    let ty = self[*type_index].clone();
-
-                    let Some(replace) = self.types.get_mut(usize::from(expr_type_index)) else {
-                        unreachable!("the type was just inferred, it'll exist");
-                    };
-
-                    *replace = ty;
-                }
             })
     }
 
@@ -1940,6 +1930,7 @@ impl TypeChecker {
         inferred: TypeIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
+        overwrite: bool,
     ) -> Result<TypeIndex, TypeIndex> {
         match (&self[inferred], &self[should_be]) {
             (Type::Unknown, _) | (_, Type::Unknown) => Ok(self.type_unknown()),
@@ -1960,10 +1951,30 @@ impl TypeChecker {
             (_, Type::Existential(name)) => {
                 context.push((name.kind().clone(), inferred));
 
+                if overwrite {
+                    let ty = self[inferred].clone();
+
+                    let Some(replace) = self.types.get_mut(usize::from(should_be)) else {
+                        unreachable!("the type was just inferred, it'll exist");
+                    };
+
+                    *replace = ty;
+                }
+
                 Ok(inferred)
             }
             (Type::Existential(name), _) => {
                 context.push((name.kind().clone(), should_be));
+
+                if overwrite {
+                    let ty = self[should_be].clone();
+
+                    let Some(replace) = self.types.get_mut(usize::from(inferred)) else {
+                        unreachable!("the type was just inferred, it'll exist");
+                    };
+
+                    *replace = ty;
+                }
 
                 Ok(should_be)
             }
@@ -1990,7 +2001,7 @@ impl TypeChecker {
                 for (inferred_parameter, parameter) in
                     inferred_parameters.into_iter().zip(&mut parameters)
                 {
-                    match self.check_inferred(inferred_parameter, *parameter, context) {
+                    match self.check_inferred(inferred_parameter, *parameter, context, overwrite) {
                         Ok(type_index) => {
                             *parameter = type_index;
                         }
@@ -2001,7 +2012,7 @@ impl TypeChecker {
                     }
                 }
 
-                match self.check_inferred(inferred_return_type, return_type, context) {
+                match self.check_inferred(inferred_return_type, return_type, context, overwrite) {
                     Ok(type_index) => {
                         return_type = type_index;
                     }
@@ -2050,7 +2061,7 @@ impl TypeChecker {
                 for ((_, inferred_field), (_, field)) in
                     inferred_fields.into_iter().zip(&mut fields)
                 {
-                    match self.check_inferred(inferred_field, *field, context) {
+                    match self.check_inferred(inferred_field, *field, context, overwrite) {
                         Ok(type_index) => {
                             *field = type_index;
                         }
@@ -2063,7 +2074,7 @@ impl TypeChecker {
 
                 for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
                 {
-                    match self.check_inferred(inferred_generic, *generic, context) {
+                    match self.check_inferred(inferred_generic, *generic, context, overwrite) {
                         Ok(type_index) => {
                             *generic = type_index;
                         }
@@ -2114,7 +2125,7 @@ impl TypeChecker {
 
                 for (inferred_variant, variant) in inferred_variants.into_iter().zip(&mut variants)
                 {
-                    match self.check_inferred(inferred_variant, *variant, context) {
+                    match self.check_inferred(inferred_variant, *variant, context, overwrite) {
                         Ok(type_index) => {
                             *variant = type_index;
                         }
@@ -2127,7 +2138,7 @@ impl TypeChecker {
 
                 for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
                 {
-                    match self.check_inferred(inferred_generic, *generic, context) {
+                    match self.check_inferred(inferred_generic, *generic, context, overwrite) {
                         Ok(type_index) => {
                             *generic = type_index;
                         }

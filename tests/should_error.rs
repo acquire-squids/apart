@@ -130,7 +130,7 @@ mod sum_equality_0 {
                     expected,
                     got,
                 },
-            )]) if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
+            )]) if expected == "bool" && got == "unit"
         );
     }
 }
@@ -165,7 +165,7 @@ mod sum_equality_1 {
                     expected,
                     got,
                 },
-            )]) if expected == "Option[Result[bool, E]]" && got == "Option[Result[unit, i64]]"
+            )]) if expected == "bool" && got == "unit"
         );
     }
 }
