@@ -30,7 +30,11 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
-            block.terminator = Some(BlockTerminator::Jump(BlockIndex(b + 1)));
+            block.terminator = Some(BlockTerminator::Jump(BlockIndex(if b < function_count {
+                b + function_count + 1
+            } else {
+                b + 1
+            })));
         }
     }
 
