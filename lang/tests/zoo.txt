@@ -1,0 +1,63 @@
+funky main() {
+	let
+		zoo = Zoo~new(),
+		total = 0,
+	in {
+		while total < 100000 {
+			total = total + zoo.ant()
+				+ zoo.banana()
+				+ zoo.tuna()
+				+ zoo.hay()
+				+ zoo.grass()
+				+ zoo.mouse();
+		}
+
+		print_i64(total);
+	};
+}
+
+product Zoo {
+	aardvark <- i64,
+	baboon <- i64,
+	cat <- i64,
+	donkey <- i64,
+	elephant <- i64,
+	fox <- i64,
+}
+
+teach Zoo {
+	funky new() -> Self {
+		Zoo {
+			aardvark <- 1,
+			baboon <- 1,
+			cat <- 1,
+			donkey <- 1,
+			elephant <- 1,
+			fox <- 1,
+		}
+	}
+
+	funky ant(self <- Self) -> i64 {
+		self.aardvark
+	}
+
+	funky banana(self <- Self) -> i64 {
+		self.baboon
+	}
+
+	funky tuna(self <- Self) -> i64 {
+		self.cat
+	}
+
+	funky hay(self <- Self) -> i64 {
+		self.donkey
+	}
+
+	funky grass(self <- Self) -> i64 {
+		self.elephant
+	}
+
+	funky mouse(self <- Self) -> i64 {
+		self.fox
+	}
+}

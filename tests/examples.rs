@@ -84,3 +84,32 @@ mod you_stupid {
         assert_eq!(str::from_utf8(out.as_slice()), Ok("true\nfalse\n"));
     }
 }
+
+#[cfg(test)]
+mod zoo {
+    const SOURCE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/lang/tests/",
+        "zoo.txt"
+    ));
+
+    #[test]
+    fn zoo() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<0, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("100002\n"));
+    }
+
+    #[test]
+    fn zoo_register() {
+        let mut out = vec![];
+
+        let _ = apart::compile::<32, _>([(0, SOURCE)].as_slice(), &mut out)
+            .expect("examples should always compile");
+
+        assert_eq!(str::from_utf8(out.as_slice()), Ok("100002\n"));
+    }
+}
