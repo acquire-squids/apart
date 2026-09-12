@@ -603,7 +603,11 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
     }
 
     const fn should_gc(&self) -> bool {
-        self.allocated >= self.next_gc
+        if cfg!(feature = "stress_gc") {
+            true
+        } else {
+            self.allocated >= self.next_gc
+        }
     }
 
     fn gc(&mut self) {

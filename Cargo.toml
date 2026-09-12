@@ -25,6 +25,7 @@ print_blocks = []
 print_ssa = []
 print_optimized = ["optimized"]
 print_allocated = []
+stress_gc = []
 
 [[bin]]
 name = "apart_c"
