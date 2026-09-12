@@ -5,16 +5,17 @@ use crate::{
 
 use std::collections::HashMap;
 
-pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
+pub fn allocate(ssa: &mut Ssa) {
     let mut seen = vec![false; ssa.blocks().len()];
 
     for b in 0..(ssa.function_count()) {
-        let mut allocator = RegisterAllocator::<MAX_REGISTERS> {
+        let mut allocator = RegisterAllocator {
             index: 0,
             registers_used: 0,
             free: vec![],
             stack_size: 0,
             current_fn: BlockIndex(b),
+            max_registers: ssa.max_registers(),
         };
 
         allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
@@ -31,12 +32,13 @@ pub fn allocate<const MAX_REGISTERS: usize>(ssa: &mut Ssa) {
     }
 }
 
-struct RegisterAllocator<const MAX_REGISTERS: usize> {
+struct RegisterAllocator {
     index: usize,
     registers_used: usize,
     free: Vec<usize>,
     stack_size: usize,
     current_fn: BlockIndex,
+    max_registers: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,9 +47,9 @@ enum Allocation {
     Stack(usize),
 }
 
-impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
+impl RegisterAllocator {
     fn allocate(&mut self) -> Allocation {
-        if self.index < MAX_REGISTERS {
+        if self.index < self.max_registers {
             self.index += 1;
 
             Allocation::Register(self.index - 1)
@@ -238,6 +240,7 @@ impl<const MAX_REGISTERS: usize> RegisterAllocator<MAX_REGISTERS> {
                     free: vec![],
                     stack_size: 0,
                     current_fn: self.current_fn,
+                    max_registers: self.max_registers,
                 };
 
                 self.allocate_block(ssa, child, seen);

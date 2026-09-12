@@ -16,12 +16,12 @@ struct CallFrame {
     previous_registers: Vec<CopyableValue>,
 }
 
-struct Evaluator<const MAX_REGISTERS: usize> {
+struct Evaluator {
     stack: Vec<CopyableValue>,
     values: Vec<Value>,
     allocated: usize,
     next_gc: usize,
-    registers: [CopyableValue; MAX_REGISTERS],
+    registers: Vec<CopyableValue>,
     call_frames: Vec<CallFrame>,
 }
 
@@ -55,7 +55,7 @@ impl From<ValueIndex> for usize {
     }
 }
 
-pub fn run<const MAX_REGISTERS: usize, O>(ssa: &Ssa, sources: &[(usize, &str)], out: &mut O)
+pub fn run<O>(ssa: &Ssa, sources: &[(usize, &str)], out: &mut O)
 where
     O: Write,
 {
@@ -64,7 +64,7 @@ where
         values: vec![],
         allocated: 0,
         next_gc: 1_000_000,
-        registers: [const { CopyableValue::Runtime }; MAX_REGISTERS],
+        registers: vec![const { CopyableValue::Runtime }; ssa.max_registers()],
         call_frames: vec![CallFrame {
             call_arguments: vec![],
             block_arguments: vec![],
@@ -78,7 +78,7 @@ where
     evaluator.run(ssa, sources, out);
 }
 
-impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
+impl Evaluator {
     #[allow(clippy::too_many_lines)]
     fn run<O>(&mut self, ssa: &Ssa, sources: &[(usize, &str)], out: &mut O)
     where
@@ -175,7 +175,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                                 from: (b, i),
                                 fp: self.stack.len(),
                                 block_index: callee,
-                                previous_registers: Vec::with_capacity(MAX_REGISTERS),
+                                previous_registers: Vec::with_capacity(ssa.max_registers()),
                             };
 
                             self.call_frames.push(call_frame);
@@ -681,9 +681,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
             .registers
             .iter()
             .map(|value| self.retain_value(&mut values, *value, marked))
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("the replacement registers are made from the original registers");
+            .collect::<Vec<_>>();
 
         for c in 0..(self.call_frames.len()) {
             let Some(call_frame) = self.call_frames.get(c) else {

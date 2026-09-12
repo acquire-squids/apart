@@ -1,24 +1,18 @@
-use std::{env, fs, io, path::Path, process::ExitCode};
-
-cfg_select! {
-    feature = "32_registers" => {
-        const MAX_REGISTERS: usize = 32;
-    }
-    _ => {
-        const MAX_REGISTERS: usize = 0;
-    }
-}
+use std::{env, fs, io, iter, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
-    let mut arguments = env::args();
+    let mut arguments = env::args().peekable();
     arguments.next();
+
+    let options = match parse_options(&mut arguments) {
+        Ok(options) => options,
+        Err(exit_code) => return exit_code,
+    };
 
     arguments.next().map_or_else(
         || {
-            eprintln!(
-                "Usage: {} [path_to_source]",
-                option_env!("CARGO_BIN_NAME").unwrap_or("apart")
-            );
+            print_usage();
+
             ExitCode::FAILURE
         },
         |file_path| {
@@ -41,11 +35,11 @@ fn main() -> ExitCode {
                     Ok(source) => {
                         let source = source.as_str();
 
-                        compile::<MAX_REGISTERS>(input_path, source).map_or(
+                        compile(input_path, source, options.max_registers, options.optimize).map_or(
                             ExitCode::FAILURE,
                             |compiled| {
-                                if cfg!(feature = "evaluate") {
-                                    evaluate::<MAX_REGISTERS>(&compiled);
+                                if options.evaluate {
+                                    evaluate(&compiled);
                                 }
 
                                 ExitCode::SUCCESS
@@ -58,11 +52,13 @@ fn main() -> ExitCode {
     )
 }
 
-fn compile<'a, const MAX_REGISTERS: usize>(
+fn compile<'a>(
     source_label: &str,
     source: &'a str,
+    max_registers: usize,
+    optimize: bool,
 ) -> Option<apart::Compiled<'a>> {
-    match apart::compile::<MAX_REGISTERS>([(0, source)].as_slice(), cfg!(feature = "optimized")) {
+    match apart::compile([(0, source)].as_slice(), max_registers, optimize) {
         Ok(compiled) => Some(compiled),
         Err(errors) => {
             let report_data = reporting::ReportData::new(
@@ -82,6 +78,91 @@ fn compile<'a, const MAX_REGISTERS: usize>(
     }
 }
 
-fn evaluate<const MAX_REGISTERS: usize>(compiled: &apart::Compiled<'_>) {
-    apart::evaluate::<MAX_REGISTERS, _>(compiled, &mut io::stdout().lock());
+fn evaluate(compiled: &apart::Compiled<'_>) {
+    apart::evaluate(compiled, &mut io::stdout().lock());
+}
+
+fn print_usage() {
+    eprintln!(
+        "Usage: {} [option]... [path_to_source]\n\n{}",
+        option_env!("CARGO_BIN_NAME").unwrap_or("apart_c"),
+        DESCRIPTION.trim(),
+    );
+}
+
+const DESCRIPTION: &str = "Description:
+    Compile (and optionally, evaluate) a program written in the \"apart\" language
+
+    -e, --evaluate
+        evaluate the program after compiling it
+
+    -o, --optimize
+        perform optimizations during compilation
+
+    -r, --registers usize
+        specify the maximum number of registers to compile with, e.g. \"-r 0\" or \"--registers 32\"
+
+        zero registers effectively works as a stack machine
+";
+
+struct ApartOptions {
+    evaluate: bool,
+    optimize: bool,
+    max_registers: usize,
+}
+
+fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
+    let mut options = ApartOptions {
+        evaluate: false,
+        optimize: false,
+        max_registers: 0,
+    };
+
+    while let Some(argument) = arguments.peek() {
+        match argument.as_str() {
+            "-?" | "--help" => {
+                print_usage();
+
+                return Err(ExitCode::SUCCESS);
+            }
+            "-e" | "--evaluate" => {
+                arguments.next();
+
+                options.evaluate = true;
+            }
+            "-o" | "--optimize" => {
+                arguments.next();
+
+                options.optimize = true;
+            }
+            "-r" | "--registers" => {
+                let argument = arguments
+                    .next()
+                    .expect("we just matched while peeking, it will exist");
+
+                if let Some(registers) = arguments.next() {
+                    match registers.parse::<usize>() {
+                        Ok(max_registers) => {
+                            options.max_registers = max_registers;
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "failed to parse the maximum registers as a usize; see next line"
+                            );
+                            eprintln!("{error}");
+
+                            return Err(ExitCode::FAILURE);
+                        }
+                    }
+                } else {
+                    eprintln!("expected the number of registers to compile with after {argument}");
+
+                    return Err(ExitCode::FAILURE);
+                }
+            }
+            _ => break,
+        }
+    }
+
+    Ok(options)
 }

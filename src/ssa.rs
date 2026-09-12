@@ -4,10 +4,11 @@ use crate::basic_blocks::{
 
 use std::{collections::HashSet, fmt};
 
-pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
+pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
     let mut ssa = Ssa {
         blocks: vec![],
         function_count: basic_blocks.function_count(),
+        max_registers,
     };
 
     for basic_block in basic_blocks.blocks() {
@@ -48,6 +49,7 @@ pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
 pub struct Ssa {
     blocks: Vec<Block>,
     function_count: usize,
+    max_registers: usize,
 }
 
 impl fmt::Display for Ssa {
@@ -77,6 +79,12 @@ impl Ssa {
     #[must_use]
     pub const fn function_count(&self) -> usize {
         self.function_count
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn max_registers(&self) -> usize {
+        self.max_registers
     }
 
     #[allow(dead_code)]

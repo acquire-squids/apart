@@ -17,13 +17,9 @@ lto = true
 reporting = { path = "./reporting" }
 
 [features]
-32_registers = []
-default = ["evaluate"]
-evaluate = []
-optimized = []
 print_blocks = []
 print_ssa = []
-print_optimized = ["optimized"]
+print_optimized = []
 print_allocated = []
 stress_gc = []
 

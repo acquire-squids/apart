@@ -50,18 +50,19 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
-pub fn evaluate<const MAX_REGISTERS: usize, O>(compiled: &Compiled<'_>, out: &mut O)
+pub fn evaluate<O>(compiled: &Compiled<'_>, out: &mut O)
 where
     O: Write,
 {
-    evaluate::run::<MAX_REGISTERS, O>(&compiled.ssa, compiled.sources_with_core.as_slice(), out);
+    evaluate::run(&compiled.ssa, compiled.sources_with_core.as_slice(), out);
 }
 
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc)]
-pub fn compile<'a, const MAX_REGISTERS: usize>(
+pub fn compile<'a>(
     sources: &[(usize, &'a str)],
+    max_registers: usize,
     optimized: bool,
 ) -> Result<Compiled<'a>, Vec<Spanned<Error>>> {
     let mut source_ids = sources
@@ -140,7 +141,7 @@ pub fn compile<'a, const MAX_REGISTERS: usize>(
         print!("{basic_blocks}");
     }
 
-    let mut ssa = ssa::convert(&basic_blocks);
+    let mut ssa = ssa::convert(&basic_blocks, max_registers);
 
     if cfg!(feature = "print_ssa") {
         print!("{ssa}");
@@ -154,7 +155,7 @@ pub fn compile<'a, const MAX_REGISTERS: usize>(
         }
     }
 
-    allocate_registers::allocate::<MAX_REGISTERS>(&mut ssa);
+    allocate_registers::allocate(&mut ssa);
 
     if cfg!(feature = "print_allocated") {
         print!("{ssa}");
@@ -188,9 +189,9 @@ macro_rules! __test_evaluation_output {
                 fn unoptimized() {
                     let mut out = vec![];
 
-                    $crate::compile::<NO_REGISTERS>([(0, SOURCE)].as_slice(), false)
+                    $crate::compile([(0, SOURCE)].as_slice(), NO_REGISTERS, false)
                         .map(|compiled| {
-                            $crate::evaluate::<NO_REGISTERS, _>(&compiled, &mut out);
+                            $crate::evaluate(&compiled, &mut out);
                         })
                         .expect("examples should always compile");
 
@@ -201,9 +202,9 @@ macro_rules! __test_evaluation_output {
                 fn optimized() {
                     let mut out = vec![];
 
-                    $crate::compile::<NO_REGISTERS>([(0, SOURCE)].as_slice(), true)
+                    $crate::compile([(0, SOURCE)].as_slice(), NO_REGISTERS, true)
                         .map(|compiled| {
-                            $crate::evaluate::<NO_REGISTERS, _>(&compiled, &mut out);
+                            $crate::evaluate(&compiled, &mut out);
                         })
                         .expect("examples should always compile");
 
@@ -220,9 +221,9 @@ macro_rules! __test_evaluation_output {
                 fn unoptimized() {
                     let mut out = vec![];
 
-                    $crate::compile::<MAX_REGISTERS>([(0, SOURCE)].as_slice(), false)
+                    $crate::compile([(0, SOURCE)].as_slice(), MAX_REGISTERS, false)
                         .map(|compiled| {
-                            $crate::evaluate::<MAX_REGISTERS, _>(&compiled, &mut out);
+                            $crate::evaluate(&compiled, &mut out);
                         })
                         .expect("examples should always compile");
 
@@ -233,9 +234,9 @@ macro_rules! __test_evaluation_output {
                 fn optimized() {
                     let mut out = vec![];
 
-                    $crate::compile::<MAX_REGISTERS>([(0, SOURCE)].as_slice(), true)
+                    $crate::compile([(0, SOURCE)].as_slice(), MAX_REGISTERS, true)
                         .map(|compiled| {
-                            $crate::evaluate::<MAX_REGISTERS, _>(&compiled, &mut out);
+                            $crate::evaluate(&compiled, &mut out);
                         })
                         .expect("examples should always compile");
 
@@ -267,8 +268,8 @@ macro_rules! __test_compilation_errors {
             fn compilation_error() {
                 let mut out = vec![];
 
-                let compiled = $crate::compile::<NO_REGISTERS>([(0, SOURCE)].as_slice(), false).map(|compiled| {
-                    $crate::evaluate::<NO_REGISTERS, _>(&compiled, &mut out);
+                let compiled = $crate::compile([(0, SOURCE)].as_slice(), NO_REGISTERS, false).map(|compiled| {
+                    $crate::evaluate(&compiled, &mut out);
                 });
 
                 let errors = compiled.as_ref().map_err(|errors| {
