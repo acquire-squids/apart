@@ -28,8 +28,3 @@ jobs:
         id: cargo_test
         run: |
           cargo test --no-fail-fast
-
-      - name: Cargo test (optimized)
-        id: cargo_test_optimized
-        run: |
-          cargo test --features "optimized" --no-fail-fast

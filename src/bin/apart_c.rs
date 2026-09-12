@@ -62,7 +62,7 @@ fn compile<'a, const MAX_REGISTERS: usize>(
     source_label: &str,
     source: &'a str,
 ) -> Option<apart::Compiled<'a>> {
-    match apart::compile::<MAX_REGISTERS>([(0, source)].as_slice()) {
+    match apart::compile::<MAX_REGISTERS>([(0, source)].as_slice(), cfg!(feature = "optimized")) {
         Ok(compiled) => Some(compiled),
         Err(errors) => {
             let report_data = reporting::ReportData::new(
