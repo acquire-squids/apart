@@ -7,7 +7,7 @@ use crate::{
 
 use std::{io::Write, mem};
 
-struct CallFrame<const MAX_REGISTERS: usize> {
+struct CallFrame {
     call_arguments: Vec<CopyableValue>,
     block_arguments: Vec<CopyableValue>,
     from: (usize, usize),
@@ -22,7 +22,7 @@ struct Evaluator<const MAX_REGISTERS: usize> {
     allocated: usize,
     next_gc: usize,
     registers: [CopyableValue; MAX_REGISTERS],
-    call_frames: Vec<CallFrame<MAX_REGISTERS>>,
+    call_frames: Vec<CallFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
