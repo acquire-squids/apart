@@ -1,6 +1,13 @@
 use std::{env, fs, io, path::Path, process::ExitCode};
 
-const MAX_REGISTERS: usize = 0;
+cfg_select! {
+    feature = "32_registers" => {
+        const MAX_REGISTERS: usize = 32;
+    }
+    _ => {
+        const MAX_REGISTERS: usize = 0;
+    }
+}
 
 fn main() -> ExitCode {
     let mut arguments = env::args();

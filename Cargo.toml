@@ -17,6 +17,7 @@ lto = true
 reporting = { path = "./reporting" }
 
 [features]
+32_registers = []
 default = ["evaluate"]
 evaluate = []
 optimized = []
