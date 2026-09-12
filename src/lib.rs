@@ -9,7 +9,10 @@ mod ssa;
 mod type_check;
 
 pub use {
-    name_resolve::Error as NameResolveError, parse::Error as ParseError,
+    basic_blocks::{Address, Instruction, Value},
+    name_resolve::Error as NameResolveError,
+    parse::Error as ParseError,
+    ssa::{Argument, Block, BlockTerminator, JumpTo, Ssa},
     type_check::Error as TypeCheckError,
 };
 
@@ -20,6 +23,11 @@ use std::{error, fmt, io::Write};
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
 const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt"));
+
+pub struct Compiled<'a> {
+    sources_with_core: Vec<(usize, &'a str)>,
+    ssa: Ssa,
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -42,16 +50,19 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
-/// # Errors
-/// Will error if compilation fails, returning the errors for the relevant stage
-#[allow(clippy::missing_panics_doc)]
-pub fn compile<const MAX_REGISTERS: usize, O>(
-    sources: &[(usize, &str)],
-    out: &mut O,
-) -> Result<Vec<u8>, Vec<Spanned<Error>>>
+pub fn evaluate<const MAX_REGISTERS: usize, O>(compiled: &Compiled<'_>, out: &mut O)
 where
     O: Write,
 {
+    evaluate::run::<MAX_REGISTERS, O>(&compiled.ssa, compiled.sources_with_core.as_slice(), out);
+}
+
+/// # Errors
+/// Will error if compilation fails, returning the errors for the relevant stage
+#[allow(clippy::missing_panics_doc)]
+pub fn compile<'a, const MAX_REGISTERS: usize>(
+    sources: &[(usize, &'a str)],
+) -> Result<Compiled<'a>, Vec<Spanned<Error>>> {
     let mut source_ids = sources
         .iter()
         .map(|(source_id, _)| *source_id)
@@ -148,7 +159,98 @@ where
         print!("{ssa}");
     }
 
-    evaluate::run::<MAX_REGISTERS, O>(&ssa, sources_with_core.as_slice(), out);
-
-    Ok(vec![])
+    Ok(Compiled {
+        sources_with_core,
+        ssa,
+    })
 }
+
+#[macro_export]
+macro_rules! __test_evaluation_output {
+    (
+        $test_name:ident, $test_file_name:literal, $expected_output:literal $(,)?
+    ) => {
+        #[cfg(test)]
+        mod $test_name {
+            const SOURCE: &str = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/lang/tests/",
+                $test_file_name
+            ));
+
+            const NO_REGISTERS: usize = 0;
+            const MAX_REGISTERS: usize = 32;
+
+            #[test]
+            fn no_registers() {
+                let mut out = vec![];
+
+                $crate::compile::<NO_REGISTERS>([(0, SOURCE)].as_slice())
+                    .map(|compiled| {
+                        $crate::evaluate::<NO_REGISTERS, _>(&compiled, &mut out);
+                    })
+                    .expect("examples should always compile");
+
+                assert_eq!(str::from_utf8(out.as_slice()), Ok($expected_output));
+            }
+
+            #[test]
+            fn max_registers() {
+                let mut out = vec![];
+
+                $crate::compile::<MAX_REGISTERS>([(0, SOURCE)].as_slice())
+                    .map(|compiled| {
+                        $crate::evaluate::<MAX_REGISTERS, _>(&compiled, &mut out);
+                    })
+                    .expect("examples should always compile");
+
+                assert_eq!(str::from_utf8(out.as_slice()), Ok($expected_output));
+            }
+        }
+    };
+}
+
+pub use __test_evaluation_output as test_evaluation_output;
+
+#[macro_export]
+macro_rules! __test_compilation_errors {
+    (
+        $test_name:ident, $test_file_name:literal, $expected_errors:pat $(if $expected_errors_conditional:expr)? $(,)?
+    ) => {
+        #[cfg(test)]
+        mod $test_name {
+            const SOURCE: &str = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/lang/tests/",
+                $test_file_name
+            ));
+
+            const NO_REGISTERS: usize = 0;
+
+            #[test]
+            fn compilation_error() {
+                let mut out = vec![];
+
+                let compiled = $crate::compile::<NO_REGISTERS>([(0, SOURCE)].as_slice()).map(|compiled| {
+                    $crate::evaluate::<NO_REGISTERS, _>(&compiled, &mut out);
+                });
+
+                let errors = compiled.as_ref().map_err(|errors| {
+                    errors
+                        .iter()
+                        .map(reporting::Spanned::kind)
+                        .collect::<Vec<_>>()
+                });
+
+                let errors = errors.as_ref().map_err(std::vec::Vec::as_slice);
+
+                std::assert_matches!(
+                    errors,
+                    Err($expected_errors) $(if $expected_errors_conditional)?
+                );
+            }
+        }
+    }
+}
+
+pub use __test_compilation_errors as test_compilation_errors;

@@ -17,6 +17,8 @@ lto = true
 reporting = { path = "./reporting" }
 
 [features]
+default = ["evaluate"]
+evaluate = []
 optimized = []
 print_blocks = []
 print_ssa = []
@@ -24,4 +26,4 @@ print_optimized = ["optimized"]
 print_allocated = []
 
 [[bin]]
-name = "cool"
+name = "apart_c"

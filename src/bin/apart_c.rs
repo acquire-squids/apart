@@ -34,9 +34,16 @@ fn main() -> ExitCode {
                     Ok(source) => {
                         let source = source.as_str();
 
-                        compile::<MAX_REGISTERS>(input_path, source);
+                        compile::<MAX_REGISTERS>(input_path, source).map_or(
+                            ExitCode::FAILURE,
+                            |compiled| {
+                                if cfg!(feature = "evaluate") {
+                                    evaluate::<MAX_REGISTERS>(&compiled);
+                                }
 
-                        ExitCode::SUCCESS
+                                ExitCode::SUCCESS
+                            },
+                        )
                     }
                 }
             }
@@ -44,9 +51,12 @@ fn main() -> ExitCode {
     )
 }
 
-fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str) {
-    match apart::compile::<MAX_REGISTERS, _>([(0, source)].as_slice(), &mut io::stdout().lock()) {
-        Ok(_) => {}
+fn compile<'a, const MAX_REGISTERS: usize>(
+    source_label: &str,
+    source: &'a str,
+) -> Option<apart::Compiled<'a>> {
+    match apart::compile::<MAX_REGISTERS>([(0, source)].as_slice()) {
+        Ok(compiled) => Some(compiled),
         Err(errors) => {
             let report_data = reporting::ReportData::new(
                 source,
@@ -59,6 +69,12 @@ fn compile<const MAX_REGISTERS: usize>(source_label: &str, source: &str) {
             for error in errors {
                 let _ = report_data.report(&error, &mut io::stderr().lock());
             }
+
+            None
         }
     }
+}
+
+fn evaluate<const MAX_REGISTERS: usize>(compiled: &apart::Compiled<'_>) {
+    apart::evaluate::<MAX_REGISTERS, _>(compiled, &mut io::stdout().lock());
 }
