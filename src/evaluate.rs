@@ -190,10 +190,7 @@ impl<const MAX_REGISTERS: usize> Evaluator<MAX_REGISTERS> {
                                 unreachable!("type checking guarantees callees are functions");
                             };
 
-                            let call_arguments = self
-                                .stack
-                                .drain((self.stack.len() - *arity)..)
-                                .collect::<Vec<_>>();
+                            let call_arguments = self.stack.split_off(self.stack.len() - *arity);
 
                             let value =
                                 Self::native_fn_call(call_arguments.as_slice(), sources, span, out);
