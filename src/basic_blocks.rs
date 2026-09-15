@@ -440,6 +440,11 @@ impl Translator {
             Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue => {
                 unreachable!("the ast should be valid since we succeeded in parsing");
             }
+            Expr::PathElement(_) => {
+                unreachable!(
+                    "type checking guarantees these path elements aren't used as expressions"
+                );
+            }
             Expr::Integer(value) => {
                 self.values.push(Value::Integer(*value));
 
@@ -1441,13 +1446,12 @@ impl Translator {
                 op: BinaryOp::PathAccess,
                 rhs,
                 ..
-            } => {
-                if let Expr::Name(_) = ast[*rhs].kind() {
-                    *rhs
-                } else {
+            } => match ast[*rhs].kind() {
+                Expr::Name(_) => *rhs,
+                _ => {
                     unreachable!("name resolution verifies the path is correct");
                 }
-            }
+            },
             _ => {
                 unreachable!("name resolution verifies the path is correct");
             }

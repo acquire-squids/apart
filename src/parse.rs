@@ -479,6 +479,7 @@ pub enum Expr {
         name: Spanned<String>,
         fields: Vec<(Spanned<String>, ExprIndex)>,
     },
+    PathElement(PathElement),
 }
 
 #[derive(Debug)]
@@ -547,7 +548,7 @@ impl Parameter {
 #[derive(Debug)]
 pub enum TypeSignature {
     Path {
-        path: Vec<Spanned<String>>,
+        path: Vec<Spanned<PathElement>>,
         name: Spanned<String>,
         generics: Vec<Spanned<Self>>,
     },
@@ -560,6 +561,13 @@ pub enum TypeSignature {
         parameters: Vec<Spanned<Self>>,
         return_type: Box<Spanned<Self>>,
     },
+}
+
+#[derive(Debug)]
+pub enum PathElement {
+    Root,
+    Super,
+    Name(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -660,7 +668,8 @@ impl Ast {
             | Expr::BinaryNoLhs {
                 op: BinaryOp::Access | BinaryOp::PathAccess,
                 ..
-            } => {}
+            }
+            | Expr::PathElement(_) => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
@@ -761,7 +770,9 @@ impl Parser {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" => Some(lexeme),
+            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" => {
+                Some(lexeme)
+            }
             _ => None,
         }
     }
@@ -1483,6 +1494,32 @@ impl Parser {
         )))
     }
 
+    fn path_element(&mut self, lexer: &mut Lexer) -> Result<Spanned<PathElement>, Spanned<Error>> {
+        if let Some(span) = self.peek(lexer).map(Spanned::span) {
+            match self.keyword(lexer, span) {
+                Some("root") => {
+                    self.advance(lexer);
+
+                    Ok(Spanned::new(PathElement::Root, span))
+                }
+                Some("super") => {
+                    self.advance(lexer);
+
+                    Ok(Spanned::new(PathElement::Super, span))
+                }
+                _ => {
+                    let (name, _) = self.name_lexeme(lexer)?;
+
+                    Ok(Spanned::new(PathElement::Name(name), span))
+                }
+            }
+        } else {
+            let (name, span) = self.name_lexeme(lexer)?;
+
+            Ok(Spanned::new(PathElement::Name(name), span))
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn parse_type_signature(
         &mut self,
@@ -1580,18 +1617,15 @@ impl Parser {
 
                         Ok(Spanned::new(TypeSignature::SelfTy, span))
                     }
-                    Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
-                    None => {
-                        let (name, span) = self.name_lexeme(lexer)?;
-
-                        let mut path = vec![Spanned::new(name, span)];
+                    None | Some("root" | "super") => {
+                        let mut path = vec![self.path_element(lexer)?];
 
                         while self.peek(lexer).is_some()
                             && self.match_next(lexer, Token::Tilde).is_some()
                         {
-                            let (name, span) = self.name_lexeme(lexer)?;
+                            let path_element = self.path_element(lexer)?;
 
-                            path.push(Spanned::new(name, span));
+                            path.push(path_element);
                         }
 
                         let mut generics = vec![];
@@ -1629,6 +1663,12 @@ impl Parser {
                             .pop()
                             .expect("the path is guaranteed to have at least one name");
 
+                        let name = if let PathElement::Name(end_of_path) = name.kind() {
+                            Ok(Spanned::new(end_of_path.clone(), name.span()))
+                        } else {
+                            Err(Spanned::new(Error::InvalidName, name.span()))
+                        }?;
+
                         let span = name
                             .span()
                             .combine_with(span)
@@ -1647,6 +1687,7 @@ impl Parser {
                             span,
                         ))
                     }
+                    Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
                 }
             }
             Some(_) => Err(Spanned::new(
@@ -1977,6 +2018,9 @@ impl Parser {
                 let span = token.span();
 
                 match self.keyword(lexer, span) {
+                    Some("root" | "super") => {
+                        Some((precedence::PRIMARY, (Self::path_element_expr, span)))
+                    }
                     Some("let") => {
                         self.advance(lexer)?;
 
@@ -2347,6 +2391,18 @@ impl Parser {
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
+    }
+
+    fn path_element_expr(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        _: u16,
+        _: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        let path_element = self.path_element(lexer)?;
+
+        Ok(ast.push_expr(path_element.transmute(Expr::PathElement)))
     }
 
     fn name_lexeme(&mut self, lexer: &mut Lexer) -> Result<(String, Span), Spanned<Error>> {

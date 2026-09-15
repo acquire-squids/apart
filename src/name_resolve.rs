@@ -1,6 +1,8 @@
 use crate::{
     Reportable, Span, Spanned,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature, Visibility},
+    parse::{
+        Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, TypeSignature, Visibility,
+    },
 };
 
 use std::{collections::HashMap, error, fmt, mem, ops::Index};
@@ -31,7 +33,7 @@ struct NameResolver {
     variable_scopes: Vec<HashMap<String, Definition>>,
     persistent_scopes: HashMap<Span, HashMap<String, Definition>>,
     associated_with: Vec<Span>,
-    current_mod: (usize, Span),
+    current_mod: Vec<Span>,
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
 }
@@ -63,6 +65,7 @@ pub enum Error {
     PathIsPrivate,
     RootDeeperThanPathStart,
     UnknownSelf,
+    SuperAtRoot,
 }
 
 impl fmt::Display for Error {
@@ -152,6 +155,12 @@ impl fmt::Display for Error {
                     "\"Self\" can only be used in a product, sum, or associated function"
                 )
             }
+            Self::SuperAtRoot => {
+                write!(
+                    f,
+                    "\"super\" can only be used in a path if there is an outer module"
+                )
+            }
         }
     }
 }
@@ -162,19 +171,11 @@ impl Reportable for Error {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefinitionKind {
-    Type(TypeDefinition),
+    Type,
     Mod,
     Function,
     DefinedName,
     DeclaredOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TypeDefinition {
-    Named,
-    Product,
-    Sum,
-    SumVariant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -242,7 +243,7 @@ impl NameResolver {
             variable_scopes: vec![HashMap::new()],
             persistent_scopes: HashMap::new(),
             associated_with: vec![],
-            current_mod: (0, ROOT_SPAN),
+            current_mod: vec![ROOT_SPAN],
             errors: vec![],
             names: HashMap::new(),
         }
@@ -304,7 +305,7 @@ impl NameResolver {
         scope.insert(
             name,
             Definition {
-                kind: DefinitionKind::Type(TypeDefinition::Named),
+                kind: DefinitionKind::Type,
                 visibility: Visibility::Public,
                 span,
             },
@@ -346,7 +347,15 @@ impl NameResolver {
                         self.resolve_associated_name(*associated_with, name)
                     })
                     .map_or_else(
-                        || self.resolve_associated_name(self.current_mod.1, name),
+                        || {
+                            self.resolve_associated_name(
+                                self.current_mod
+                                    .last()
+                                    .copied()
+                                    .expect("there will always be at least one mod"),
+                                name,
+                            )
+                        },
                         Some,
                     )
             },
@@ -387,41 +396,30 @@ impl NameResolver {
             } => {
                 let associated_with = mem::take(&mut self.associated_with);
 
-                let mut module_depth = 0;
+                let mut resolved_path = self.current_mod.clone();
+                let mut module_depth = resolved_path.len();
 
                 for element in path {
-                    let deeper_than_here = module_depth > self.current_mod.0;
-
                     let error_count = self.errors.len();
 
                     self.resolve_path_element(
                         element.kind(),
                         element.span(),
-                        deeper_than_here,
                         &mut module_depth,
+                        &mut resolved_path,
                     );
 
                     if self.errors.len() > error_count {
                         break;
-                    } else if element.kind() == "root" {
-                        if deeper_than_here {
-                            self.errors
-                                .push(Spanned::new(Error::RootDeeperThanPathStart, element.span()));
-
-                            break;
-                        }
-
-                        self.associated_with.pop();
-
-                        self.associated_with.push(ROOT_SPAN);
-
+                    } else if !matches!(element.kind(), PathElement::Name(_)) {
                         continue;
                     }
 
-                    if let Some(span) = self.names.get(&element.span()) {
-                        self.associated_with.pop();
+                    if let Some(span) = self.names.get(&element.span()).copied() {
+                        resolved_path.push(span);
 
-                        self.associated_with.push(*span);
+                        self.associated_with.pop();
+                        self.associated_with.push(span);
                     } else {
                         break;
                     }
@@ -431,14 +429,7 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition)
-                        if matches!(
-                            definition.kind,
-                            DefinitionKind::DefinedName
-                                | DefinitionKind::Function
-                                | DefinitionKind::Mod
-                        ) =>
-                    {
+                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                         self.errors
                             .push(Spanned::new(Error::ExpectedType, ty.span()));
                     }
@@ -462,14 +453,7 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition)
-                        if matches!(
-                            definition.kind,
-                            DefinitionKind::DefinedName
-                                | DefinitionKind::Function
-                                | DefinitionKind::Mod
-                        ) =>
-                    {
+                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                         self.errors
                             .push(Spanned::new(Error::ExpectedType, ty.span()));
                     }
@@ -482,11 +466,11 @@ impl NameResolver {
                 Err(error) => {
                     self.errors.push(error);
                 }
-                Ok(definition) if matches!(definition.kind, DefinitionKind::Type(_)) => {}
-                Ok(_) => {
+                Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                     self.errors
                         .push(Spanned::new(Error::UnknownSelf, ty.span()));
                 }
+                Ok(_) => {}
             },
             TypeSignature::Fn {
                 parameters,
@@ -524,7 +508,7 @@ impl NameResolver {
                             name.span(),
                             generic.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Named),
+                                kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
                             },
@@ -544,7 +528,10 @@ impl NameResolver {
                             .push(Spanned::new(Error::DuplicateModName, name.span()));
                     } else {
                         self.associate_name(
-                            self.current_mod.1,
+                            self.current_mod
+                                .last()
+                                .copied()
+                                .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Mod,
@@ -554,9 +541,7 @@ impl NameResolver {
                         );
                     }
 
-                    let current_mod = self.current_mod;
-
-                    self.current_mod = (current_mod.0 + 1, name.span());
+                    self.current_mod.push(name.span());
 
                     self.associated_with.push(name.span());
 
@@ -565,7 +550,7 @@ impl NameResolver {
                             name.span(),
                             generic.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Named),
+                                kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
                             },
@@ -576,7 +561,7 @@ impl NameResolver {
 
                     self.associated_with.pop();
 
-                    self.current_mod = current_mod;
+                    self.current_mod.pop();
                 }
                 Item::Teach {
                     student,
@@ -590,7 +575,7 @@ impl NameResolver {
                             student.span(),
                             generic.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Named),
+                                kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
                             },
@@ -612,10 +597,13 @@ impl NameResolver {
                             .push(Spanned::new(Error::DuplicateProductName, name.span()));
                     } else {
                         self.associate_name(
-                            self.current_mod.1,
+                            self.current_mod
+                                .last()
+                                .copied()
+                                .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Product),
+                                kind: DefinitionKind::Type,
                                 visibility: *visibility,
                                 span: name.span(),
                             },
@@ -629,7 +617,7 @@ impl NameResolver {
                             name.span(),
                             generic.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Named),
+                                kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
                             },
@@ -650,10 +638,13 @@ impl NameResolver {
                             .push(Spanned::new(Error::DuplicateSumName, name.span()));
                     } else {
                         self.associate_name(
-                            self.current_mod.1,
+                            self.current_mod
+                                .last()
+                                .copied()
+                                .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Sum),
+                                kind: DefinitionKind::Type,
                                 visibility: *visibility,
                                 span: name.span(),
                             },
@@ -667,7 +658,7 @@ impl NameResolver {
                             name.span(),
                             generic.kind().clone(),
                             Definition {
-                                kind: DefinitionKind::Type(TypeDefinition::Named),
+                                kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
                             },
@@ -693,7 +684,7 @@ impl NameResolver {
                                 name.span(),
                                 variant_name.kind().clone(),
                                 Definition {
-                                    kind: DefinitionKind::Type(TypeDefinition::SumVariant),
+                                    kind: DefinitionKind::Type,
                                     visibility: *visibility,
                                     span: variant_name.span(),
                                 },
@@ -725,9 +716,7 @@ impl NameResolver {
                     self.define_name(name.kind());
                 }
                 Item::Mod { name, contents, .. } => {
-                    let current_mod = self.current_mod;
-
-                    self.current_mod = (current_mod.0 + 1, name.span());
+                    self.current_mod.push(name.span());
 
                     self.associated_with.push(name.span());
 
@@ -735,7 +724,7 @@ impl NameResolver {
 
                     self.associated_with.pop();
 
-                    self.current_mod = current_mod;
+                    self.current_mod.pop();
                 }
                 Item::Teach { student, body, .. } => {
                     self.associated_with.push(student.span());
@@ -840,7 +829,10 @@ impl NameResolver {
             self.errors.push(Spanned::new(error, name.span()));
         } else {
             self.associate_name(
-                self.current_mod.1,
+                self.current_mod
+                    .last()
+                    .copied()
+                    .expect("there will always be at least one mod"),
                 name.kind().clone(),
                 Definition {
                     kind: DefinitionKind::Function,
@@ -864,9 +856,7 @@ impl NameResolver {
             | Item::Product { .. }
             | Item::Sum { .. } => {}
             Item::Mod { name, contents, .. } => {
-                let current_mod = self.current_mod;
-
-                self.current_mod = (current_mod.0 + 1, name.span());
+                self.current_mod.push(name.span());
 
                 self.associated_with.push(name.span());
 
@@ -874,12 +864,21 @@ impl NameResolver {
 
                 self.associated_with.pop();
 
-                self.current_mod = current_mod;
+                self.current_mod.pop();
             }
             Item::Teach { student, body, .. } => {
                 self.associated_with.push(student.span());
 
+                let span = self
+                    .names
+                    .get(&student.span())
+                    .map_or_else(|| student.span(), |span| *span);
+
+                self.declare_type("Self".to_string(), span);
+
                 self.resolve_items(ast, body);
+
+                self.undeclare("Self");
 
                 self.associated_with.pop();
             }
@@ -975,7 +974,7 @@ impl NameResolver {
                         Err(error) => {
                             self.errors.push(error);
                         }
-                        Ok(definition) if matches!(definition.kind, DefinitionKind::Type(_)) => {
+                        Ok(definition) if matches!(definition.kind, DefinitionKind::Type) => {
                             self.errors
                                 .push(Spanned::new(Error::AssignmentTargetIsType, ast[lhs].span()));
                         }
@@ -1009,7 +1008,7 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition) if matches!(definition.kind, DefinitionKind::Type(_)) => {
+                    Ok(definition) if matches!(definition.kind, DefinitionKind::Type) => {
                         self.errors.push(Spanned::new(Error::NameIsType, span));
                     }
                     Ok(definition) if matches!(definition.kind, DefinitionKind::Mod) => {
@@ -1029,24 +1028,14 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition)
-                        if !matches!(
-                            definition.kind,
-                            DefinitionKind::Type(
-                                TypeDefinition::Product | TypeDefinition::SumVariant
-                            )
-                        ) =>
-                    {
+                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                         self.errors
                             .push(Spanned::new(Error::ExpectedType, name.span()));
                     }
                     Ok(definition)
                         if check_visibility
                             && matches!(definition.visibility, Visibility::Private)
-                            && matches!(
-                                definition.kind,
-                                DefinitionKind::Type(TypeDefinition::Product)
-                            ) =>
+                            && matches!(definition.kind, DefinitionKind::Type) =>
                     {
                         self.errors
                             .push(Spanned::new(Error::PathIsPrivate, name.span()));
@@ -1076,8 +1065,9 @@ impl NameResolver {
                 | Expr::Binary {
                     op: BinaryOp::PathAccess,
                     ..
-                } => match ast[*rhs_of_lhs].kind() {
-                    Expr::Name(_) | Expr::Product { .. } => {
+                }
+                | Expr::PathElement(_) => match ast[*rhs_of_lhs].kind() {
+                    Expr::Name(_) | Expr::Product { .. } | Expr::PathElement(_) => {
                         path.push(*rhs_of_lhs);
                     }
                     _ => {
@@ -1094,104 +1084,141 @@ impl NameResolver {
             lhs = *lhs_of_lhs;
         }
 
-        if let Expr::Name(_) = ast[lhs].kind() {
-            path.push(lhs);
-        } else {
-            self.errors
-                .push(Spanned::new(Error::InvalidPath, ast[lhs].span()));
+        match ast[lhs].kind() {
+            Expr::Name(_) | Expr::PathElement(_) => {
+                path.push(lhs);
+            }
+            _ => {
+                self.errors
+                    .push(Spanned::new(Error::InvalidPath, ast[lhs].span()));
+            }
         }
 
         if self.errors.len() == error_count {
             let associated_with = mem::take(&mut self.associated_with);
 
-            let mut module_depth = 0;
+            let mut resolved_path = self.current_mod.clone();
+            let mut module_depth = resolved_path.len();
 
-            while path.len() > 1
-                && let Some(p) = path.pop()
-            {
-                if let Expr::Name(name) = ast[p].kind() {
-                    let deeper_than_here = module_depth > self.current_mod.0;
+            for p in path.iter().copied().skip(1).rev() {
+                self.resolve_path_element_expr(
+                    ast[p].kind(),
+                    ast[p].span(),
+                    &mut module_depth,
+                    &mut resolved_path,
+                );
 
-                    let error_count = self.errors.len();
-
-                    self.resolve_path_element(
-                        name,
-                        ast[p].span(),
-                        deeper_than_here,
-                        &mut module_depth,
-                    );
-
-                    if self.errors.len() > error_count {
-                        break;
-                    } else if name == "root" {
-                        if deeper_than_here {
-                            self.errors
-                                .push(Spanned::new(Error::RootDeeperThanPathStart, ast[p].span()));
-
-                            break;
-                        }
-
-                        self.associated_with.pop();
-                        self.associated_with.push(ROOT_SPAN);
-
-                        continue;
-                    }
+                if self.errors.len() > error_count {
+                    break;
+                } else if !matches!(ast[p].kind(), Expr::Name(_)) {
+                    continue;
                 }
 
-                if let Some(span) = self.names.get(&ast[p].span()) {
+                if let Some(span) = self.names.get(&ast[p].span()).copied() {
+                    resolved_path.push(span);
+
                     self.associated_with.pop();
-                    self.associated_with.push(*span);
+                    self.associated_with.push(span);
                 } else {
                     break;
                 }
             }
 
             if self.errors.len() == error_count
-                && path.len() == 1
-                && let Some(rhs) = path.pop()
+                && let Some(rhs) = path.first().copied()
             {
-                self.resolve_expr(ast, rhs, module_depth > 0);
+                self.resolve_expr(ast, rhs, module_depth > self.current_mod.len());
             }
 
             self.associated_with = associated_with;
         }
     }
 
+    fn resolve_path_element_expr(
+        &mut self,
+        element: &Expr,
+        span: Span,
+        module_depth: &mut usize,
+        resolved_path: &mut Vec<Span>,
+    ) {
+        match element {
+            Expr::Name(name) => {
+                self.resolve_path_element(
+                    &PathElement::Name(name.clone()),
+                    span,
+                    module_depth,
+                    resolved_path,
+                );
+            }
+            Expr::PathElement(element) => {
+                self.resolve_path_element(element, span, module_depth, resolved_path);
+            }
+            _ => {
+                self.errors.push(Spanned::new(Error::InvalidPath, span));
+            }
+        }
+    }
+
     fn resolve_path_element(
         &mut self,
-        name: &str,
+        element: &PathElement,
         span: Span,
-        deeper_than_here: bool,
         module_depth: &mut usize,
+        resolved_path: &mut Vec<Span>,
     ) {
-        if name == "root" {
-            *module_depth = 0;
+        match element {
+            PathElement::Root => {
+                if resolved_path.len() == self.current_mod.len() {
+                    *module_depth = 0;
 
-            return;
-        }
+                    resolved_path.clear();
 
-        match self.resolve_and_insert_name(name, span) {
-            Err(_) => {
-                self.errors
-                    .push(Spanned::new(Error::PathDoesNotExist, span));
-            }
-            Ok(definition) if matches!(definition.kind, DefinitionKind::DefinedName) => {
-                self.errors.push(Spanned::new(Error::PathIsValue, span));
-            }
-            Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
-                self.errors
-                    .push(Spanned::new(Error::PathCannotAssociate, span));
-            }
-            Ok(definition)
-                if deeper_than_here && matches!(definition.visibility, Visibility::Private) =>
-            {
-                self.errors.push(Spanned::new(Error::PathIsPrivate, span));
-            }
-            Ok(definition) => {
-                if matches!(definition.kind, DefinitionKind::Mod) {
-                    *module_depth += 1;
+                    self.associated_with.pop();
+
+                    self.associated_with.push(ROOT_SPAN);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::RootDeeperThanPathStart, span));
                 }
             }
+            PathElement::Super => {
+                if *module_depth > 1 {
+                    *module_depth -= 1;
+
+                    resolved_path.pop();
+
+                    self.associated_with.pop();
+
+                    self.associated_with
+                        .push(resolved_path.last().map_or(ROOT_SPAN, |span| *span));
+                } else {
+                    self.errors.push(Spanned::new(Error::SuperAtRoot, span));
+                }
+            }
+            PathElement::Name(name) => match self.resolve_and_insert_name(name, span) {
+                Err(_) => {
+                    self.errors
+                        .push(Spanned::new(Error::PathDoesNotExist, span));
+                }
+                Ok(definition) if matches!(definition.kind, DefinitionKind::DefinedName) => {
+                    self.errors.push(Spanned::new(Error::PathIsValue, span));
+                }
+                Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
+                    self.errors
+                        .push(Spanned::new(Error::PathCannotAssociate, span));
+                }
+                Ok(definition)
+                    if *module_depth > self.current_mod.len()
+                        && matches!(definition.visibility, Visibility::Private) =>
+                {
+                    self.errors.push(Spanned::new(Error::PathIsPrivate, span));
+                }
+                Ok(definition) => {
+                    if matches!(definition.kind, DefinitionKind::Mod) {
+                        *module_depth += 1;
+                    }
+                }
+            },
         }
     }
 }

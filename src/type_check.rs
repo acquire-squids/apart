@@ -315,6 +315,7 @@ pub enum Error {
     MethodCalledUncallable,
     MethodCallArgumentCountMismatch { expected: usize, got: usize },
     FnFieldAsMethod,
+    ModuleAsExpr,
 }
 
 impl fmt::Display for Error {
@@ -384,6 +385,7 @@ impl fmt::Display for Error {
                     "you cannot directly use a function field like a method; try wrapping this in parentheses"
                 )
             }
+            Self::ModuleAsExpr => write!(f, "modules are not allowed to be used as expressions"),
         }
     }
 }
@@ -1147,6 +1149,11 @@ impl TypeChecker {
             Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue => {
                 unreachable!("these won't exist since parsing succeeded");
             }
+            Expr::PathElement(_) => {
+                self.errors.push(Spanned::new(Error::ModuleAsExpr, span));
+
+                self.type_unknown()
+            }
             Expr::Integer(_) => self.type_integer(),
             Expr::Float(_) => self.type_float(),
             Expr::Boolean(_) => self.type_boolean(),
@@ -1424,9 +1431,9 @@ impl TypeChecker {
             }
             Expr::Product { name, fields } => {
                 if let Type::Product {
+                    name: type_name,
                     fields: field_types,
                     generics,
-                    ..
                 } = self[self[names[name.span()]]].clone()
                 {
                     let error_count = self.errors.len();
@@ -1499,7 +1506,7 @@ impl TypeChecker {
                             .collect::<Vec<_>>();
 
                         self.push_type(Type::Product {
-                            name: name.clone(),
+                            name: type_name,
                             fields: checked_fields,
                             generics,
                         })
@@ -1581,13 +1588,12 @@ impl TypeChecker {
                         op: BinaryOp::PathAccess,
                         rhs,
                         ..
-                    } => {
-                        if let Expr::Name(_) = ast[*rhs].kind() {
-                            *rhs
-                        } else {
+                    } => match ast[*rhs].kind() {
+                        Expr::Name(_) => *rhs,
+                        _ => {
                             unreachable!("name resolution verifies the path is correct");
                         }
-                    }
+                    },
                     _ => {
                         unreachable!("name resolution verifies the path is correct");
                     }

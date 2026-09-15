@@ -51,6 +51,8 @@ mod evaluation_output {
 
     apart::test_evaluation_output!(root_path, "root_path.txt", "97\n");
 
+    apart::test_evaluation_output!(path_super, "path_super.txt", "97\n");
+
     apart::test_evaluation_output!(product, "product.txt", "");
 
     apart::test_evaluation_output!(product_identity, "product_identity.txt", "3.14\n");
@@ -164,6 +166,22 @@ mod compilation_error {
         "path_nonexistent.txt",
         [apart::Error::NameResolve(
             apart::NameResolveError::PathCannotAssociate
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        path_super_invalid,
+        "path_super_invalid.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::SuperAtRoot
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        root_path_invalid,
+        "root_path_invalid.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::RootDeeperThanPathStart
         )]
     );
 
