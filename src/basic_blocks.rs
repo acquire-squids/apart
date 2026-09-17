@@ -445,6 +445,9 @@ impl Translator {
                     "type checking guarantees these path elements aren't used as expressions"
                 );
             }
+            Expr::SelfType => {
+                unreachable!("type checking guarantees a \"Self\" isn't used as an expression");
+            }
             Expr::Integer(value) => {
                 self.values.push(Value::Integer(*value));
 
@@ -1429,6 +1432,7 @@ impl Translator {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn translate_path_access(
         &mut self,
         ast: &Ast,
@@ -1440,14 +1444,16 @@ impl Translator {
 
         self.last_in_fn = false;
 
+        let original_lhs = lhs;
+
         let lhs = match ast[lhs].kind() {
-            Expr::Name(_) => lhs,
+            Expr::Name(_) | Expr::SelfType => lhs,
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 rhs,
                 ..
             } => match ast[*rhs].kind() {
-                Expr::Name(_) => *rhs,
+                Expr::Name(_) | Expr::SelfType => *rhs,
                 _ => {
                     unreachable!("name resolution verifies the path is correct");
                 }
@@ -1457,13 +1463,55 @@ impl Translator {
             }
         };
 
-        let lhs_span = ast[lhs].span();
+        let type_span = match names
+            .get(ast[lhs].span())
+            .and_then(|span| types.get_type(span))
+        {
+            Some(
+                Type::Unknown
+                | Type::Existential(_)
+                | Type::Generic(_)
+                | Type::Fn { .. }
+                | Type::AnyOf(_),
+            )
+            | None => None,
+            Some(Type::Primitive(primitive)) => Some(primitive.span()),
+            Some(Type::Product { name, .. } | Type::Sum { name, .. }) => Some(name.span()),
+        };
 
-        match types.get_type(names[lhs_span]) {
-            Some(Type::Sum {
-                variants: type_variants,
-                ..
-            }) => {
+        let type_span = type_span.map(|type_span| names.get(type_span).unwrap_or(type_span));
+
+        match ast[rhs].kind() {
+            Expr::Name(method_name) if let Some(type_span) = type_span => {
+                if let Some(method_span) = ast[original_lhs]
+                    .span()
+                    .combine_with(ast[rhs].span())
+                    .and_then(|span| types.resolve_association(type_span, method_name, span))
+                {
+                    let callee = match self
+                        .addresses
+                        .get(&method_span)
+                        .expect("type checking guarantees the method exists")
+                    {
+                        Addresslike::Block(block_index) => Value::Fn(*block_index),
+                        Addresslike::NativeFn(span) => Value::NativeFn(*span),
+                        Addresslike::CallArgument(_) | Addresslike::Address(_) => {
+                            unreachable!("methods are only ever functions or native functions");
+                        }
+                    };
+
+                    self.values.push(callee);
+                } else {
+                    unreachable!("{type_span:?} {method_name:?} {:?}", ast[rhs].span());
+                }
+            }
+            Expr::Product { name, .. }
+                if let Some(type_span) = type_span
+                    && let Some(Type::Sum {
+                        variants: type_variants,
+                        ..
+                    }) = types.get_type(type_span) =>
+            {
                 let variant_index = match ast[rhs].kind() {
                     Expr::Product { name, .. } => {
                         let Some(variant_index) = type_variants
@@ -1497,7 +1545,7 @@ impl Translator {
                 });
             }
             _ => {
-                self.translate_name(ast, names, rhs);
+                self.translate_expr(ast, names, types, rhs);
             }
         }
 
@@ -1520,24 +1568,32 @@ impl Translator {
         self.last_in_fn = false;
 
         let type_span = match &types[types[ast[target].span()]] {
-            Type::Unknown | Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } => {
+            Type::Unknown
+            | Type::Existential(_)
+            | Type::Generic(_)
+            | Type::Fn { .. }
+            | Type::AnyOf(_) => {
                 unreachable!("type checking guarantees these types are not used for method calls");
             }
             Type::Primitive(primitive) => primitive.span(),
             Type::Product { name, .. } | Type::Sum { name, .. } => name.span(),
         };
 
+        let type_span = names.get(type_span).unwrap_or(type_span);
+
         let Expr::Name(method_name) = ast[method].kind() else {
             unreachable!("methods are only names");
         };
 
-        let Some(method_definition) = names.get_association(type_span, method_name) else {
+        let Some(method_span) =
+            types.resolve_association(type_span, method_name, ast[method].span())
+        else {
             unreachable!("type checking guarantees the method exists");
         };
 
         let callee = match self
             .addresses
-            .get(&method_definition.span())
+            .get(&method_span)
             .expect("type checking guarantees the method exists")
         {
             Addresslike::Block(block_index) => Value::Fn(*block_index),

@@ -729,15 +729,16 @@ impl NameResolver {
                 Item::Teach { student, body, .. } => {
                     self.associated_with.push(student.span());
 
-                    self.declare_type("Self".to_string(), student.span());
-
                     self.resolve_type_signature(student);
 
-                    self.associated_with.push(
-                        self.names
-                            .get(&student.span())
-                            .map_or_else(|| student.span(), |span| *span),
-                    );
+                    let span = self
+                        .names
+                        .get(&student.span())
+                        .map_or_else(|| student.span(), |span| *span);
+
+                    self.declare_type("Self".to_string(), span);
+
+                    self.associated_with.push(span);
 
                     self.resolve_types(ast, body);
 
@@ -809,22 +810,15 @@ impl NameResolver {
         error: Error,
     ) {
         if let Some(associated_with) = self.associated_with.last().copied() {
-            if self
-                .resolve_associated_name(associated_with, name.kind())
-                .is_some()
-            {
-                self.errors.push(Spanned::new(error, name.span()));
-            } else {
-                self.associate_name(
-                    associated_with,
-                    name.kind().clone(),
-                    Definition {
-                        kind: DefinitionKind::Function,
-                        visibility,
-                        span: name.span(),
-                    },
-                );
-            }
+            self.associate_name(
+                associated_with,
+                name.kind().clone(),
+                Definition {
+                    kind: DefinitionKind::Function,
+                    visibility,
+                    span: name.span(),
+                },
+            );
         } else if self.resolve_name(name.kind()).is_some() {
             self.errors.push(Spanned::new(error, name.span()));
         } else {
@@ -876,9 +870,13 @@ impl NameResolver {
 
                 self.declare_type("Self".to_string(), span);
 
+                self.associated_with.push(span);
+
                 self.resolve_items(ast, body);
 
                 self.undeclare("Self");
+
+                self.associated_with.pop();
 
                 self.associated_with.pop();
             }
@@ -1066,8 +1064,12 @@ impl NameResolver {
                     op: BinaryOp::PathAccess,
                     ..
                 }
-                | Expr::PathElement(_) => match ast[*rhs_of_lhs].kind() {
-                    Expr::Name(_) | Expr::Product { .. } | Expr::PathElement(_) => {
+                | Expr::PathElement(_)
+                | Expr::SelfType => match ast[*rhs_of_lhs].kind() {
+                    Expr::Name(_)
+                    | Expr::Product { .. }
+                    | Expr::PathElement(_)
+                    | Expr::SelfType => {
                         path.push(*rhs_of_lhs);
                     }
                     _ => {
@@ -1085,7 +1087,7 @@ impl NameResolver {
         }
 
         match ast[lhs].kind() {
-            Expr::Name(_) | Expr::PathElement(_) => {
+            Expr::Name(_) | Expr::PathElement(_) | Expr::SelfType => {
                 path.push(lhs);
             }
             _ => {
@@ -1110,7 +1112,7 @@ impl NameResolver {
 
                 if self.errors.len() > error_count {
                     break;
-                } else if !matches!(ast[p].kind(), Expr::Name(_)) {
+                } else if !matches!(ast[p].kind(), Expr::Name(_) | Expr::SelfType) {
                     continue;
                 }
 
@@ -1152,6 +1154,14 @@ impl NameResolver {
             }
             Expr::PathElement(element) => {
                 self.resolve_path_element(element, span, module_depth, resolved_path);
+            }
+            Expr::SelfType => {
+                self.resolve_path_element(
+                    &PathElement::Name("Self".to_string()),
+                    span,
+                    module_depth,
+                    resolved_path,
+                );
             }
             _ => {
                 self.errors.push(Spanned::new(Error::InvalidPath, span));

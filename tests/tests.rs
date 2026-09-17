@@ -63,6 +63,8 @@ mod evaluation_output {
         "1.0\n2.0\n3.0\n"
     );
 
+    apart::test_evaluation_output!(product_self, "product_self.txt", "38\n");
+
     apart::test_evaluation_output!(product_ssa_if_0, "product_ssa_if_0.txt", "21\n");
 
     apart::test_evaluation_output!(product_ssa_if_1, "product_ssa_if_1.txt", "19\n");
@@ -94,6 +96,18 @@ mod evaluation_output {
     apart::test_evaluation_output!(teach, "teach.txt", "97\n",);
 
     apart::test_evaluation_output!(teach_method_access, "teach_method_access.txt", "97\n",);
+
+    apart::test_evaluation_output!(
+        teach_generic_clarity,
+        "teach_generic_clarity.txt",
+        "97\n{}\n",
+    );
+
+    apart::test_evaluation_output!(
+        teach_generic_clarity_method_access,
+        "teach_generic_clarity_method_access.txt",
+        "97\n{}\n",
+    );
 }
 
 mod compilation_error {
@@ -126,7 +140,7 @@ mod compilation_error {
         "sum_equality_0.txt",
         [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
             expected, got
-        })] if expected == "bool" && got == "unit"
+        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
@@ -134,7 +148,7 @@ mod compilation_error {
         "sum_equality_1.txt",
         [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
             expected, got
-        })] if expected == "bool" && got == "unit"
+        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(

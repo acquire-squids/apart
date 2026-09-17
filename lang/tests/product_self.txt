@@ -1,0 +1,25 @@
+funky main() {
+	print_i64(Wrapper~uncle(38).unwrap());
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+teach[T] Wrapper[T] {
+	funky wrap(value <- T) -> Self {
+		Self {
+			value <- value,
+		}
+	}
+
+	funky unwrap(self <- Self) -> T {
+		self.value
+	}
+
+	funky uncle(value <- T) -> Self {
+		Self {
+			value <- Self~wrap(value).unwrap(),
+		}
+	}
+}

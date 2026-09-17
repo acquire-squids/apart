@@ -480,6 +480,7 @@ pub enum Expr {
         fields: Vec<(Spanned<String>, ExprIndex)>,
     },
     PathElement(PathElement),
+    SelfType,
 }
 
 #[derive(Debug)]
@@ -669,7 +670,8 @@ impl Ast {
                 op: BinaryOp::Access | BinaryOp::PathAccess,
                 ..
             }
-            | Expr::PathElement(_) => {}
+            | Expr::PathElement(_)
+            | Expr::SelfType => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
@@ -2021,6 +2023,11 @@ impl Parser {
                     Some("root" | "super") => {
                         Some((precedence::PRIMARY, (Self::path_element_expr, span)))
                     }
+                    Some("Self") => {
+                        self.advance(lexer)?;
+
+                        Some((precedence::PRIMARY, (Self::self_type_expr, span)))
+                    }
                     Some("let") => {
                         self.advance(lexer)?;
 
@@ -2391,6 +2398,20 @@ impl Parser {
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
+    }
+
+    fn self_type_expr(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        if self.match_next(lexer, Token::OpenBracket).is_some() {
+            self.product_expr(lexer, ast, 0, span)
+        } else {
+            Ok(ast.push_expr(Spanned::new(Expr::SelfType, span)))
+        }
     }
 
     fn path_element_expr(
