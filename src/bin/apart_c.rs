@@ -1,3 +1,5 @@
+use apart::Ssa;
+
 use std::{env, fs, io, iter, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
@@ -33,18 +35,26 @@ fn main() -> ExitCode {
                         ExitCode::FAILURE
                     }
                     Ok(source) => {
-                        let source = source.as_str();
+                        let source_labels = [input_path];
 
-                        compile(input_path, source, options.max_registers, options.optimize).map_or(
-                            ExitCode::FAILURE,
-                            |compiled| {
-                                if options.evaluate {
-                                    evaluate(&compiled);
-                                }
+                        let sources = [(0, source.as_str())];
 
-                                ExitCode::SUCCESS
-                            },
+                        let source_labels = source_labels.as_slice();
+                        let sources = sources.as_slice();
+
+                        compile(
+                            source_labels,
+                            sources,
+                            options.max_registers,
+                            options.optimize,
                         )
+                        .map_or(ExitCode::FAILURE, |compiled| {
+                            if options.evaluate {
+                                evaluate(&compiled);
+                            }
+
+                            ExitCode::SUCCESS
+                        })
                     }
                 }
             }
@@ -53,24 +63,40 @@ fn main() -> ExitCode {
 }
 
 fn compile<'a>(
-    source_label: &str,
-    source: &'a str,
+    source_labels: &[&str],
+    sources: &[(usize, &'a str)],
     max_registers: usize,
     optimize: bool,
-) -> Option<apart::Compiled<'a>> {
-    match apart::compile([(0, source)].as_slice(), max_registers, optimize) {
+) -> Option<apart::Compiled<'a, Ssa>> {
+    match apart::compile(sources, max_registers, optimize) {
         Ok(compiled) => Some(compiled),
-        Err(errors) => {
-            let report_data = reporting::ReportData::new(
-                source,
-                "error",
-                source_label,
-                "...",
-                reporting::ReportColors::new(),
-            );
+        Err(compiled) => {
+            let sources = compiled.sources();
+
+            let errors = compiled.result();
 
             for error in errors {
-                let _ = report_data.report(&error, &mut io::stderr().lock());
+                let source_index = sources
+                    .iter()
+                    .position(|(id, _)| *id == error.span().source_id())
+                    .expect("the source must exist");
+
+                let report_data = reporting::ReportData::new(
+                    sources[source_index].1,
+                    "error",
+                    source_labels.get(source_index).copied().unwrap_or("core"),
+                    "...",
+                    reporting::ReportColors::new(),
+                );
+
+                let mut err = vec![];
+
+                let _ = report_data.report(error, &mut err);
+
+                eprint!(
+                    "{}",
+                    str::from_utf8(err.as_slice()).expect("only utf-8!  sorry!")
+                );
             }
 
             None
@@ -78,7 +104,7 @@ fn compile<'a>(
     }
 }
 
-fn evaluate(compiled: &apart::Compiled<'_>) {
+fn evaluate(compiled: &apart::Compiled<'_, Ssa>) {
     apart::evaluate(compiled, &mut io::stdout().lock());
 }
 
