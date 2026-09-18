@@ -12,7 +12,6 @@ struct CallFrame {
     block_arguments: Vec<CopyableValue>,
     from: (usize, usize),
     fp: usize,
-    block_index: BlockIndex,
     previous_registers: Vec<CopyableValue>,
 }
 
@@ -70,7 +69,6 @@ where
             block_arguments: vec![],
             from: (0, 0),
             fp: 0,
-            block_index: BlockIndex(0),
             previous_registers: vec![],
         }],
     };
@@ -174,7 +172,6 @@ impl Evaluator {
                                 call_arguments: self.stack.split_off(self.stack.len() - *arity),
                                 from: (b, i),
                                 fp: self.stack.len(),
-                                block_index: callee,
                                 previous_registers: Vec::with_capacity(ssa.max_registers()),
                             };
 
@@ -308,8 +305,7 @@ impl Evaluator {
             IrValue::Address(address) => {
                 if let Some(stack_value) = self
                     .call_frames
-                    .iter()
-                    .rfind(|frame| frame.block_index == address.block_index)
+                    .last()
                     .map(|frame| frame.fp + address.offset)
                     .and_then(|offset| self.stack.get_mut(offset))
                 {
@@ -537,8 +533,7 @@ impl Evaluator {
             IrValue::Register(value) => self.registers[*value],
             IrValue::Address(address) => self
                 .call_frames
-                .iter()
-                .rfind(|frame| frame.block_index == address.block_index)
+                .last()
                 .map(|frame| frame.fp + address.offset)
                 .map(|offset| self.stack[offset])
                 .expect("the stack value will exist"),
