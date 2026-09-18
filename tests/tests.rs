@@ -108,6 +108,14 @@ mod evaluation_output {
         "teach_generic_clarity_method_access.txt",
         "97\n{}\n",
     );
+
+    apart::test_evaluation_output!(if_condition_is_access, "if_condition_is_access.txt", "1\n",);
+
+    apart::test_evaluation_output!(
+        method_specialization,
+        "method_specialization.txt",
+        "1\n0\n2\n3\n4\n",
+    );
 }
 
 mod compilation_error {

@@ -481,6 +481,7 @@ pub enum Expr {
     },
     PathElement(PathElement),
     SelfType,
+    ProductNoName(Vec<(Spanned<String>, ExprIndex)>),
 }
 
 #[derive(Debug)]
@@ -671,7 +672,9 @@ impl Ast {
                 ..
             }
             | Expr::PathElement(_)
-            | Expr::SelfType => {}
+            | Expr::SelfType
+            | Expr::ProductNoName(_)
+            | Expr::CallNoCallee(_) => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
@@ -711,13 +714,6 @@ impl Ast {
                 f(self, condition);
                 f(self, when_true);
                 f(self, otherwise);
-            }
-            Expr::CallNoCallee(arguments) => {
-                let arguments = arguments.clone();
-
-                for argument in arguments {
-                    f(self, argument);
-                }
             }
             Expr::Call { callee, arguments } => {
                 let callee = *callee;
@@ -1718,6 +1714,8 @@ mod precedence {
 
     pub const PRIMARY: u16 = 0xEE00;
 
+    pub const AS_PRODUCT: u16 = 0xEE00;
+
     pub const LEFT_PATH_ACCESS: u16 = 0xCC00;
     pub const RIGHT_PATH_ACCESS: u16 = 0xCC50;
 
@@ -1899,7 +1897,21 @@ impl Parser {
                 }
 
                 let unfinished_postfix =
-                    postfix_fn(self, lexer, ast, left_precedence, postfix_span)?;
+                    postfix_fn(self, lexer, ast, left_precedence, postfix_span);
+
+                let unfinished_postfix = match unfinished_postfix.as_ref().map_err(Spanned::kind) {
+                    Ok(expr_index) => *expr_index,
+                    Err(
+                        Error::ProductFieldWithoutName
+                        | Error::ProductFieldWithoutLeftArrow
+                        | Error::ProductFieldsWithoutComma,
+                    ) => {
+                        lexer.restore(postfix_span);
+
+                        break;
+                    }
+                    Err(_) => return unfinished_postfix,
+                };
 
                 match ast[unfinished_postfix].kind() {
                     Expr::CallNoCallee(arguments) => {
@@ -1946,6 +1958,48 @@ impl Parser {
                                 .combine_with(prefix_span)
                                 .expect("these spans are from the same source"),
                         );
+                    }
+                    Expr::ProductNoName(fields) => {
+                        let fields = fields.clone();
+
+                        ast[lhs] = Spanned::new(
+                            Expr::Product {
+                                name: match ast[lhs].kind() {
+                                    Expr::Name(name) => Spanned::new(name.clone(), ast[lhs].span()),
+                                    Expr::SelfType => {
+                                        Spanned::new("Self".to_string(), ast[lhs].span())
+                                    }
+                                    Expr::Binary {
+                                        op: BinaryOp::PathAccess,
+                                        rhs,
+                                        ..
+                                    } => match ast[*rhs].kind() {
+                                        Expr::Name(name) => {
+                                            Spanned::new(name.clone(), ast[lhs].span())
+                                        }
+                                        Expr::SelfType => {
+                                            Spanned::new("Self".to_string(), ast[lhs].span())
+                                        }
+                                        _ => {
+                                            lexer.restore(ast[unfinished_postfix].span());
+
+                                            break;
+                                        }
+                                    },
+                                    _ => {
+                                        lexer.restore(ast[unfinished_postfix].span());
+
+                                        break;
+                                    }
+                                },
+                                fields,
+                            },
+                            prefix_span
+                                .combine_with(ast[unfinished_postfix].span())
+                                .expect("these spans are from the same source"),
+                        );
+
+                        continue;
                     }
                     _ => {
                         unreachable!("a postfix expression was unaccounted for")
@@ -2074,6 +2128,11 @@ impl Parser {
                 let token = self.advance(lexer)?;
 
                 Some((precedence::AS_UNIT, (Self::as_unit, token.span())))
+            }
+            Token::OpenBracket => {
+                let token = self.advance(lexer)?;
+
+                Some((precedence::AS_PRODUCT, (Self::product_expr, token.span())))
             }
             _ => None,
         }
@@ -2400,18 +2459,15 @@ impl Parser {
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
     }
 
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     fn self_type_expr(
         &mut self,
-        lexer: &mut Lexer,
+        _: &mut Lexer,
         ast: &mut Ast,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        if self.match_next(lexer, Token::OpenBracket).is_some() {
-            self.product_expr(lexer, ast, 0, span)
-        } else {
-            Ok(ast.push_expr(Spanned::new(Expr::SelfType, span)))
-        }
+        Ok(ast.push_expr(Spanned::new(Expr::SelfType, span)))
     }
 
     fn path_element_expr(
@@ -2454,13 +2510,9 @@ impl Parser {
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let (name, name_span) = self.name_lexeme(lexer)?;
+        let (name, _) = self.name_lexeme(lexer)?;
 
-        if self.match_next(lexer, Token::OpenBracket).is_some() {
-            self.product_expr(lexer, ast, 0, span)
-        } else {
-            Ok(ast.push_expr(Spanned::new(Expr::Name(name), name_span)))
-        }
+        Ok(ast.push_expr(Spanned::new(Expr::Name(name), span)))
     }
 
     fn let_in(
@@ -2723,11 +2775,6 @@ impl Parser {
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let name = span
-            .lexeme(lexer.source())
-            .ok_or_else(|| Spanned::new(Error::ProductWithoutName, span))
-            .map(|name| Spanned::new(name.to_string(), span))?;
-
         let mut fields = vec![];
 
         while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
@@ -2765,7 +2812,7 @@ impl Parser {
             .span();
 
         Ok(ast.push_expr(Spanned::new(
-            Expr::Product { name, fields },
+            Expr::ProductNoName(fields),
             span.combine_with(close_span)
                 .expect("these spans are from the same source"),
         )))

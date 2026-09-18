@@ -1264,7 +1264,10 @@ impl TypeChecker {
         let span = ast[expr].span();
 
         let type_index = match ast[expr].kind() {
-            Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue => {
+            Expr::BinaryNoLhs { .. }
+            | Expr::CallNoCallee(_)
+            | Expr::AsUnitNoValue
+            | Expr::ProductNoName(_) => {
                 unreachable!("these won't exist since parsing succeeded");
             }
             Expr::PathElement(_) => {

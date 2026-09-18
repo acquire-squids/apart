@@ -1,0 +1,33 @@
+funky main() {
+	let
+		truth = Wrapper~wrap(true),
+	in {
+		print_i64(truth.bool_to_one_or_zero());
+	};
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+teach[T] Wrapper[T] {
+	funky wrap(value <- T) -> Self {
+		Self {
+			value <- value,
+		}
+	}
+
+	funky unwrap(self <- Self) -> T {
+		self.value
+	}
+}
+
+teach Wrapper[bool] {
+	funky bool_to_one_or_zero(self <- Self) -> i64 {
+		if self.value {
+			1
+		} else {
+			0
+		}
+	}
+}

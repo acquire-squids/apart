@@ -1,0 +1,59 @@
+funky main() {
+	let
+		truth = Wrapper~wrap(true),
+		falsehood = Wrapper~wrap(false),
+		nine_plus_ten = Wrapper~wrap(21),
+		pi = Wrapper~wrap(3.14),
+		huh = Wrapper~wrap({}),
+	in {
+		print_i64(truth.bool_to_one_or_zero());
+		print_i64(Wrapper~bool_to_one_or_zero(falsehood));
+		print_i64(nine_plus_ten.bool_to_one_or_zero());
+		print_i64(Wrapper~bool_to_one_or_zero(pi));
+		print_i64(huh.bool_to_one_or_zero());
+	};
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+teach[T] Wrapper[T] {
+	funky wrap(value <- T) -> Self {
+		Self {
+			value <- value,
+		}
+	}
+
+	funky unwrap(self <- Self) -> T {
+		self.value
+	}
+}
+
+teach Wrapper[bool] {
+	funky bool_to_one_or_zero(self <- Self) -> i64 {
+		if self.value {
+			1
+		} else {
+			0
+		}
+	}
+}
+
+teach Wrapper[i64] {
+	funky bool_to_one_or_zero(self <- Self) -> i64 {
+		2
+	}
+}
+
+teach Wrapper[f64] {
+	funky bool_to_one_or_zero(self <- Self) -> i64 {
+		3
+	}
+}
+
+teach Wrapper[unit] {
+	funky bool_to_one_or_zero(self <- Self) -> i64 {
+		4
+	}
+}

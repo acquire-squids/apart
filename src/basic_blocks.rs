@@ -437,7 +437,10 @@ impl Translator {
     #[allow(clippy::too_many_lines)]
     fn translate_expr(&mut self, ast: &Ast, names: &Names, types: &TypeChecker, expr: ExprIndex) {
         match ast[expr].kind() {
-            Expr::BinaryNoLhs { .. } | Expr::CallNoCallee(_) | Expr::AsUnitNoValue => {
+            Expr::BinaryNoLhs { .. }
+            | Expr::CallNoCallee(_)
+            | Expr::AsUnitNoValue
+            | Expr::ProductNoName(_) => {
                 unreachable!("the ast should be valid since we succeeded in parsing");
             }
             Expr::PathElement(_) => {
