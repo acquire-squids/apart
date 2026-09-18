@@ -84,7 +84,11 @@ fn compile<'a>(
                 let report_data = reporting::ReportData::new(
                     sources[source_index].1,
                     "error",
-                    source_labels.get(source_index).copied().unwrap_or("core"),
+                    source_index
+                        .checked_sub(1)
+                        .and_then(|source_index| source_labels.get(source_index))
+                        .copied()
+                        .unwrap_or("core"),
                     "...",
                     reporting::ReportColors::new(),
                 );
