@@ -1,6 +1,6 @@
 use crate::{
     basic_blocks::{BlockIndex, Instruction, Value},
-    ssa::{Argument, BlockTerminator, Ssa},
+    ssa::{BlockTerminator, Ssa},
 };
 
 use std::collections::HashSet;
@@ -164,9 +164,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
             }
             BlockTerminator::Jump(jump_to) => {
                 for argument in jump_to.arguments() {
-                    if let Argument::Address(value) = argument {
-                        value_uses_address(&mut addresses_used, value);
-                    }
+                    value_uses_address(&mut addresses_used, argument);
                 }
             }
             BlockTerminator::Branch {
@@ -177,15 +175,11 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 value_uses_address(&mut addresses_used, condition);
 
                 for argument in when_true.arguments() {
-                    if let Argument::Address(value) = argument {
-                        value_uses_address(&mut addresses_used, value);
-                    }
+                    value_uses_address(&mut addresses_used, argument);
                 }
 
                 for argument in otherwise.arguments() {
-                    if let Argument::Address(value) = argument {
-                        value_uses_address(&mut addresses_used, value);
-                    }
+                    value_uses_address(&mut addresses_used, argument);
                 }
             }
         }

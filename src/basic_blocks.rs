@@ -59,6 +59,7 @@ impl From<BlockIndex> for usize {
 }
 
 pub struct Block {
+    call_argument_count: usize,
     instructions: Vec<Instruction>,
     terminator: Option<BlockTerminator>,
 }
@@ -95,6 +96,12 @@ impl Block {
     #[must_use]
     pub const fn instructions_mut(&mut self) -> &mut Vec<Instruction> {
         &mut self.instructions
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn call_argument_count(&self) -> usize {
+        self.call_argument_count
     }
 
     #[allow(dead_code)]
@@ -173,6 +180,7 @@ impl BasicBlocks {
 
 struct Translator {
     blocks: Vec<Block>,
+    call_argument_count: usize,
     current_block: Option<BlockIndex>,
     values: Vec<Value>,
     addresses: HashMap<Span, Addresslike>,
@@ -183,6 +191,7 @@ impl Translator {
     fn new() -> Self {
         Self {
             blocks: vec![],
+            call_argument_count: 0,
             current_block: None,
             values: vec![],
             addresses: HashMap::new(),
@@ -278,11 +287,15 @@ pub struct Address {
 impl Translator {
     fn label_function(&mut self, ast: &Ast, f: ItemIndex) {
         match ast[f].kind() {
-            Item::Fn { name, .. } => {
+            Item::Fn {
+                name, parameters, ..
+            } => {
                 self.addresses.insert(
                     name.span(),
                     Addresslike::Block(BlockIndex(self.blocks.len())),
                 );
+
+                self.call_argument_count = parameters.len();
 
                 self.next_block();
             }
@@ -308,6 +321,7 @@ impl Translator {
         let block_index = BlockIndex(self.blocks.len());
 
         self.blocks.push(Block {
+            call_argument_count: self.call_argument_count,
             instructions: vec![],
             terminator: None,
         });
@@ -392,6 +406,10 @@ impl Translator {
                         })
                         .copied()
                     {
+                        let call_argument_count = self.call_argument_count;
+
+                        self.call_argument_count = parameters.len();
+
                         let block_index = if parameters.is_empty() {
                             block_index
                         } else {
@@ -424,6 +442,8 @@ impl Translator {
                         self.translate_expr(ast, names, types, *body);
 
                         self.last_in_fn = last_in_fn;
+
+                        self.call_argument_count = call_argument_count;
 
                         assert_eq!(self.values.as_slice(), &[]);
                     }

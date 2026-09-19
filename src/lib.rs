@@ -12,7 +12,7 @@ pub use {
     basic_blocks::{Address, Instruction, Value},
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
-    ssa::{Argument, Block, BlockTerminator, JumpTo, Ssa},
+    ssa::{Block, BlockTerminator, JumpTo, Ssa},
     type_check::Error as TypeCheckError,
 };
 

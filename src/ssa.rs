@@ -13,9 +13,9 @@ pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
 
     for basic_block in basic_blocks.blocks() {
         ssa.blocks.push(Block {
+            call_argument_count: basic_block.call_argument_count(),
             parameters: vec![],
             instructions: basic_block.instructions().to_vec(),
-            registers_used: 0,
             terminator: match basic_block.terminator() {
                 BasicBlockTerminator::Jump(block_index) => BlockTerminator::Jump(JumpTo {
                     block_index: *block_index,
@@ -55,7 +55,7 @@ pub struct Ssa {
 impl fmt::Display for Ssa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (b, block) in self.blocks().iter().enumerate() {
-            writeln!(f, "{b} (arguments: {:?}):", block.parameters().len())?;
+            writeln!(f, "{b} {:?}:", block.parameters())?;
 
             write!(f, "{block}")?;
         }
@@ -148,9 +148,9 @@ impl Ssa {
 }
 
 pub struct Block {
-    parameters: Vec<Address>,
+    call_argument_count: usize,
+    parameters: Vec<Value>,
     instructions: Vec<Instruction>,
-    registers_used: usize,
     terminator: BlockTerminator,
 }
 
@@ -168,13 +168,7 @@ pub enum BlockTerminator {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JumpTo {
     block_index: BlockIndex,
-    arguments: Vec<Argument>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Argument {
-    Address(Value),
-    Passthrough(usize),
+    arguments: Vec<Value>,
 }
 
 impl JumpTo {
@@ -192,13 +186,13 @@ impl JumpTo {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn arguments(&self) -> &[Argument] {
+    pub const fn arguments(&self) -> &[Value] {
         self.arguments.as_slice()
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn arguments_mut(&mut self) -> &mut Vec<Argument> {
+    pub const fn arguments_mut(&mut self) -> &mut Vec<Value> {
         &mut self.arguments
     }
 }
@@ -218,26 +212,20 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn parameters(&self) -> &[Address] {
+    pub const fn call_argument_count(&self) -> usize {
+        self.call_argument_count
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn parameters(&self) -> &[Value] {
         self.parameters.as_slice()
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn parameters_mut(&mut self) -> &mut Vec<Address> {
+    pub const fn parameters_mut(&mut self) -> &mut Vec<Value> {
         &mut self.parameters
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn registers_used(&self) -> usize {
-        self.registers_used
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn registers_used_mut(&mut self) -> &mut usize {
-        &mut self.registers_used
     }
 
     #[allow(dead_code)]
@@ -307,29 +295,41 @@ impl Ssa {
         b: usize,
         addresses: &[(Address, Address)],
         jump_to: &JumpTo,
-    ) -> Vec<Argument> {
+    ) -> Vec<Value> {
         let mut arguments = vec![];
 
         if let Some(block) = self.blocks.get(b)
             && let Some(successor) = self.get_block(jump_to.block_index)
         {
             for successor_parameter in &successor.parameters {
-                if let Some(address) = addresses.iter().find_map(|(old_address, new_address)| {
-                    if successor_parameter.block_index == old_address.block_index
-                        && successor_parameter.offset == old_address.offset
-                        && usize::from(new_address.block_index) == b
+                if let Value::Address(successor_parameter) = successor_parameter {
+                    if let Some(address) =
+                        addresses.iter().find_map(|(old_address, new_address)| {
+                            if successor_parameter.block_index == old_address.block_index
+                                && successor_parameter.offset == old_address.offset
+                                && usize::from(new_address.block_index) == b
+                            {
+                                Some(new_address)
+                            } else {
+                                None
+                            }
+                        })
                     {
-                        Some(new_address)
-                    } else {
-                        None
+                        arguments.push(Value::Address(*address));
+                    } else if let Some(passthrough) =
+                        block.parameters.iter().find_map(|parameter| {
+                            if let Value::Address(parameter) = parameter
+                                && parameter.block_index == successor_parameter.block_index
+                                && parameter.offset == successor_parameter.offset
+                            {
+                                Some(*parameter)
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        arguments.push(Value::Address(passthrough));
                     }
-                }) {
-                    arguments.push(Argument::Address(Value::Address(*address)));
-                } else if let Some(i) = block.parameters.iter().position(|parameter| {
-                    parameter.block_index == successor_parameter.block_index
-                        && parameter.offset == successor_parameter.offset
-                }) {
-                    arguments.push(Argument::Passthrough(i));
                 }
             }
         }
@@ -347,18 +347,24 @@ impl Ssa {
         if let Some(block) = self.get_block_mut(block_index) {
             Self::accumulate_live_values(block_index, block, living, &mut addresses);
 
-            let mut parameters: Vec<Address> = vec![];
+            let mut parameters: Vec<Value> = vec![];
 
             for live_from_elsewhere in &*living {
                 let live_from_elsewhere = *live_from_elsewhere;
 
                 if !parameters.iter().any(|parameter| {
-                    parameter.block_index == live_from_elsewhere.block_index
+                    if let Value::Address(parameter) = parameter
+                        && parameter.block_index == live_from_elsewhere.block_index
                         && parameter.offset == live_from_elsewhere.offset
+                    {
+                        true
+                    } else {
+                        false
+                    }
                 }) && live_from_elsewhere.block_index != block_index
                     && self.parameter_in_use(block_index, &live_from_elsewhere, &mut HashSet::new())
                 {
-                    parameters.push(live_from_elsewhere);
+                    parameters.push(Value::Address(live_from_elsewhere));
                 }
             }
 
@@ -493,8 +499,14 @@ impl Ssa {
             }
 
             if block.parameters.iter().any(|block_parameter| {
-                block_parameter.block_index == parameter.block_index
+                if let Value::Address(block_parameter) = block_parameter
+                    && block_parameter.block_index == parameter.block_index
                     && block_parameter.offset == parameter.offset
+                {
+                    true
+                } else {
+                    false
+                }
             }) {
                 return true;
             }

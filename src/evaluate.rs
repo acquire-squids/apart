@@ -2,14 +2,12 @@ use crate::{
     Span,
     basic_blocks::{BlockIndex, Instruction, Value as IrValue},
     parse::{BinaryOp, UnaryOp},
-    ssa::{Argument, BlockTerminator, JumpTo, Ssa},
+    ssa::{BlockTerminator, JumpTo, Ssa},
 };
 
 use std::{io::Write, mem};
 
 struct CallFrame {
-    call_arguments: Vec<CopyableValue>,
-    block_arguments: Vec<CopyableValue>,
     from: (usize, usize),
     fp: usize,
     previous_registers: Vec<CopyableValue>,
@@ -65,8 +63,6 @@ where
         next_gc: 1_000_000,
         registers: vec![const { CopyableValue::Runtime }; ssa.max_registers()],
         call_frames: vec![CallFrame {
-            call_arguments: vec![],
-            block_arguments: vec![],
             from: (0, 0),
             fp: 0,
             previous_registers: vec![],
@@ -86,14 +82,6 @@ impl Evaluator {
         let mut i = 0;
 
         'block: while let Some(block) = ssa.blocks().get(b) {
-            assert_eq!(
-                block.parameters().len(),
-                self.call_frames
-                    .last()
-                    .map_or(0, |call_frame| call_frame.block_arguments.len()),
-                "BLOCK ARGUMENT MISMATCH IN BLOCK INDEX {b}"
-            );
-
             while let Some(instruction) = block.instructions().get(i) {
                 match instruction {
                     Instruction::NoOp => {}
@@ -167,18 +155,24 @@ impl Evaluator {
                                 self.gc();
                             }
 
+                            let call_arguments = self.stack.split_off(self.stack.len() - *arity);
+
                             let call_frame = CallFrame {
-                                block_arguments: vec![],
-                                call_arguments: self.stack.split_off(self.stack.len() - *arity),
                                 from: (b, i),
                                 fp: self.stack.len(),
                                 previous_registers: Vec::with_capacity(ssa.max_registers()),
                             };
 
-                            self.call_frames.push(call_frame);
-
                             b = usize::from(callee);
                             i = 0;
+
+                            self.call_frames.push(call_frame);
+
+                            for (call_argument, to) in
+                                call_arguments.iter().zip(ssa.blocks()[b].parameters())
+                            {
+                                self.assign(to, *call_argument);
+                            }
 
                             continue 'block;
                         }
@@ -210,10 +204,10 @@ impl Evaluator {
 
                     let block_args = self.collect_block_arguments(jump_to);
 
-                    self.call_frames
-                        .last_mut()
-                        .expect("there will always be a call frame")
-                        .block_arguments = block_args;
+                    for (block_argument, to) in block_args.iter().zip(ssa.blocks()[b].parameters())
+                    {
+                        self.assign(to, *block_argument);
+                    }
                 }
                 BlockTerminator::Branch {
                     condition,
@@ -226,10 +220,11 @@ impl Evaluator {
 
                         let block_args = self.collect_block_arguments(when_true);
 
-                        self.call_frames
-                            .last_mut()
-                            .expect("there will always be a call frame")
-                            .block_arguments = block_args;
+                        for (block_argument, to) in
+                            block_args.iter().zip(ssa.blocks()[b].parameters())
+                        {
+                            self.assign(to, *block_argument);
+                        }
                     }
                     CopyableValue::Boolean(false) => {
                         b = usize::from(otherwise.block());
@@ -237,10 +232,11 @@ impl Evaluator {
 
                         let block_args = self.collect_block_arguments(otherwise);
 
-                        self.call_frames
-                            .last_mut()
-                            .expect("there will always be a call frame")
-                            .block_arguments = block_args;
+                        for (block_argument, to) in
+                            block_args.iter().zip(ssa.blocks()[b].parameters())
+                        {
+                            self.assign(to, *block_argument);
+                        }
                     }
                     _ => {
                         unreachable!("type checking guarantees conditions are boolean");
@@ -381,15 +377,7 @@ impl Evaluator {
         jump_to
             .arguments()
             .iter()
-            .map(|argument| match argument {
-                Argument::Address(ir_value) => self.convert_ir_value(ir_value),
-                Argument::Passthrough(i) => {
-                    self.call_frames
-                        .last()
-                        .expect("there will always be a call frame")
-                        .block_arguments[*i]
-                }
-            })
+            .map(|argument| self.convert_ir_value(argument))
             .collect::<Vec<_>>()
     }
 
@@ -514,22 +502,15 @@ impl Evaluator {
 
     fn convert_ir_value(&mut self, ir_value: &IrValue) -> CopyableValue {
         match ir_value {
+            IrValue::BlockArgument(_) | IrValue::CallArgument(_) => {
+                unreachable!("these should be eliminated by register allocation")
+            }
             IrValue::Integer(value) => CopyableValue::Integer(*value),
             IrValue::Float(value) => CopyableValue::Float(*value),
             IrValue::Boolean(value) => CopyableValue::Boolean(*value),
             IrValue::Unit => CopyableValue::Unit,
             IrValue::Fn(value) => CopyableValue::Fn(*value),
             IrValue::Runtime => CopyableValue::Runtime,
-            IrValue::BlockArgument(value) => self
-                .call_frames
-                .last()
-                .map(|call_frame| call_frame.block_arguments[*value])
-                .expect("the call frame will exist"),
-            IrValue::CallArgument(value) => self
-                .call_frames
-                .last()
-                .map(|call_frame| call_frame.call_arguments[*value])
-                .expect("the call frame will exist"),
             IrValue::Register(value) => self.registers[*value],
             IrValue::Address(address) => self
                 .call_frames
@@ -623,14 +604,6 @@ impl Evaluator {
         }
 
         for call_frame in &self.call_frames {
-            for call_argument in &call_frame.call_arguments {
-                self.mark_value(&mut marked, *call_argument, &mut marked_count);
-            }
-
-            for block_argument in &call_frame.block_arguments {
-                self.mark_value(&mut marked, *block_argument, &mut marked_count);
-            }
-
             for previous_register in &call_frame.previous_registers {
                 self.mark_value(&mut marked, *previous_register, &mut marked_count);
             }
@@ -683,18 +656,6 @@ impl Evaluator {
                 unreachable!("the call frame will exist");
             };
 
-            let call_arguments = call_frame
-                .call_arguments
-                .iter()
-                .map(|call_argument| self.retain_value(&mut values, *call_argument, marked))
-                .collect::<Vec<_>>();
-
-            let block_arguments = call_frame
-                .block_arguments
-                .iter()
-                .map(|block_argument| self.retain_value(&mut values, *block_argument, marked))
-                .collect::<Vec<_>>();
-
             let previous_registers = call_frame
                 .previous_registers
                 .iter()
@@ -705,8 +666,6 @@ impl Evaluator {
                 unreachable!("the call frame will exist");
             };
 
-            call_frame.call_arguments = call_arguments;
-            call_frame.block_arguments = block_arguments;
             call_frame.previous_registers = previous_registers;
         }
 

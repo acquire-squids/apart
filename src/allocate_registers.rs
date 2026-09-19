@@ -1,6 +1,6 @@
 use crate::{
     basic_blocks::{Address, BlockIndex, Instruction, Value},
-    ssa::{Argument, BlockTerminator, Ssa},
+    ssa::{BlockTerminator, Ssa},
 };
 
 use std::collections::HashMap;
@@ -11,7 +11,6 @@ pub fn allocate(ssa: &mut Ssa) {
     for b in 0..(ssa.function_count()) {
         let mut allocator = RegisterAllocator {
             index: 0,
-            registers_used: 0,
             free: vec![],
             stack_size: 0,
             current_fn: BlockIndex(b),
@@ -19,10 +18,6 @@ pub fn allocate(ssa: &mut Ssa) {
         };
 
         allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
-
-        if let Some(block) = ssa.blocks_mut().get_mut(b) {
-            *block.registers_used_mut() = allocator.registers_used;
-        }
     }
 
     for block in ssa.blocks_mut() {
@@ -34,7 +29,6 @@ pub fn allocate(ssa: &mut Ssa) {
 
 struct RegisterAllocator {
     index: usize,
-    registers_used: usize,
     free: Vec<usize>,
     stack_size: usize,
     current_fn: BlockIndex,
@@ -75,15 +69,55 @@ impl RegisterAllocator {
 
             let mut addresses = HashMap::new();
 
+            let mut block_arguments = vec![];
+            let mut call_arguments = vec![];
+
+            for parameter in block.parameters_mut() {
+                if let Value::Address(parameter_address) = parameter {
+                    let allocated = self.allocate();
+
+                    addresses.insert(*parameter_address, allocated);
+
+                    block_arguments.push(allocated);
+
+                    *parameter = self.allocation_to_value(allocated);
+                }
+            }
+
+            for _ in 0..(block.call_argument_count()) {
+                let allocated = self.allocate();
+
+                call_arguments.push(allocated);
+
+                block
+                    .parameters_mut()
+                    .push(self.allocation_to_value(allocated));
+            }
+
             for instruction in block.instructions_mut() {
                 match instruction {
                     Instruction::NoOp => {}
                     Instruction::Push(value) => {
-                        self.value_to_allocation(&addresses, value);
+                        self.value_to_allocation(
+                            &addresses,
+                            value,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
                     }
                     Instruction::AccessAssign { value, of, .. } => {
-                        self.value_to_allocation(&addresses, value);
-                        self.value_to_allocation(&addresses, of);
+                        self.value_to_allocation(
+                            &addresses,
+                            value,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
+                        self.value_to_allocation(
+                            &addresses,
+                            of,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
                     }
                     Instruction::Unary {
                         operand: value,
@@ -101,7 +135,12 @@ impl RegisterAllocator {
                         temporary: to,
                         ..
                     } => {
-                        self.value_to_allocation(&addresses, value);
+                        self.value_to_allocation(
+                            &addresses,
+                            value,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
 
                         let Value::Address(to_address) = to else {
                             unreachable!("destinations can only be addresses at this point");
@@ -127,8 +166,19 @@ impl RegisterAllocator {
                         temporary: to,
                         ..
                     } => {
-                        self.value_to_allocation(&addresses, lhs);
-                        self.value_to_allocation(&addresses, rhs);
+                        self.value_to_allocation(
+                            &addresses,
+                            lhs,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
+
+                        self.value_to_allocation(
+                            &addresses,
+                            rhs,
+                            block_arguments.as_slice(),
+                            call_arguments.as_slice(),
+                        );
 
                         let Value::Address(to_address) = to else {
                             unreachable!("destinations can only be addresses at this point");
@@ -157,7 +207,12 @@ impl RegisterAllocator {
                 | BlockTerminator::Branch {
                     condition: value, ..
                 } => {
-                    self.value_to_allocation(&addresses, value);
+                    self.value_to_allocation(
+                        &addresses,
+                        value,
+                        block_arguments.as_slice(),
+                        call_arguments.as_slice(),
+                    );
                 }
             }
 
@@ -166,18 +221,23 @@ impl RegisterAllocator {
                 BlockTerminator::Jump(jump_to) => {
                     for (address, allocation) in &addresses {
                         if let Some(address) = jump_to.arguments_mut().iter_mut().find_map(|argument| {
-                            if let Argument::Address(argument) = argument
-                                && matches!(argument, Value::Address(argument_address) if argument_address == address)
+                            if matches!(argument, Value::Address(argument_address) if argument_address == address)
                             {
                                 Some(argument)
                             } else {
                                 None
                             }
                         }) {
-                            self.value_to_allocation(&addresses, address);
+                            self.value_to_allocation(&addresses, address, block_arguments.as_slice(), call_arguments.as_slice());
                         } else if let Allocation::Register(index) = allocation {
                             self.free(*index);
                         }
+                    }
+
+                    for allocated in &call_arguments {
+                        jump_to
+                            .arguments_mut()
+                            .push(self.allocation_to_value(*allocated));
                     }
                 }
                 BlockTerminator::Branch {
@@ -189,15 +249,14 @@ impl RegisterAllocator {
 
                     for (address, allocation) in &addresses {
                         if let Some(address) = when_true.arguments_mut().iter_mut().find_map(|argument| {
-                            if let Argument::Address(argument) = argument
-                                && matches!(argument, Value::Address(argument_address) if argument_address == address)
+                            if matches!(argument, Value::Address(argument_address) if argument_address == address)
                             {
                                 Some(argument)
                             } else {
                                 None
                             }
                         }) {
-                            self.value_to_allocation(&addresses, address);
+                            self.value_to_allocation(&addresses, address, block_arguments.as_slice(), call_arguments.as_slice());
                         } else {
                             allocations_unused.push(allocation);
                         }
@@ -205,8 +264,7 @@ impl RegisterAllocator {
 
                     for (address, allocation) in &addresses {
                         if let Some(address) = otherwise.arguments_mut().iter_mut().find_map(|argument| {
-                            if let Argument::Address(argument) = argument
-                                && matches!(argument, Value::Address(argument_address) if argument_address == address)
+                            if matches!(argument, Value::Address(argument_address) if argument_address == address)
                             {
                                 Some(argument)
                             } else {
@@ -215,7 +273,7 @@ impl RegisterAllocator {
                         }) {
                             allocations_unused.retain(|unused_allocation| unused_allocation != &allocation);
 
-                            self.value_to_allocation(&addresses, address);
+                            self.value_to_allocation(&addresses, address, block_arguments.as_slice(), call_arguments.as_slice());
                         } else {
                             allocations_unused.push(allocation);
                         }
@@ -225,6 +283,15 @@ impl RegisterAllocator {
                         if let Allocation::Register(index) = allocation {
                             self.free(*index);
                         }
+                    }
+
+                    for allocated in &call_arguments {
+                        when_true
+                            .arguments_mut()
+                            .push(self.allocation_to_value(*allocated));
+                        otherwise
+                            .arguments_mut()
+                            .push(self.allocation_to_value(*allocated));
                     }
                 }
             }
@@ -236,7 +303,6 @@ impl RegisterAllocator {
             for child in children {
                 *self = Self {
                     index: 0,
-                    registers_used: self.registers_used.max(self.index),
                     free: vec![],
                     stack_size: 0,
                     current_fn: self.current_fn,
@@ -248,22 +314,46 @@ impl RegisterAllocator {
         }
     }
 
-    fn value_to_allocation(&self, addresses: &HashMap<Address, Allocation>, value: &mut Value) {
+    const fn allocation_to_value(&self, allocation: Allocation) -> Value {
+        match allocation {
+            Allocation::Register(index) => Value::Register(index),
+            Allocation::Stack(offset) => Value::Address(Address {
+                block_index: self.current_fn,
+                offset,
+                version: 0,
+            }),
+        }
+    }
+
+    fn value_to_allocation(
+        &self,
+        addresses: &HashMap<Address, Allocation>,
+        value: &mut Value,
+        block_arguments: &[Allocation],
+        call_arguments: &[Allocation],
+    ) {
         match value {
             Value::Address(address) => {
-                *value = match addresses.get(address) {
-                    None => unreachable!("all addresses get allocated"),
-                    Some(Allocation::Register(index)) => Value::Register(*index),
-                    Some(Allocation::Stack(offset)) => Value::Address(Address {
-                        block_index: self.current_fn,
-                        offset: *offset,
-                        version: 0,
-                    }),
-                };
+                *value = addresses.get(address).map_or_else(
+                    || unreachable!("all addresses get allocated"),
+                    |allocation| self.allocation_to_value(*allocation),
+                );
+            }
+            Value::BlockArgument(index) => {
+                *value = block_arguments.get(*index).map_or_else(
+                    || unreachable!("all addresses get allocated"),
+                    |allocation| self.allocation_to_value(*allocation),
+                );
+            }
+            Value::CallArgument(index) => {
+                *value = call_arguments.get(*index).map_or_else(
+                    || unreachable!("all addresses get allocated"),
+                    |allocation| self.allocation_to_value(*allocation),
+                );
             }
             Value::Compound(values) => {
                 for value in values {
-                    self.value_to_allocation(addresses, value);
+                    self.value_to_allocation(addresses, value, block_arguments, call_arguments);
                 }
             }
             _ => {}
