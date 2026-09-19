@@ -25,3 +25,7 @@ stress_gc = []
 
 [[bin]]
 name = "apart_c"
+
+[[bin]]
+name = "apart_vm"
+

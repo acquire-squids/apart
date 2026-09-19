@@ -6,7 +6,9 @@ mod name_resolve;
 mod optimize;
 mod parse;
 mod ssa;
+pub mod targets;
 mod type_check;
+pub mod vm;
 
 pub use {
     basic_blocks::{Address, Instruction, Value},
@@ -23,6 +25,10 @@ use std::{error, fmt, io::Write};
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
 const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt"));
+
+pub enum Target {
+    Vm,
+}
 
 pub struct Compiled<'a, T> {
     sources_with_core: Vec<(usize, &'a str)>,
@@ -284,6 +290,100 @@ macro_rules! __test_evaluation_output {
 }
 
 pub use __test_evaluation_output as test_evaluation_output;
+
+#[macro_export]
+macro_rules! __test_vm_output_single_function {
+    (
+        $source:ident, $test_file_name:literal, $expected_output:literal ;
+        $test_name:ident, $registers:literal, $optimized:literal $(,)?
+    ) => {
+        #[test]
+        fn $test_name() {
+            let mut out = vec![];
+
+            let result = $crate::compile([(0, SOURCE)].as_slice(), $registers, $optimized)
+                .map(|compiled| $crate::targets::vm::compile(&compiled))
+                .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
+                .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
+
+            match result {
+                Ok(output) => {
+                    assert_eq!(output, $expected_output);
+                }
+                Err(compiled) => {
+                    let errors = compiled.result();
+
+                    for error in errors {
+                        let source_index = compiled
+                            .sources()
+                            .iter()
+                            .position(|(id, _)| *id == error.span().source_id())
+                            .expect("the source must exist");
+
+                        let report_data = reporting::ReportData::new(
+                            compiled.sources()[source_index].1,
+                            "error",
+                            $test_file_name,
+                            "...",
+                            reporting::ReportColors::new(),
+                        );
+
+                        let mut err = vec![];
+
+                        let _ = report_data.report(&error, &mut err);
+
+                        eprint!(
+                            "{}",
+                            str::from_utf8(err.as_slice()).expect("only utf-8!  sorry!")
+                        );
+                    }
+
+                    panic!("test failed with one or more errors");
+                }
+            }
+        }
+    };
+}
+
+pub use __test_vm_output_single_function as test_vm_output_single_function;
+
+#[macro_export]
+macro_rules! __test_vm_output {
+    (
+        $test_name:ident, $test_file_name:literal, $expected_output:literal $(,)?
+    ) => {
+        #[cfg(test)]
+        mod $test_name {
+            const SOURCE: &str = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/lang/tests/",
+                $test_file_name
+            ));
+
+            $crate::test_vm_output_single_function!(
+                SOURCE, $test_file_name, $expected_output ;
+                no_registers_unoptimized, 0, false
+            );
+
+            $crate::test_vm_output_single_function!(
+                SOURCE, $test_file_name, $expected_output ;
+                no_registers_optimized, 0, true
+            );
+
+            $crate::test_vm_output_single_function!(
+                SOURCE, $test_file_name, $expected_output ;
+                registers_unoptimized, 32, false
+            );
+
+            $crate::test_vm_output_single_function!(
+                SOURCE, $test_file_name, $expected_output ;
+                registers_optimized, 32, true
+            );
+        }
+    };
+}
+
+pub use __test_vm_output as test_vm_output;
 
 #[macro_export]
 macro_rules! __test_compilation_errors {

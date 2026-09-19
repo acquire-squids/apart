@@ -155,11 +155,9 @@ impl Evaluator {
                                 self.gc();
                             }
 
-                            let call_arguments = self.stack.split_off(self.stack.len() - *arity);
-
                             let call_frame = CallFrame {
                                 from: (b, i),
-                                fp: self.stack.len(),
+                                fp: self.stack.len() - *arity,
                                 previous_registers: Vec::with_capacity(ssa.max_registers()),
                             };
 
@@ -167,12 +165,6 @@ impl Evaluator {
                             i = 0;
 
                             self.call_frames.push(call_frame);
-
-                            for (call_argument, to) in
-                                call_arguments.iter().zip(ssa.blocks()[b].parameters())
-                            {
-                                self.assign(to, *call_argument);
-                            }
 
                             continue 'block;
                         }
@@ -298,11 +290,11 @@ impl Evaluator {
 
                 self.registers[*index] = value;
             }
-            IrValue::Address(address) => {
+            IrValue::StackOffset(offset) => {
                 if let Some(stack_value) = self
                     .call_frames
                     .last()
-                    .map(|frame| frame.fp + address.offset)
+                    .map(|frame| frame.fp + offset)
                     .and_then(|offset| self.stack.get_mut(offset))
                 {
                     *stack_value = value;
@@ -502,7 +494,7 @@ impl Evaluator {
 
     fn convert_ir_value(&mut self, ir_value: &IrValue) -> CopyableValue {
         match ir_value {
-            IrValue::BlockArgument(_) | IrValue::CallArgument(_) => {
+            IrValue::BlockArgument(_) | IrValue::CallArgument(_) | IrValue::Address(_) => {
                 unreachable!("these should be eliminated by register allocation")
             }
             IrValue::Integer(value) => CopyableValue::Integer(*value),
@@ -511,13 +503,13 @@ impl Evaluator {
             IrValue::Unit => CopyableValue::Unit,
             IrValue::Fn(value) => CopyableValue::Fn(*value),
             IrValue::Runtime => CopyableValue::Runtime,
-            IrValue::Register(value) => self.registers[*value],
-            IrValue::Address(address) => self
+            IrValue::StackOffset(offset) => self
                 .call_frames
                 .last()
-                .map(|frame| frame.fp + address.offset)
+                .map(|frame| frame.fp + offset)
                 .map(|offset| self.stack[offset])
                 .expect("the stack value will exist"),
+            IrValue::Register(value) => self.registers[*value],
             IrValue::NativeFn(span) => {
                 self.values.push(Value::NativeFn(*span));
 

@@ -224,6 +224,7 @@ pub enum Value {
     Runtime,
     BlockArgument(usize),
     CallArgument(usize),
+    StackOffset(usize),
     Register(usize),
     Compound(Vec<Self>),
     TaggedCompound { fields: Vec<Self>, tag: u16 },

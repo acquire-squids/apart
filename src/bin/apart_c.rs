@@ -1,4 +1,4 @@
-use apart::Ssa;
+use apart::{Ssa, Target};
 
 use std::{env, fs, io, iter, path::Path, process::ExitCode};
 
@@ -20,16 +20,16 @@ fn main() -> ExitCode {
         |file_path| {
             let input_path = file_path.as_str();
 
-            let file_path = Path::new(input_path);
+            let input_file_path = Path::new(input_path);
 
-            if !file_path.exists() {
+            if !input_file_path.exists() {
                 eprintln!("\"{input_path}\" does not exist");
                 ExitCode::FAILURE
-            } else if !file_path.is_file() {
+            } else if !input_file_path.is_file() {
                 eprintln!("\"{input_path}\" is not a file");
                 ExitCode::FAILURE
             } else {
-                match fs::read_to_string(file_path) {
+                match fs::read_to_string(input_file_path) {
                     Err(error) => {
                         eprintln!("error while reading \"{input_path}\": {error}");
                         ExitCode::FAILURE
@@ -51,6 +51,30 @@ fn main() -> ExitCode {
                         .map_or(ExitCode::FAILURE, |compiled| {
                             if options.evaluate {
                                 evaluate(&compiled);
+                            }
+
+                            let output_path = Path::new("main.apart");
+
+                            if output_path.exists() && output_path.is_file()
+                                && let Err(error) = fs::rename(output_path, "main.apart.bak")
+                            {
+                                eprintln!("failed to backup existing \"main.apart\"; see next line");
+
+                                eprintln!("{error}");
+
+                                return ExitCode::FAILURE;
+                            }
+
+                            if !output_path.exists()
+                                && let Err(error) = fs::write(output_path, match options.target {
+                                    Target::Vm => apart::targets::vm::compile(&compiled),
+                                })
+                            {
+                                eprintln!("failed to write compiled output to \"main.apart\"; see next line");
+
+                                eprintln!("{error}");
+
+                                return ExitCode::FAILURE;
                             }
 
                             ExitCode::SUCCESS
@@ -120,11 +144,21 @@ fn print_usage() {
     );
 }
 
+fn print_targets() {
+    eprintln!(
+        "{} valid targets:\n\n    vm",
+        option_env!("CARGO_BIN_NAME").unwrap_or("apart_c"),
+    );
+}
+
 const DESCRIPTION: &str = "Description:
     Compile (and optionally, evaluate) a program written in the \"apart\" language
 
     -e, --evaluate
         evaluate the program after compiling it
+
+    -l, --list-targets
+        list all valid targets
 
     -o, --optimize
         perform optimizations during compilation
@@ -133,12 +167,16 @@ const DESCRIPTION: &str = "Description:
         specify the maximum number of registers to compile with, e.g. \"-r 0\" or \"--registers 32\"
 
         zero registers effectively works as a stack machine
+
+    -t, --target TARGET_NAME
+        compile for only the target TARGET_NAME
 ";
 
 struct ApartOptions {
     evaluate: bool,
     optimize: bool,
     max_registers: usize,
+    target: Target,
 }
 
 fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
@@ -146,6 +184,7 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
         evaluate: false,
         optimize: false,
         max_registers: 0,
+        target: Target::Vm,
     };
 
     while let Some(argument) = arguments.peek() {
@@ -159,6 +198,11 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                 arguments.next();
 
                 options.evaluate = true;
+            }
+            "-l" | "--list-targets" => {
+                print_targets();
+
+                return Err(ExitCode::SUCCESS);
             }
             "-o" | "--optimize" => {
                 arguments.next();
@@ -188,6 +232,27 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                     eprintln!("expected the number of registers to compile with after {argument}");
 
                     return Err(ExitCode::FAILURE);
+                }
+            }
+            "-t" | "--target" => {
+                arguments.next();
+
+                let target = arguments.next();
+
+                #[allow(clippy::single_match_else)]
+                match target.as_deref() {
+                    Some("vm") => {
+                        options.target = Target::Vm;
+                    }
+                    _ => {
+                        eprintln!("invalid compilation target");
+
+                        eprintln!(
+                            "run with \"-l\" or \"--list-targets\" to view a list of valid targets"
+                        );
+
+                        return Err(ExitCode::FAILURE);
+                    }
                 }
             }
             _ => break,

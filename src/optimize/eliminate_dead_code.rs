@@ -15,6 +15,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         {
             block.instructions_mut().clear();
 
+            block.parameters_mut().clear();
+
+            *block.terminator_mut() = BlockTerminator::Return(Value::Runtime);
+
             changed = true;
         }
     }

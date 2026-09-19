@@ -123,9 +123,11 @@ fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
         | Value::BlockArgument(_)
         | Value::CallArgument(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address),
-        Value::Runtime | Value::Register(_) | Value::Compound(_) | Value::TaggedCompound { .. } => {
-            None
-        }
+        Value::Runtime
+        | Value::Register(_)
+        | Value::StackOffset(_)
+        | Value::Compound(_)
+        | Value::TaggedCompound { .. } => None,
     }
 }
 
