@@ -69,6 +69,63 @@ where
     vm.run(out);
 }
 
+macro_rules! dereference_value {
+    (
+        $self:ident, $value:expr $(,)?
+    ) => {
+        match $value {
+            $crate::targets::vm::CopyableValue::Register(index) => $self.registers[index],
+            $crate::targets::vm::CopyableValue::StackOffset(offset) => $self
+                .call_frames
+                .last()
+                .map_or($self.stack[offset], |frame| $self.stack[frame.fp + offset]),
+            $crate::targets::vm::CopyableValue::ValueIndex(value_index) => {
+                match $self.values.get(usize::from(value_index)) {
+                    None => panic!("tried to find a value that doesn't exist"),
+                    Some($crate::targets::vm::Value::MakeCompound(fields)) => {
+                        let fields = fields
+                            .clone()
+                            .into_iter()
+                            .map(|value| $self.dereference_value(value))
+                            .collect::<Vec<_>>();
+
+                        $self.values.push(Value::Compound(fields));
+
+                        let value_index = $crate::targets::vm::CopyableValue::ValueIndex(
+                            ValueIndex($self.values.len() - 1),
+                        );
+
+                        $self.allocated += $self.size_of_value(value_index);
+
+                        value_index
+                    }
+                    Some($crate::targets::vm::Value::MakeTaggedCompound { fields, tag }) => {
+                        let tag = *tag;
+
+                        let fields = fields
+                            .clone()
+                            .into_iter()
+                            .map(|value| $self.dereference_value(value))
+                            .collect::<Vec<_>>();
+
+                        $self.values.push(Value::TaggedCompound { fields, tag });
+
+                        let value_index = $crate::targets::vm::CopyableValue::ValueIndex(
+                            ValueIndex($self.values.len() - 1),
+                        );
+
+                        $self.allocated += $self.size_of_value(value_index);
+
+                        value_index
+                    }
+                    Some(Value::Compound(_) | Value::TaggedCompound { .. }) => $value,
+                }
+            }
+            _ => $value,
+        }
+    };
+}
+
 impl Vm {
     #[allow(clippy::too_many_lines)]
     fn run<O>(&mut self, out: &mut O)
@@ -89,13 +146,13 @@ impl Vm {
                     let to = *to;
 
                     match op_code {
-                        OpCode::Not => match self.dereference_value(operand) {
+                        OpCode::Not => match dereference_value!(self, operand) {
                             CopyableValue::Boolean(value) => {
                                 self.assign(to, CopyableValue::Boolean(!value));
                             }
                             _ => panic!("incorrect argument for logical not"),
                         },
-                        OpCode::Negate => match self.dereference_value(operand) {
+                        OpCode::Negate => match dereference_value!(self, operand) {
                             CopyableValue::I64(value) => {
                                 self.assign(to, CopyableValue::I64(-value));
                             }
@@ -127,8 +184,8 @@ impl Vm {
                         | OpCode::Greater
                         | OpCode::LessOrEqual
                         | OpCode::GreaterOrEqual => {
-                            let lhs = self.dereference_value(lhs);
-                            let rhs = self.dereference_value(rhs);
+                            let lhs = dereference_value!(self, lhs);
+                            let rhs = dereference_value!(self, rhs);
 
                             match (lhs, rhs) {
                                 (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => self.assign(
@@ -173,8 +230,8 @@ impl Vm {
                             }
                         }
                         OpCode::And | OpCode::Or => {
-                            let lhs = self.dereference_value(lhs);
-                            let rhs = self.dereference_value(rhs);
+                            let lhs = dereference_value!(self, lhs);
+                            let rhs = dereference_value!(self, rhs);
 
                             match (lhs, rhs) {
                                 (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => self
@@ -192,8 +249,8 @@ impl Vm {
                             }
                         }
                         OpCode::Equal | OpCode::NotEqual => {
-                            let lhs = self.dereference_value(lhs);
-                            let rhs = self.dereference_value(rhs);
+                            let lhs = dereference_value!(self, lhs);
+                            let rhs = dereference_value!(self, rhs);
 
                             self.assign(
                                 to,
@@ -217,14 +274,14 @@ impl Vm {
                     let value = *value;
                     let to = *to;
 
-                    let value = self.dereference_value(value);
+                    let value = dereference_value!(self, value);
 
                     self.assign(to, value);
                 }
                 Some(Instruction::Push(value)) => {
                     let value = *value;
 
-                    let value = self.dereference_value(value);
+                    let value = dereference_value!(self, value);
 
                     self.stack.push(value);
                 }
@@ -234,7 +291,7 @@ impl Vm {
                     let to = *to;
 
                     let value = if let CopyableValue::ValueIndex(value_index) =
-                        self.dereference_value(of)
+                        dereference_value!(self, of)
                         && let Some(Value::Compound(fields)) =
                             self.values.get(usize::from(value_index))
                     {
@@ -243,7 +300,7 @@ impl Vm {
                         panic!("tried to access something other than a compound");
                     };
 
-                    let value = self.dereference_value(value);
+                    let value = dereference_value!(self, value);
 
                     self.assign(to, value);
                 }
@@ -252,9 +309,9 @@ impl Vm {
                     let of = *of;
                     let value = *value;
 
-                    let value = self.dereference_value(value);
+                    let value = dereference_value!(self, value);
 
-                    if let CopyableValue::ValueIndex(value_index) = self.dereference_value(of)
+                    if let CopyableValue::ValueIndex(value_index) = dereference_value!(self, of)
                         && let Some(Value::Compound(fields)) =
                             self.values.get_mut(usize::from(value_index))
                         && let Some(field) = fields.get_mut(index)
@@ -269,7 +326,7 @@ impl Vm {
                     let arity = *arity;
                     let to = *to;
 
-                    match self.dereference_value(callee) {
+                    match dereference_value!(self, callee) {
                         CopyableValue::Fn(callee) => {
                             if self.should_gc() {
                                 self.gc();
@@ -292,7 +349,7 @@ impl Vm {
 
                             let value = Self::native_fn_call(call_arguments.as_slice(), index, out);
 
-                            let value = self.dereference_value(value);
+                            let value = dereference_value!(self, value);
 
                             self.assign(to, value);
                         }
@@ -304,7 +361,7 @@ impl Vm {
                 Some(Instruction::Jump(destination, arguments)) => {
                     let arguments = arguments
                         .iter()
-                        .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                        .map(|(to, argument)| (*to, dereference_value!(self, *argument)))
                         .collect::<Vec<_>>();
 
                     for (to, argument) in arguments {
@@ -322,12 +379,12 @@ impl Vm {
                 }) => {
                     let condition = *condition;
 
-                    match self.dereference_value(condition) {
+                    match dereference_value!(self, condition) {
                         CopyableValue::Boolean(true) => {
                             let arguments = when_true
                                 .1
                                 .iter()
-                                .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                                .map(|(to, argument)| (*to, dereference_value!(self, *argument)))
                                 .collect::<Vec<_>>();
 
                             for (to, argument) in arguments {
@@ -340,7 +397,7 @@ impl Vm {
                             let arguments = otherwise
                                 .1
                                 .iter()
-                                .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                                .map(|(to, argument)| (*to, dereference_value!(self, *argument)))
                                 .collect::<Vec<_>>();
 
                             for (to, argument) in arguments {
@@ -357,7 +414,7 @@ impl Vm {
                 Some(Instruction::Return(value)) => {
                     let value = *value;
 
-                    let value = self.dereference_value(value);
+                    let value = dereference_value!(self, value);
 
                     if let Some(call_frame) = self.call_frames.pop() {
                         self.ip = call_frame.from;
@@ -393,7 +450,7 @@ impl Vm {
     }
 
     fn assign(&mut self, to: CopyableValue, value: CopyableValue) {
-        let value = self.dereference_value(value);
+        let value = dereference_value!(self, value);
 
         match to {
             CopyableValue::Register(index) => {
@@ -429,9 +486,7 @@ impl Vm {
             CopyableValue::StackOffset(offset) => self
                 .call_frames
                 .last()
-                .map(|frame| frame.fp + offset)
-                .and_then(|offset| self.stack.get(offset).copied())
-                .expect("the stack is too short"),
+                .map_or(self.stack[offset], |frame| self.stack[frame.fp + offset]),
             CopyableValue::ValueIndex(value_index) => {
                 match self.values.get(usize::from(value_index)) {
                     None => panic!("tried to find a value that doesn't exist"),
