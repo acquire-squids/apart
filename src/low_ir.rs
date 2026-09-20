@@ -372,8 +372,8 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::BlockArgument(_) | IrValue::CallArgument(_) | IrValue::Address(_) => {
             unreachable!("these are eliminated by register allocation")
         }
-        IrValue::Integer(value) => ValueOrLocation::Value(Value::I64(*value)),
-        IrValue::Float(value) => ValueOrLocation::Value(Value::F64(*value)),
+        IrValue::I64(value) => ValueOrLocation::Value(Value::I64(*value)),
+        IrValue::F64(value) => ValueOrLocation::Value(Value::F64(*value)),
         IrValue::Boolean(value) => ValueOrLocation::Value(Value::Boolean(*value)),
         IrValue::Unit | IrValue::Runtime => ValueOrLocation::Value(Value::Unit),
         IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn(*block_index)),

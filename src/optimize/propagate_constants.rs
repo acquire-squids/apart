@@ -114,8 +114,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
 fn clone_constant(ssa: &Ssa, value: &Value) -> Option<Value> {
     match value {
-        Value::Integer(_)
-        | Value::Float(_)
+        Value::I64(_)
+        | Value::F64(_)
         | Value::Boolean(_)
         | Value::Unit
         | Value::Fn(_)

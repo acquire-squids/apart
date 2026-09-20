@@ -44,9 +44,9 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
 
                 *changed = true;
             }
-            (UnaryOp::Negate, Value::Integer(value)) => {
+            (UnaryOp::Negate, Value::I64(value)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(-*value),
+                    value: Value::I64(-*value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -56,9 +56,9 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
 
                 *changed = true;
             }
-            (UnaryOp::Negate, Value::Float(value)) => {
+            (UnaryOp::Negate, Value::F64(value)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(-*value),
+                    value: Value::F64(-*value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -77,11 +77,11 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
 fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut bool) {
     if let Instruction::Binary { op, lhs, rhs, .. } = instruction {
         match (op, lhs, rhs) {
-            (BinaryOp::Multiply, Value::Integer(lhs), Value::Integer(rhs))
+            (BinaryOp::Multiply, Value::I64(lhs), Value::I64(rhs))
                 if let Some(value) = lhs.checked_mul(*rhs) =>
             {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(value),
+                    value: Value::I64(value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -91,9 +91,9 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Multiply, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Multiply, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(*lhs * *rhs),
+                    value: Value::F64(*lhs * *rhs),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -103,11 +103,11 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Divide, Value::Integer(lhs), Value::Integer(rhs))
+            (BinaryOp::Divide, Value::I64(lhs), Value::I64(rhs))
                 if let Some(value) = lhs.checked_div(*rhs) =>
             {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(value),
+                    value: Value::I64(value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -117,9 +117,9 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Divide, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Divide, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(*lhs / *rhs),
+                    value: Value::F64(*lhs / *rhs),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -129,11 +129,11 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Remainder, Value::Integer(lhs), Value::Integer(rhs))
+            (BinaryOp::Remainder, Value::I64(lhs), Value::I64(rhs))
                 if let Some(value) = lhs.checked_rem(*rhs) =>
             {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(value),
+                    value: Value::I64(value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -143,9 +143,9 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Remainder, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Remainder, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(*lhs % *rhs),
+                    value: Value::F64(*lhs % *rhs),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -155,11 +155,11 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Add, Value::Integer(lhs), Value::Integer(rhs))
+            (BinaryOp::Add, Value::I64(lhs), Value::I64(rhs))
                 if let Some(value) = lhs.checked_add(*rhs) =>
             {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(value),
+                    value: Value::I64(value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -169,9 +169,9 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Add, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Add, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(*lhs + *rhs),
+                    value: Value::F64(*lhs + *rhs),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -181,11 +181,11 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Subtract, Value::Integer(lhs), Value::Integer(rhs))
+            (BinaryOp::Subtract, Value::I64(lhs), Value::I64(rhs))
                 if let Some(value) = lhs.checked_sub(*rhs) =>
             {
                 *instruction = Instruction::Assign {
-                    value: Value::Integer(value),
+                    value: Value::I64(value),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -195,9 +195,9 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Subtract, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Subtract, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Float(*lhs - *rhs),
+                    value: Value::F64(*lhs - *rhs),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -207,19 +207,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Less, Value::Integer(lhs), Value::Integer(rhs)) => {
-                *instruction = Instruction::Assign {
-                    value: Value::Boolean(*lhs < *rhs),
-                    to: Value::Address(Address {
-                        block_index: BlockIndex(b),
-                        offset: i,
-                        version: 0,
-                    }),
-                };
-
-                *changed = true;
-            }
-            (BinaryOp::Less, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Less, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs < *rhs),
                     to: Value::Address(Address {
@@ -231,7 +219,19 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Greater, Value::Integer(lhs), Value::Integer(rhs)) => {
+            (BinaryOp::Less, Value::F64(lhs), Value::F64(rhs)) => {
+                *instruction = Instruction::Assign {
+                    value: Value::Boolean(*lhs < *rhs),
+                    to: Value::Address(Address {
+                        block_index: BlockIndex(b),
+                        offset: i,
+                        version: 0,
+                    }),
+                };
+
+                *changed = true;
+            }
+            (BinaryOp::Greater, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs > *rhs),
                     to: Value::Address(Address {
@@ -243,7 +243,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Greater, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Greater, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs > *rhs),
                     to: Value::Address(Address {
@@ -255,7 +255,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::LessOrEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
+            (BinaryOp::LessOrEqual, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs <= *rhs),
                     to: Value::Address(Address {
@@ -267,7 +267,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::LessOrEqual, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::LessOrEqual, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs <= *rhs),
                     to: Value::Address(Address {
@@ -279,7 +279,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::GreaterOrEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
+            (BinaryOp::GreaterOrEqual, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs >= *rhs),
                     to: Value::Address(Address {
@@ -291,7 +291,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::GreaterOrEqual, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::GreaterOrEqual, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs >= *rhs),
                     to: Value::Address(Address {
@@ -303,7 +303,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Equal, Value::Integer(lhs), Value::Integer(rhs)) => {
+            (BinaryOp::Equal, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs == rhs),
                     to: Value::Address(Address {
@@ -315,7 +315,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Equal, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::Equal, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean((*lhs - *rhs).abs() < f64::EPSILON),
                     to: Value::Address(Address {
@@ -375,7 +375,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::NotEqual, Value::Integer(lhs), Value::Integer(rhs)) => {
+            (BinaryOp::NotEqual, Value::I64(lhs), Value::I64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs != rhs),
                     to: Value::Address(Address {
@@ -387,7 +387,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::NotEqual, Value::Float(lhs), Value::Float(rhs)) => {
+            (BinaryOp::NotEqual, Value::F64(lhs), Value::F64(rhs)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean((*lhs - *rhs).abs() >= f64::EPSILON),
                     to: Value::Address(Address {

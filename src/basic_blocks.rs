@@ -214,8 +214,8 @@ enum Addresslike {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    Integer(i64),
-    Float(f64),
+    I64(i64),
+    F64(f64),
     Boolean(bool),
     Unit,
     Fn(BlockIndex),
@@ -473,14 +473,14 @@ impl Translator {
                 unreachable!("type checking guarantees a \"Self\" isn't used as an expression");
             }
             Expr::Integer(value) => {
-                self.values.push(Value::Integer(*value));
+                self.values.push(Value::I64(*value));
 
                 if self.last_in_fn {
                     self.emit_return();
                 }
             }
             Expr::Float(value) => {
-                self.values.push(Value::Float(*value));
+                self.values.push(Value::F64(*value));
 
                 if self.last_in_fn {
                     self.emit_return();
