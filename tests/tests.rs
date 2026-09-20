@@ -125,10 +125,6 @@ macro_rules! output_tests {
 }
 
 output_tests!(
-    evaluation_output, test_evaluation_output ;
-);
-
-output_tests!(
     vm_output, test_vm_output ;
 );
 

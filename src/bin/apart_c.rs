@@ -1,6 +1,6 @@
-use apart::{Ssa, Target};
+use apart::{Ir, IrValue, Target};
 
-use std::{env, fs, io, iter, path::Path, process::ExitCode};
+use std::{env, fs, iter, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
     let mut arguments = env::args().peekable();
@@ -49,30 +49,18 @@ fn main() -> ExitCode {
                             options.optimize,
                         )
                         .map_or(ExitCode::FAILURE, |compiled| {
-                            if options.evaluate {
-                                evaluate(&compiled);
-                            }
+                            let output_path = Path::new(options.output.as_str());
 
-                            let compiled = apart::lower(&compiled);
-
-                            let output_path = Path::new("main.apart");
-
-                            if output_path.exists() && output_path.is_file()
-                                && let Err(error) = fs::rename(output_path, "main.apart.bak")
-                            {
-                                eprintln!("failed to backup existing \"main.apart\"; see next line");
-
-                                eprintln!("{error}");
-
-                                return ExitCode::FAILURE;
-                            }
-
-                            if !output_path.exists()
-                                && let Err(error) = fs::write(output_path, match options.target {
+                            if let Err(error) = fs::write(
+                                output_path,
+                                match options.target {
                                     Target::Vm => apart::targets::vm::compile(&compiled),
-                                })
-                            {
-                                eprintln!("failed to write compiled output to \"main.apart\"; see next line");
+                                },
+                            ) {
+                                eprintln!(
+                                    "failed to write compiled output to \"{}\"; see next line",
+                                    options.output
+                                );
 
                                 eprintln!("{error}");
 
@@ -93,7 +81,7 @@ fn compile<'a>(
     sources: &[(usize, &'a str)],
     max_registers: usize,
     optimize: bool,
-) -> Option<apart::Compiled<'a, Ssa>> {
+) -> Option<apart::Compiled<'a, Ir<IrValue>>> {
     match apart::compile(sources, max_registers, optimize) {
         Ok(compiled) => Some(compiled),
         Err(compiled) => {
@@ -134,48 +122,51 @@ fn compile<'a>(
     }
 }
 
-fn evaluate(compiled: &apart::Compiled<'_, Ssa>) {
-    apart::evaluate(compiled, &mut io::stdout().lock());
-}
-
 fn print_usage() {
-    eprintln!(
-        "Usage: {} [option]... [path_to_source]\n\n{}",
-        option_env!("CARGO_BIN_NAME").unwrap_or("apart_c"),
-        DESCRIPTION.trim(),
-    );
+    eprintln!("{}", DESCRIPTION.trim());
 }
 
 fn print_targets() {
-    eprintln!(
-        "{} valid targets:\n\n    vm",
-        option_env!("CARGO_BIN_NAME").unwrap_or("apart_c"),
-    );
+    eprintln!("{}", TARGETS.trim());
 }
 
-const DESCRIPTION: &str = "Description:
-    Compile (and optionally, evaluate) a program written in the \"apart\" language
+const DESCRIPTION: &str = concat!(
+    "Usage: ",
+    env!("CARGO_BIN_NAME"),
+    " [option]... PATH_TO_SOURCE
 
-    -e, --evaluate
-        evaluate the program after compiling it
+Description:
+    Compile a program written in the \"apart\" language
 
     -l, --list-targets
         list all valid targets
 
-    -o, --optimize
+    -o, --output OUTPUT_PATH
+        specify the path of the compilation's output
+
+    -O, --optimize
         perform optimizations during compilation
 
-    -r, --registers usize
+    -R, --registers usize
         specify the maximum number of registers to compile with, e.g. \"-r 0\" or \"--registers 32\"
 
         zero registers effectively works as a stack machine
 
-    -t, --target TARGET_NAME
+    -T, --target TARGET_NAME
         compile for only the target TARGET_NAME
-";
+"
+);
+
+const TARGETS: &str = concat!(
+    "Valid ",
+    env!("CARGO_BIN_NAME"),
+    " compilation targets:
+    vm
+"
+);
 
 struct ApartOptions {
-    evaluate: bool,
+    output: String,
     optimize: bool,
     max_registers: usize,
     target: Target,
@@ -183,7 +174,7 @@ struct ApartOptions {
 
 fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
     let mut options = ApartOptions {
-        evaluate: false,
+        output: "main.apart".to_string(),
         optimize: false,
         max_registers: 0,
         target: Target::Vm,
@@ -196,22 +187,30 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
 
                 return Err(ExitCode::SUCCESS);
             }
-            "-e" | "--evaluate" => {
-                arguments.next();
-
-                options.evaluate = true;
-            }
             "-l" | "--list-targets" => {
                 print_targets();
 
                 return Err(ExitCode::SUCCESS);
             }
-            "-o" | "--optimize" => {
+            "-o" | "--output" => {
+                let argument = arguments
+                    .next()
+                    .expect("we just matched while peeking, it will exist");
+
+                if let Some(output) = arguments.next() {
+                    options.output = output;
+                } else {
+                    eprintln!("expected the output path after {argument}");
+
+                    return Err(ExitCode::FAILURE);
+                }
+            }
+            "-O" | "--optimize" => {
                 arguments.next();
 
                 options.optimize = true;
             }
-            "-r" | "--registers" => {
+            "-R" | "--registers" => {
                 let argument = arguments
                     .next()
                     .expect("we just matched while peeking, it will exist");
@@ -236,7 +235,7 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                     return Err(ExitCode::FAILURE);
                 }
             }
-            "-t" | "--target" => {
+            "-T" | "--target" => {
                 arguments.next();
 
                 let target = arguments.next();

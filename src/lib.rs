@@ -1,6 +1,5 @@
 mod allocate_registers;
 mod basic_blocks;
-mod evaluate;
 mod lex;
 mod low_ir;
 mod name_resolve;
@@ -18,13 +17,12 @@ pub use {
     },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
-    ssa::Ssa,
     type_check::Error as TypeCheckError,
 };
 
 use reporting::{Reportable, Span, Spanned};
 
-use std::{error, fmt, io::Write};
+use std::{error, fmt};
 
 const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
@@ -74,25 +72,6 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
-pub fn evaluate<O>(compiled: &Compiled<'_, ssa::Ssa>, out: &mut O)
-where
-    O: Write,
-{
-    evaluate::run(
-        compiled.result(),
-        compiled.sources_with_core.as_slice(),
-        out,
-    );
-}
-
-#[must_use]
-pub fn lower<'a>(compiled: &Compiled<'a, ssa::Ssa>) -> Compiled<'a, Ir<IrValue>> {
-    Compiled {
-        sources_with_core: compiled.sources().to_vec(),
-        result: low_ir::lower(compiled),
-    }
-}
-
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc)]
@@ -100,7 +79,7 @@ pub fn compile<'a>(
     sources: &[(usize, &'a str)],
     max_registers: usize,
     optimized: bool,
-) -> Result<Compiled<'a, ssa::Ssa>, Compiled<'a, Vec<Spanned<Error>>>> {
+) -> Result<Compiled<'a, Ir<IrValue>>, Compiled<'a, Vec<Spanned<Error>>>> {
     let mut source_ids = sources
         .iter()
         .map(|(source_id, _)| *source_id)
@@ -202,106 +181,18 @@ pub fn compile<'a>(
         print!("{ssa}");
     }
 
-    Ok(Compiled {
+    let compiled = Compiled {
         sources_with_core,
         result: ssa,
+    };
+
+    let low_ir = low_ir::lower(&compiled);
+
+    Ok(Compiled {
+        sources_with_core: compiled.sources().to_vec(),
+        result: low_ir,
     })
 }
-
-#[macro_export]
-macro_rules! __test_evaluation_output_single_function {
-    (
-        $source:ident, $test_file_name:literal, $expected_output:literal ;
-        $test_name:ident, $registers:literal, $optimized:literal $(,)?
-    ) => {
-        #[test]
-        fn $test_name() {
-            let mut out = vec![];
-
-            let result = $crate::compile([(0, SOURCE)].as_slice(), $registers, $optimized)
-                .map(|compiled| {
-                    $crate::evaluate(&compiled, &mut out);
-                })
-                .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
-
-            match result {
-                Ok(output) => {
-                    assert_eq!(output, $expected_output);
-                }
-                Err(compiled) => {
-                    let errors = compiled.result();
-
-                    for error in errors {
-                        let source_index = compiled
-                            .sources()
-                            .iter()
-                            .position(|(id, _)| *id == error.span().source_id())
-                            .expect("the source must exist");
-
-                        let report_data = reporting::ReportData::new(
-                            compiled.sources()[source_index].1,
-                            "error",
-                            $test_file_name,
-                            "...",
-                            reporting::ReportColors::new(),
-                        );
-
-                        let mut err = vec![];
-
-                        let _ = report_data.report(&error, &mut err);
-
-                        eprint!(
-                            "{}",
-                            str::from_utf8(err.as_slice()).expect("only utf-8!  sorry!")
-                        );
-                    }
-
-                    panic!("test failed with one or more errors");
-                }
-            }
-        }
-    };
-}
-
-pub use __test_evaluation_output_single_function as test_evaluation_output_single_function;
-
-#[macro_export]
-macro_rules! __test_evaluation_output {
-    (
-        $test_name:ident, $test_file_name:literal, $expected_output:literal $(,)?
-    ) => {
-        #[cfg(test)]
-        mod $test_name {
-            const SOURCE: &str = include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/lang/tests/",
-                $test_file_name
-            ));
-
-            $crate::test_evaluation_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                no_registers_unoptimized, 0, false
-            );
-
-            $crate::test_evaluation_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                no_registers_optimized, 0, true
-            );
-
-            $crate::test_evaluation_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                registers_unoptimized, 32, false
-            );
-
-            $crate::test_evaluation_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                registers_optimized, 32, true
-            );
-        }
-    };
-}
-
-pub use __test_evaluation_output as test_evaluation_output;
 
 #[macro_export]
 macro_rules! __test_vm_output_single_function {
@@ -314,7 +205,6 @@ macro_rules! __test_vm_output_single_function {
             let mut out = vec![];
 
             let result = $crate::compile([(0, SOURCE)].as_slice(), $registers, $optimized)
-                .map(|compiled| $crate::lower(&compiled))
                 .map(|compiled| $crate::targets::vm::compile(&compiled))
                 .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
                 .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));

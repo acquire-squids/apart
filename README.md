@@ -18,9 +18,7 @@ There's two binaries that matter here, `apart_c` and `apart_vm`.
 1. `cargo build --release --bin apart_c`
 2. `cargo run --release --bin apart_c -- PATH_TO_SOURCE`
 
-Your program will be available in the current directory as `main.apart`.
-
-If there is an existing `main.apart`, `apart_c` will move it to `main.apart.bak`.
+If no output path is specified, the binary will found be in the current directory as `main.apart`.
 
 See `cargo run apart_c -- --help` for a list of options.
 
