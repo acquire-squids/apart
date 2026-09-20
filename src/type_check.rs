@@ -1459,16 +1459,16 @@ impl TypeChecker {
                         .push(Spanned::new(Error::ConditionNotBoolean, condition_span));
                 }
 
-                let when_true_type = self.infer(ast, names, *when_true, context);
+                let otherwise_type = self.infer(ast, names, *otherwise, context);
 
-                if let Err(error) = self.check(ast, names, *otherwise, when_true_type, context) {
+                if let Err(error) = self.check(ast, names, *when_true, otherwise_type, context) {
                     let otherwise_span = ast[*otherwise].span();
 
                     self.errors.push(Spanned::new(error, otherwise_span));
 
                     self.type_unknown()
                 } else {
-                    when_true_type
+                    otherwise_type
                 }
             }
             Expr::While {
@@ -2351,7 +2351,7 @@ impl TypeChecker {
                 Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
                 Primitive::U64 => Ok(inferred),
                 Primitive::I64 if i64::try_from(*value).is_ok() => Ok(inferred),
-                _ => Err(should_be),
+                _ => Err(inferred),
             },
             (Type::NegativeInteger(value), Type::Primitive(b)) => match b.kind() {
                 Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
@@ -2365,7 +2365,7 @@ impl TypeChecker {
                 Primitive::I16 if i16::try_from(*value).is_ok() => Ok(inferred),
                 Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
                 Primitive::I64 => Ok(inferred),
-                _ => Err(should_be),
+                _ => Err(inferred),
             },
             (Type::Primitive(a), Type::Primitive(b)) => {
                 if a.kind() == b.kind() {

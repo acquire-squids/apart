@@ -1,0 +1,5 @@
+funky main() {
+	if true {
+		38
+	}
+}

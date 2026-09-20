@@ -252,4 +252,12 @@ mod compilation_error {
             expected, got
         })] if expected == "i32" && got == "u32"
     );
+
+    apart::test_compilation_errors!(
+        if_without_else,
+        "if_without_else.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "unit" && got == "i64"
+    );
 }
