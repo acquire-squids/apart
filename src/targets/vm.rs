@@ -5,6 +5,8 @@ use crate::{
     ssa::{BlockTerminator, Ssa},
 };
 
+use std::collections::HashSet;
+
 /// # Panics
 /// Panics if `usize` doesn't fit in a u64
 #[must_use]
@@ -485,6 +487,568 @@ impl Assemble for IrValue {
 
                 bytes
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CopyableValue {
+    I64(i64),
+    F64(f64),
+    Boolean(bool),
+    Unit,
+    Fn(usize),
+    NativeFn(u16),
+    Register(usize),
+    StackOffset(usize),
+    ValueIndex(ValueIndex),
+}
+
+#[derive(Debug)]
+pub enum Value {
+    MakeCompound(Vec<CopyableValue>),
+    MakeTaggedCompound {
+        fields: Vec<CopyableValue>,
+        tag: u16,
+    },
+    Compound(Vec<CopyableValue>),
+    TaggedCompound {
+        fields: Vec<CopyableValue>,
+        tag: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValueIndex(pub usize);
+
+impl From<ValueIndex> for usize {
+    fn from(value: ValueIndex) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug)]
+pub enum Instruction {
+    Unary {
+        op_code: OpCode,
+        operand: CopyableValue,
+        to: CopyableValue,
+    },
+    Binary {
+        op_code: OpCode,
+        lhs: CopyableValue,
+        rhs: CopyableValue,
+        to: CopyableValue,
+    },
+    Assign {
+        to: CopyableValue,
+        value: CopyableValue,
+    },
+    Push(CopyableValue),
+    Access {
+        index: usize,
+        of: CopyableValue,
+        to: CopyableValue,
+    },
+    AccessAssign {
+        index: usize,
+        of: CopyableValue,
+        value: CopyableValue,
+    },
+    Call {
+        callee: CopyableValue,
+        arity: usize,
+        to: CopyableValue,
+    },
+    Jump(usize, Vec<(CopyableValue, CopyableValue)>),
+    Branch {
+        condition: CopyableValue,
+        when_true: (usize, Vec<(CopyableValue, CopyableValue)>),
+        otherwise: (usize, Vec<(CopyableValue, CopyableValue)>),
+    },
+    Return(CopyableValue),
+}
+
+pub trait Disassemble<T>
+where
+    T: Instructive,
+{
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self;
+}
+
+pub trait Instructive: Sized {
+    fn ip_mut(&mut self) -> &mut usize;
+
+    fn instructions_mut(&mut self) -> &mut Vec<Instruction>;
+
+    fn values_mut(&mut self) -> &mut Vec<Value>;
+
+    #[allow(clippy::too_many_lines)]
+    fn read(&mut self, bytes: &[u8]) {
+        *self.ip_mut() = 16;
+
+        let block_count = bytes[8..16]
+            .as_array::<8>()
+            .map(|array| u64::from_le_bytes(*array))
+            .and_then(|index| usize::try_from(index).ok())
+            .expect("block count is not a valid usize");
+
+        if block_count == 0 {
+            return;
+        }
+
+        let entrypoint = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+            .as_array::<8>()
+            .map(|array| u64::from_le_bytes(*array))
+            .and_then(|index| usize::try_from(index).ok())
+            .expect("block address is not a valid usize");
+
+        let mut block_byte_offsets = HashSet::new();
+
+        for _ in 0..block_count {
+            let block_byte_offset = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                .as_array::<8>()
+                .map(|array| u64::from_le_bytes(*array))
+                .and_then(|index| usize::try_from(index).ok())
+                .expect("block address is not a valid usize");
+
+            *self.ip_mut() += 8;
+
+            block_byte_offsets.insert(block_byte_offset);
+        }
+
+        let mut block_addresses = vec![];
+
+        *self.ip_mut() = entrypoint;
+
+        while *self.ip_mut() < bytes.len() {
+            if block_byte_offsets.contains(&*self.ip_mut()) {
+                block_addresses.push(self.instructions_mut().len());
+            }
+
+            let op_code = OpCode::from_bytes(bytes, self);
+
+            match op_code {
+                OpCode::Not | OpCode::Negate => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let operand = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut().push(Instruction::Unary {
+                        op_code,
+                        operand,
+                        to,
+                    });
+                }
+                OpCode::Multiply
+                | OpCode::Divide
+                | OpCode::Remainder
+                | OpCode::Add
+                | OpCode::Subtract
+                | OpCode::Less
+                | OpCode::Greater
+                | OpCode::LessOrEqual
+                | OpCode::GreaterOrEqual
+                | OpCode::Equal
+                | OpCode::NotEqual
+                | OpCode::And
+                | OpCode::Or => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let lhs = CopyableValue::from_bytes(bytes, self);
+
+                    let rhs = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut().push(Instruction::Binary {
+                        op_code,
+                        lhs,
+                        rhs,
+                        to,
+                    });
+                }
+                OpCode::Assign => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut()
+                        .push(Instruction::Assign { to, value });
+                }
+                OpCode::Push => {
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut().push(Instruction::Push(value));
+                }
+                OpCode::Access => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|index| usize::try_from(index).ok())
+                        .expect("access index is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let of = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut()
+                        .push(Instruction::Access { index, of, to });
+                }
+                OpCode::AccessAssign => {
+                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|index| usize::try_from(index).ok())
+                        .expect("access index is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let of = CopyableValue::from_bytes(bytes, self);
+
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut()
+                        .push(Instruction::AccessAssign { index, of, value });
+                }
+                OpCode::Call => {
+                    let callee = CopyableValue::from_bytes(bytes, self);
+
+                    let arity = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|arity| usize::try_from(arity).ok())
+                        .expect("call arity is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut()
+                        .push(Instruction::Call { callee, arity, to });
+                }
+                OpCode::Jump => {
+                    let to = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    self.instructions_mut()
+                        .push(Instruction::Jump(to, arguments));
+                }
+                OpCode::Branch => {
+                    let condition = CopyableValue::from_bytes(bytes, self);
+
+                    let when_true = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let otherwise = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    let when_true = (when_true, arguments);
+
+                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    let otherwise = (otherwise, arguments);
+
+                    self.instructions_mut().push(Instruction::Branch {
+                        condition,
+                        when_true,
+                        otherwise,
+                    });
+                }
+                OpCode::Return => {
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions_mut().push(Instruction::Return(value));
+                }
+            }
+        }
+
+        for instruction in self.instructions_mut() {
+            match instruction {
+                Instruction::Unary { operand: value, .. }
+                | Instruction::Assign { value, .. }
+                | Instruction::Push(value)
+                | Instruction::Access { of: value, .. }
+                | Instruction::Call { callee: value, .. }
+                | Instruction::Return(value) => {
+                    if let CopyableValue::Fn(address) = value {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+                }
+                Instruction::Binary { lhs, rhs, .. }
+                | Instruction::AccessAssign {
+                    of: lhs,
+                    value: rhs,
+                    ..
+                } => {
+                    if let CopyableValue::Fn(address) = lhs {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+
+                    if let CopyableValue::Fn(address) = rhs {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+                }
+                Instruction::Jump(address, arguments) => {
+                    *address = block_addresses[(*address - 16) / 8];
+
+                    for (_, argument) in arguments {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+                }
+                Instruction::Branch {
+                    condition,
+                    when_true,
+                    otherwise,
+                } => {
+                    if let CopyableValue::Fn(address) = condition {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+
+                    when_true.0 = block_addresses[(when_true.0 - 16) / 8];
+
+                    otherwise.0 = block_addresses[(otherwise.0 - 16) / 8];
+
+                    for (_, argument) in &mut when_true.1 {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+
+                    for (_, argument) in &mut otherwise.1 {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+                }
+            }
+        }
+
+        *self.ip_mut() = 0;
+    }
+}
+
+impl<T> Disassemble<T> for OpCode
+where
+    T: Instructive,
+{
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self {
+        match Self::try_from(
+            bytes[{
+                let ip = *instructive.ip_mut();
+                *instructive.ip_mut() += 1;
+                ip
+            }],
+        ) {
+            Ok(op_code) => op_code,
+            Err(error) => panic!("unknown opcode {error}"),
+        }
+    }
+}
+
+impl<T> Disassemble<T> for CopyableValue
+where
+    T: Instructive,
+{
+    #[allow(clippy::too_many_lines)]
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self {
+        match TypeId::try_from(
+            bytes[{
+                let ip = *instructive.ip_mut();
+                *instructive.ip_mut() += 1;
+                ip
+            }],
+        ) {
+            Ok(TypeId::I64) => Self::I64(i64::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::F64) => Self::F64(f64::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::Boolean) => Self::Boolean(
+                bool::try_from(
+                    bytes[{
+                        let ip = *instructive.ip_mut();
+                        *instructive.ip_mut() += 1;
+                        ip
+                    }],
+                )
+                .expect("a boolean could not be created from its byte"),
+            ),
+            Ok(TypeId::Unit) => Self::Unit,
+            Ok(TypeId::Fn) => Self::Fn(
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|address| usize::try_from(address).ok())
+                    .expect("a function was not a valid usize"),
+            ),
+            Ok(TypeId::NativeFn) => Self::NativeFn(
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<2>()
+                    .map(|array| u16::from_le_bytes(*array))
+                    .expect("a native function was not valid"),
+            ),
+            Ok(TypeId::StackOffset) => Self::StackOffset(
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|address| usize::try_from(address).ok())
+                    .expect("a stack offset was not a valid usize"),
+            ),
+            Ok(TypeId::Register) => Self::Register(
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|address| usize::try_from(address).ok())
+                    .expect("a register was not a valid usize"),
+            ),
+            Ok(TypeId::Compound) => {
+                let field_count = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|field_count| usize::try_from(field_count).ok())
+                    .expect("a compound's field count was not a valid usize");
+
+                let mut fields = vec![];
+
+                for _ in 0..field_count {
+                    let field = Self::from_bytes(bytes, instructive);
+
+                    fields.push(field);
+                }
+
+                instructive.values_mut().push(Value::MakeCompound(fields));
+
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
+            }
+            Ok(TypeId::TaggedCompound) => {
+                let tag = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<2>()
+                    .map(|array| u16::from_le_bytes(*array))
+                    .expect("a tagged compound's tag was not a valid u16");
+
+                let field_count = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|field_count| usize::try_from(field_count).ok())
+                    .expect("a tagged compound's field count was not a valid usize");
+
+                let mut fields = vec![];
+
+                for _ in 0..field_count {
+                    let field = Self::from_bytes(bytes, instructive);
+
+                    fields.push(field);
+                }
+
+                instructive
+                    .values_mut()
+                    .push(Value::MakeTaggedCompound { tag, fields });
+
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
+            }
+            Err(error) => panic!("unknown type id {error}"),
         }
     }
 }
