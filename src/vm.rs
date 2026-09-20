@@ -1,5 +1,6 @@
 use crate::targets::vm::{
-    CopyableValue, Instruction, Instructive, NativeFn, OpCode, Value, ValueIndex,
+    BinaryOp, CopyableValue, Instruction, Instructive, Location, NativeFn, UnaryOp, Value,
+    ValueIndex, ValueOrLocation,
 };
 
 use std::{io::Write, mem};
@@ -74,54 +75,67 @@ macro_rules! dereference_value {
         $self:ident, $value:expr $(,)?
     ) => {
         match $value {
-            $crate::targets::vm::CopyableValue::Register(index) => $self.registers[index],
-            $crate::targets::vm::CopyableValue::StackOffset(offset) => $self
+            $crate::targets::vm::ValueOrLocation::At($crate::targets::vm::Location::Register(
+                index,
+            )) => $self.registers[usize::from(index)],
+            $crate::targets::vm::ValueOrLocation::At(
+                $crate::targets::vm::Location::StackOffset(offset),
+            ) => $self
                 .call_frames
                 .last()
-                .map_or($self.stack[offset], |frame| $self.stack[frame.fp + offset]),
-            $crate::targets::vm::CopyableValue::ValueIndex(value_index) => {
-                match $self.values.get(usize::from(value_index)) {
-                    None => panic!("tried to find a value that doesn't exist"),
-                    Some($crate::targets::vm::Value::MakeCompound(fields)) => {
-                        let fields = fields
-                            .clone()
-                            .into_iter()
-                            .map(|value| $self.dereference_value(value))
-                            .collect::<Vec<_>>();
+                .map_or($self.stack[usize::from(offset)], |frame| {
+                    $self.stack[frame.fp + usize::from(offset)]
+                }),
+            $crate::targets::vm::ValueOrLocation::Value(
+                $crate::targets::vm::CopyableValue::ValueIndex(value_index),
+            ) => match $self.values.get(usize::from(value_index)) {
+                None => panic!("tried to find a value that doesn't exist"),
+                Some($crate::targets::vm::Value::MakeCompound(fields)) => {
+                    let fields = fields
+                        .clone()
+                        .into_iter()
+                        .map(|value| $self.dereference_value(value))
+                        .collect::<Vec<_>>();
 
-                        $self.values.push(Value::Compound(fields));
+                    $self
+                        .values
+                        .push($crate::targets::vm::Value::Compound(fields));
 
-                        let value_index = $crate::targets::vm::CopyableValue::ValueIndex(
-                            ValueIndex($self.values.len() - 1),
-                        );
+                    let value_index = $crate::targets::vm::CopyableValue::ValueIndex(
+                        $crate::targets::vm::ValueIndex($self.values.len() - 1),
+                    );
 
-                        $self.allocated += $self.size_of_value(value_index);
+                    $self.allocated += $self.size_of_value(value_index);
 
-                        value_index
-                    }
-                    Some($crate::targets::vm::Value::MakeTaggedCompound { fields, tag }) => {
-                        let tag = *tag;
-
-                        let fields = fields
-                            .clone()
-                            .into_iter()
-                            .map(|value| $self.dereference_value(value))
-                            .collect::<Vec<_>>();
-
-                        $self.values.push(Value::TaggedCompound { fields, tag });
-
-                        let value_index = $crate::targets::vm::CopyableValue::ValueIndex(
-                            ValueIndex($self.values.len() - 1),
-                        );
-
-                        $self.allocated += $self.size_of_value(value_index);
-
-                        value_index
-                    }
-                    Some(Value::Compound(_) | Value::TaggedCompound { .. }) => $value,
+                    value_index
                 }
-            }
-            _ => $value,
+                Some($crate::targets::vm::Value::MakeTaggedCompound { fields, tag }) => {
+                    let tag = *tag;
+
+                    let fields = fields
+                        .clone()
+                        .into_iter()
+                        .map(|value| $self.dereference_value(value))
+                        .collect::<Vec<_>>();
+
+                    $self
+                        .values
+                        .push($crate::targets::vm::Value::TaggedCompound { fields, tag });
+
+                    let value_index = $crate::targets::vm::CopyableValue::ValueIndex(ValueIndex(
+                        $self.values.len() - 1,
+                    ));
+
+                    $self.allocated += $self.size_of_value(value_index);
+
+                    value_index
+                }
+                Some(
+                    $crate::targets::vm::Value::Compound(_)
+                    | $crate::targets::vm::Value::TaggedCompound { .. },
+                ) => $crate::targets::vm::CopyableValue::ValueIndex(value_index),
+            },
+            $crate::targets::vm::ValueOrLocation::Value(value) => value,
         }
     };
 }
@@ -137,22 +151,18 @@ impl Vm {
         while self.ip < instructions.len() {
             match instructions.get(self.ip) {
                 None => break,
-                Some(Instruction::Unary {
-                    op_code,
-                    operand,
-                    to,
-                }) => {
+                Some(Instruction::Unary { op, operand, to }) => {
                     let operand = *operand;
                     let to = *to;
 
-                    match op_code {
-                        OpCode::Not => match dereference_value!(self, operand) {
+                    match op {
+                        UnaryOp::Not => match dereference_value!(self, operand) {
                             CopyableValue::Boolean(value) => {
                                 self.assign(to, CopyableValue::Boolean(!value));
                             }
                             _ => panic!("incorrect argument for logical not"),
                         },
-                        OpCode::Negate => match dereference_value!(self, operand) {
+                        UnaryOp::Negate => match dereference_value!(self, operand) {
                             CopyableValue::I64(value) => {
                                 self.assign(to, CopyableValue::I64(-value));
                             }
@@ -161,45 +171,39 @@ impl Vm {
                             }
                             _ => panic!("incorrect argument for negate"),
                         },
-                        _ => unreachable!("there are no other unary operators"),
                     }
                 }
-                Some(Instruction::Binary {
-                    op_code,
-                    lhs,
-                    rhs,
-                    to,
-                }) => {
+                Some(Instruction::Binary { op, lhs, rhs, to }) => {
                     let lhs = *lhs;
                     let rhs = *rhs;
                     let to = *to;
 
-                    match op_code {
-                        OpCode::Multiply
-                        | OpCode::Divide
-                        | OpCode::Remainder
-                        | OpCode::Add
-                        | OpCode::Subtract
-                        | OpCode::Less
-                        | OpCode::Greater
-                        | OpCode::LessOrEqual
-                        | OpCode::GreaterOrEqual => {
+                    match op {
+                        BinaryOp::Multiply
+                        | BinaryOp::Divide
+                        | BinaryOp::Remainder
+                        | BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::Less
+                        | BinaryOp::Greater
+                        | BinaryOp::LessOrEqual
+                        | BinaryOp::GreaterOrEqual => {
                             let lhs = dereference_value!(self, lhs);
                             let rhs = dereference_value!(self, rhs);
 
                             match (lhs, rhs) {
                                 (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => self.assign(
                                     to,
-                                    match op_code {
-                                        OpCode::Multiply => CopyableValue::I64(lhs * rhs),
-                                        OpCode::Divide => CopyableValue::I64(lhs / rhs),
-                                        OpCode::Remainder => CopyableValue::I64(lhs % rhs),
-                                        OpCode::Add => CopyableValue::I64(lhs + rhs),
-                                        OpCode::Subtract => CopyableValue::I64(lhs - rhs),
-                                        OpCode::Less => CopyableValue::Boolean(lhs < rhs),
-                                        OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
-                                        OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
-                                        OpCode::GreaterOrEqual => {
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::I64(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::I64(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::I64(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::I64(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::I64(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
                                             CopyableValue::Boolean(lhs >= rhs)
                                         }
                                         _ => unreachable!(
@@ -209,16 +213,16 @@ impl Vm {
                                 ),
                                 (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => self.assign(
                                     to,
-                                    match op_code {
-                                        OpCode::Multiply => CopyableValue::F64(lhs * rhs),
-                                        OpCode::Divide => CopyableValue::F64(lhs / rhs),
-                                        OpCode::Remainder => CopyableValue::F64(lhs % rhs),
-                                        OpCode::Add => CopyableValue::F64(lhs + rhs),
-                                        OpCode::Subtract => CopyableValue::F64(lhs - rhs),
-                                        OpCode::Less => CopyableValue::Boolean(lhs < rhs),
-                                        OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
-                                        OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
-                                        OpCode::GreaterOrEqual => {
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::F64(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::F64(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::F64(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::F64(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::F64(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
                                             CopyableValue::Boolean(lhs >= rhs)
                                         }
                                         _ => unreachable!(
@@ -229,7 +233,7 @@ impl Vm {
                                 _ => panic!("incorrect argument for arithmetic"),
                             }
                         }
-                        OpCode::And | OpCode::Or => {
+                        BinaryOp::And | BinaryOp::Or => {
                             let lhs = dereference_value!(self, lhs);
                             let rhs = dereference_value!(self, rhs);
 
@@ -237,9 +241,9 @@ impl Vm {
                                 (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => self
                                     .assign(
                                         to,
-                                        CopyableValue::Boolean(match op_code {
-                                            OpCode::And => lhs && rhs,
-                                            OpCode::Or => lhs || rhs,
+                                        CopyableValue::Boolean(match op {
+                                            BinaryOp::And => lhs && rhs,
+                                            BinaryOp::Or => lhs || rhs,
                                             _ => unreachable!(
                                                 "only these opcodes get past the initial match arm"
                                             ),
@@ -248,17 +252,17 @@ impl Vm {
                                 _ => panic!("incorrect argument for logic"),
                             }
                         }
-                        OpCode::Equal | OpCode::NotEqual => {
+                        BinaryOp::Equal | BinaryOp::NotEqual => {
                             let lhs = dereference_value!(self, lhs);
                             let rhs = dereference_value!(self, rhs);
 
                             self.assign(
                                 to,
-                                match op_code {
-                                    OpCode::Equal => {
+                                match op {
+                                    BinaryOp::Equal => {
                                         CopyableValue::Boolean(self.values_eq(lhs, rhs))
                                     }
-                                    OpCode::NotEqual => {
+                                    BinaryOp::NotEqual => {
                                         CopyableValue::Boolean(!self.values_eq(lhs, rhs))
                                     }
                                     _ => unreachable!(
@@ -267,7 +271,6 @@ impl Vm {
                                 },
                             );
                         }
-                        _ => unreachable!("there are no other binary operators"),
                     }
                 }
                 Some(Instruction::Assign { to, value }) => {
@@ -299,8 +302,6 @@ impl Vm {
                     } else {
                         panic!("tried to access something other than a compound");
                     };
-
-                    let value = dereference_value!(self, value);
 
                     self.assign(to, value);
                 }
@@ -348,8 +349,6 @@ impl Vm {
                             let call_arguments = self.stack.split_off(self.stack.len() - arity);
 
                             let value = Self::native_fn_call(call_arguments.as_slice(), index, out);
-
-                            let value = dereference_value!(self, value);
 
                             self.assign(to, value);
                         }
@@ -449,45 +448,43 @@ impl Vm {
         assert_eq!(self.allocated, 0, "{} BYTES LEAKED", self.allocated);
     }
 
-    fn assign(&mut self, to: CopyableValue, value: CopyableValue) {
-        let value = dereference_value!(self, value);
-
+    fn assign(&mut self, to: Location, value: CopyableValue) {
         match to {
-            CopyableValue::Register(index) => {
+            Location::Register(index) => {
                 if let Some(call_frame) = self.call_frames.last_mut()
-                    && index >= call_frame.previous_registers.len()
+                    && usize::from(index) >= call_frame.previous_registers.len()
                 {
-                    let old_value = self.registers[index];
+                    let old_value = self.registers[usize::from(index)];
 
                     call_frame.previous_registers.push(old_value);
                 }
 
-                self.registers[index] = value;
+                self.registers[usize::from(index)] = value;
             }
-            CopyableValue::StackOffset(offset) => {
+            Location::StackOffset(offset) => {
                 if let Some(stack_value) = self
                     .call_frames
                     .last()
-                    .map(|frame| frame.fp + offset)
-                    .and_then(|offset| self.stack.get_mut(offset))
+                    .and_then(|frame| self.stack.get_mut(frame.fp + usize::from(offset)))
                 {
                     *stack_value = value;
                 } else {
                     self.stack.push(value);
                 }
             }
-            _ => panic!("only registers and stack slots can be assigned to"),
         }
     }
 
-    fn dereference_value(&mut self, value: CopyableValue) -> CopyableValue {
+    fn dereference_value(&mut self, value: ValueOrLocation) -> CopyableValue {
         match value {
-            CopyableValue::Register(index) => self.registers[index],
-            CopyableValue::StackOffset(offset) => self
-                .call_frames
-                .last()
-                .map_or(self.stack[offset], |frame| self.stack[frame.fp + offset]),
-            CopyableValue::ValueIndex(value_index) => {
+            ValueOrLocation::At(Location::Register(index)) => self.registers[usize::from(index)],
+            ValueOrLocation::At(Location::StackOffset(offset)) => {
+                self.call_frames.last().map_or_else(
+                    || self.stack[usize::from(offset)],
+                    |frame| self.stack[frame.fp + usize::from(offset)],
+                )
+            }
+            ValueOrLocation::Value(CopyableValue::ValueIndex(value_index)) => {
                 match self.values.get(usize::from(value_index)) {
                     None => panic!("tried to find a value that doesn't exist"),
                     Some(Value::MakeCompound(fields)) => {
@@ -524,10 +521,12 @@ impl Vm {
 
                         value_index
                     }
-                    Some(Value::Compound(_) | Value::TaggedCompound { .. }) => value,
+                    Some(Value::Compound(_) | Value::TaggedCompound { .. }) => {
+                        CopyableValue::ValueIndex(value_index)
+                    }
                 }
             }
-            _ => value,
+            ValueOrLocation::Value(value) => value,
         }
     }
 
@@ -676,10 +675,8 @@ impl Vm {
     ) {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
-                Value::MakeCompound(values)
-                | Value::MakeTaggedCompound { fields: values, .. }
-                | Value::Compound(values)
-                | Value::TaggedCompound { fields: values, .. } => {
+                Value::MakeCompound(_) | Value::MakeTaggedCompound { .. } => {}
+                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                     for value in values {
                         self.mark_value(marked, *value, marked_count);
                     }
@@ -759,31 +756,7 @@ impl Vm {
                 .and_then(|marked| *marked)
                 .map_or(CopyableValue::Unit, |replacement_index| {
                     match &self.values[usize::from(index)] {
-                        Value::MakeCompound(values) => {
-                            let values = values
-                                .iter()
-                                .map(|value| self.retain_value(replacement_values, *value, marked))
-                                .collect::<Vec<_>>();
-
-                            replacement_values.push((replacement_index, Value::Compound(values)));
-                        }
-                        Value::MakeTaggedCompound {
-                            fields: values,
-                            tag,
-                        } => {
-                            let values = values
-                                .iter()
-                                .map(|value| self.retain_value(replacement_values, *value, marked))
-                                .collect::<Vec<_>>();
-
-                            replacement_values.push((
-                                replacement_index,
-                                Value::TaggedCompound {
-                                    fields: values,
-                                    tag: *tag,
-                                },
-                            ));
-                        }
+                        Value::MakeCompound(_) | Value::MakeTaggedCompound { .. } => {}
                         Value::Compound(values) => {
                             let values = values
                                 .iter()
@@ -821,19 +794,19 @@ impl Vm {
     fn size_of_value(&self, value: CopyableValue) -> usize {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
-                Value::Compound(values) | Value::MakeCompound(values) => {
+                Value::Compound(values) => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
                         + mem::size_of_val(&self.values[usize::from(index)])
                 }
-                Value::TaggedCompound { fields: values, .. }
-                | Value::MakeTaggedCompound { fields: values, .. } => {
+                Value::TaggedCompound { fields: values, .. } => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
                         + mem::size_of_val(&self.values[usize::from(index)])
                 }
+                Value::MakeCompound(_) | Value::MakeTaggedCompound { .. } => 0,
             }
         } else {
             mem::size_of_val(&value)
