@@ -1,0 +1,10 @@
+funky main() {
+	let
+		x <- i32 = -19,
+		y <- i32 = 40,
+	in {
+		if y + x == 21 {
+			print_i32(y + x);
+		}
+	};
+}

@@ -38,6 +38,13 @@ pub struct TypeChecker {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Primitive {
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
     I64,
     F64,
     Boolean,
@@ -47,6 +54,8 @@ pub enum Primitive {
 #[derive(Debug, Clone)]
 pub enum Type {
     Primitive(Spanned<Primitive>),
+    Integer(u64),
+    NegativeInteger(i64),
     Unknown,
     Fn {
         parameters: Vec<TypeIndex>,
@@ -219,12 +228,20 @@ impl Type {
     fn to_string(&self, types: &[Self]) -> String {
         match self {
             Self::Primitive(p) => match p.kind() {
+                Primitive::U8 => "u8",
+                Primitive::I8 => "i8",
+                Primitive::U16 => "u16",
+                Primitive::I16 => "i16",
+                Primitive::U32 => "u32",
+                Primitive::I32 => "i32",
+                Primitive::U64 => "u64",
                 Primitive::I64 => "i64",
                 Primitive::F64 => "f64",
                 Primitive::Boolean => "bool",
                 Primitive::Unit => "unit",
             }
             .to_string(),
+            Self::Integer(_) | Self::NegativeInteger(_) => "i64".to_string(),
             Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
             Self::Generic(name) | Self::Existential(name) => name.kind().clone(),
             Self::AnyOf(alternatives) => {
@@ -352,6 +369,7 @@ pub enum Error {
     ModuleAsExpr,
     TypeAsExpr,
     AmbiguousFunction,
+    TypeMustBeKnown,
 }
 
 impl fmt::Display for Error {
@@ -427,6 +445,7 @@ impl fmt::Display for Error {
                 f,
                 "there are multiple functions with this name and matching parameters"
             ),
+            Self::TypeMustBeKnown => write!(f, "the type must be known by this point"),
         }
     }
 }
@@ -500,6 +519,7 @@ impl TypeChecker {
         };
 
         me.push_type(Type::Unknown);
+        me.push_type(Type::Integer(0));
 
         me
     }
@@ -548,12 +568,84 @@ impl TypeChecker {
             .expect("expressions always receive a fallback type if they don't have a type when `get_type_index_or_error` is called")
     }
 
-    fn type_integer(&self) -> TypeIndex {
+    fn type_u8(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U8)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_i8(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::I8)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_u16(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U16)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_i16(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::I16)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_u32(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U32)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_i32(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::I32)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_u64(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U64)))
+                .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_i64(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
                 .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::I64)))
                 .expect("the i64 type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_integer(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Integer(_)))
+                .expect("the integer type should be initialized before all type checking"),
         )
     }
 
@@ -600,6 +692,20 @@ impl TypeChecker {
             if let Item::Primitive(name) = ast[*root].kind() {
                 let type_index =
                     match name.kind().as_str() {
+                        "u8" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::U8, name.span()))),
+                        "i8" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::I8, name.span()))),
+                        "u16" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::U16, name.span()))),
+                        "i16" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::I16, name.span()))),
+                        "u32" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::U32, name.span()))),
+                        "i32" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::I32, name.span()))),
+                        "u64" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::U64, name.span()))),
                         "i64" => self
                             .push_type(Type::Primitive(Spanned::new(Primitive::I64, name.span()))),
                         "f64" => self
@@ -857,7 +963,7 @@ impl TypeChecker {
         type_index: TypeIndex,
     ) -> TypeIndex {
         match &self[type_index] {
-            Type::Primitive(_) | Type::Unknown | Type::Generic(_) => type_index,
+            Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Unknown | Type::Generic(_) => type_index,
             Type::Existential(name) => {
                 originals.iter().position(|type_index| {
                     matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
@@ -973,6 +1079,9 @@ impl TypeChecker {
                 let type_index = self[names[name.span()]];
 
                 match &self[type_index] {
+                    Type::Integer(_) | Type::NegativeInteger(_) => {
+                        unreachable!("normal type signatures are never integer literals")
+                    }
                     Type::Primitive(_) if !checked_generics.is_empty() => {
                         self.errors
                             .push(Spanned::new(Error::GenericsOnPrimitive, name.span()));
@@ -1241,10 +1350,28 @@ impl TypeChecker {
 
                     self.fn_return_type = Some(expected_return_type);
 
+                    let type_count = self.types.len();
+
                     if let Err(error) =
                         self.check(ast, names, *body, expected_return_type, &mut generics)
                     {
                         self.errors.push(Spanned::new(error, ast[*body].span()));
+                    }
+
+                    let type_i64 = self[self.type_i64()].clone();
+                    let default_integer = self[self.type_u64()].clone();
+
+                    for ty in &mut self.types[type_count..] {
+                        match ty {
+                            Type::Integer(value) => match i64::try_from(*value) {
+                                Ok(_) => *ty = type_i64.clone(),
+                                Err(_) => *ty = default_integer.clone(),
+                            },
+                            Type::NegativeInteger(_) => {
+                                *ty = type_i64.clone();
+                            }
+                            _ => {}
+                        }
                     }
 
                     self.fn_return_type = fn_return_type;
@@ -1280,7 +1407,8 @@ impl TypeChecker {
 
                 self.type_unknown()
             }
-            Expr::Integer(_) => self.type_integer(),
+            Expr::Integer(value) => self.push_type(Type::Integer(*value)),
+            Expr::NegativeInteger(value) => self.push_type(Type::NegativeInteger(*value)),
             Expr::Float(_) => self.type_float(),
             Expr::Boolean(_) => self.type_boolean(),
             Expr::Unit => self.type_unit(),
@@ -1378,6 +1506,8 @@ impl TypeChecker {
 
                         self.type_unknown()
                     } else {
+                        self.type_map.insert(ast[*value].span(), annotation_ty);
+
                         annotation_ty
                     }
                 } else {
@@ -1415,6 +1545,12 @@ impl TypeChecker {
                 let target_type_index = self.infer(ast, names, *target, context);
 
                 let type_span = match self[target_type_index].clone() {
+                    Type::Integer(_) | Type::NegativeInteger(_) => {
+                        self.errors
+                            .push(Spanned::new(Error::TypeMustBeKnown, ast[*target].span()));
+
+                        return self.type_unknown();
+                    }
                     Type::Unknown => return self.type_unknown(),
                     Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } | Type::AnyOf(_) => {
                         None
@@ -1744,8 +1880,14 @@ impl TypeChecker {
             UnaryOp::Negate => {
                 self.infer(ast, names, operand, context);
 
-                if let Err(_) = self.check(ast, names, operand, self.type_integer(), context)
-                    && let Err(_) = self.check(ast, names, operand, self.type_float(), context)
+                if self
+                    .check(ast, names, operand, self.type_integer(), context)
+                    .or_else(|_| self.check(ast, names, operand, self.type_u8(), context))
+                    .or_else(|_| self.check(ast, names, operand, self.type_i16(), context))
+                    .or_else(|_| self.check(ast, names, operand, self.type_i32(), context))
+                    .or_else(|_| self.check(ast, names, operand, self.type_i64(), context))
+                    .or_else(|_| self.check(ast, names, operand, self.type_float(), context))
+                    .is_err()
                 {
                     let span = ast[operand].span();
 
@@ -1929,6 +2071,14 @@ impl TypeChecker {
             | BinaryOp::Subtract => {
                 match self
                     .check(ast, names, lhs, self.type_integer(), context)
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u8(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i8(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u16(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i16(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u32(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i32(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u64(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i64(), context))
                     .or_else(|_| self.check(ast, names, lhs, self.type_float(), context))
                 {
                     Err(_) => {
@@ -1957,6 +2107,14 @@ impl TypeChecker {
             | BinaryOp::GreaterOrEqual => {
                 match self
                     .check(ast, names, lhs, self.type_integer(), context)
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u8(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i8(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u16(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i16(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u32(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i32(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_u64(), context))
+                    .or_else(|_| self.check(ast, names, lhs, self.type_i64(), context))
                     .or_else(|_| self.check(ast, names, lhs, self.type_float(), context))
                 {
                     Err(_) => {
@@ -1996,7 +2154,7 @@ impl TypeChecker {
 
                             self.type_unknown()
                         }
-                        Ok(rhs_type) => rhs_type,
+                        Ok(_) => self.type_boolean(),
                     },
                 }
             }
@@ -2011,21 +2169,7 @@ impl TypeChecker {
 
                         self.type_unknown()
                     }
-                    Ok(rhs_type) => {
-                        if let Some(lhs_span) = names.get(ast[lhs].span()) {
-                            let applied_lhs = self.apply(lhs_type, context);
-
-                            self.type_map.insert(lhs_span, applied_lhs);
-                        }
-
-                        if let Some(rhs_span) = names.get(ast[rhs].span()) {
-                            let applied_rhs = self.apply(rhs_type, context);
-
-                            self.type_map.insert(rhs_span, applied_rhs);
-                        }
-
-                        self.type_boolean()
-                    }
+                    Ok(_) => self.type_boolean(),
                 }
             }
             BinaryOp::Assign => {
@@ -2040,22 +2184,6 @@ impl TypeChecker {
                         self.type_unknown()
                     }
                     Ok(rhs_type) => {
-                        if let Some(lhs_span) = names.get(ast[lhs].span()) {
-                            let applied_lhs = self.apply(lhs_type, context);
-
-                            self.type_map.insert(lhs_span, applied_lhs);
-                        }
-
-                        let rhs_type = if let Some(rhs_span) = names.get(ast[rhs].span()) {
-                            let applied_rhs = self.apply(rhs_type, context);
-
-                            self.type_map.insert(rhs_span, applied_rhs);
-
-                            applied_rhs
-                        } else {
-                            rhs_type
-                        };
-
                         let rhs_span = ast[rhs].span();
 
                         match ast[lhs].kind() {
@@ -2105,13 +2233,7 @@ impl TypeChecker {
                                 ) {
                                     Err(type_index) => {
                                         let error = Spanned::new(
-                                            Error::TypeMismatch {
-                                                expected: self[type_index]
-                                                    .to_string(self.types.as_slice()),
-
-                                                got: self[rhs_type]
-                                                    .to_string(self.types.as_slice()),
-                                            },
+                                            self.type_mismatch_error(type_index, rhs_type),
                                             rhs_span,
                                         );
 
@@ -2149,6 +2271,32 @@ impl TypeChecker {
         }
     }
 
+    fn overwrite_with(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        expr: ExprIndex,
+        should_be: TypeIndex,
+    ) -> TypeIndex {
+        self.type_map.insert(
+            names
+                .get(ast[expr].span())
+                .unwrap_or_else(|| ast[expr].span()),
+            should_be,
+        );
+
+        self[names
+            .get(ast[expr].span())
+            .unwrap_or_else(|| ast[expr].span())]
+    }
+
+    fn type_mismatch_error(&self, type_index: TypeIndex, should_be: TypeIndex) -> Error {
+        Error::TypeMismatch {
+            expected: self[should_be].to_string(self.types.as_slice()),
+            got: self[type_index].to_string(self.types.as_slice()),
+        }
+    }
+
     fn check(
         &mut self,
         ast: &Ast,
@@ -2160,13 +2308,13 @@ impl TypeChecker {
         let expr_type_index = self.infer(ast, names, expr, context);
 
         self.check_inferred(expr_type_index, should_be, context)
+            .inspect(|type_index| {
+                self.overwrite_with(ast, names, expr, *type_index);
+            })
             .map_err(|type_index| {
                 let should_be = self.apply(should_be, context);
 
-                Error::TypeMismatch {
-                    expected: self[should_be].to_string(self.types.as_slice()),
-                    got: self[type_index].to_string(self.types.as_slice()),
-                }
+                self.type_mismatch_error(type_index, should_be)
             })
     }
 
@@ -2179,6 +2327,46 @@ impl TypeChecker {
     ) -> Result<TypeIndex, TypeIndex> {
         match (&self[inferred], &self[should_be]) {
             (Type::Unknown, _) | (_, Type::Unknown) => Ok(self.type_unknown()),
+            (
+                Type::Integer(_) | Type::NegativeInteger(_),
+                Type::Integer(_) | Type::NegativeInteger(_),
+            ) => Ok(inferred),
+            (Type::Integer(value), Type::Primitive(b)) => match b.kind() {
+                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U64 => Ok(should_be),
+                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(should_be),
+                _ => Err(inferred),
+            },
+            (Type::Primitive(a), Type::Integer(value)) => match a.kind() {
+                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::U64 => Ok(inferred),
+                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(inferred),
+                _ => Err(should_be),
+            },
+            (Type::NegativeInteger(value), Type::Primitive(b)) => match b.kind() {
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I64 => Ok(should_be),
+                _ => Err(inferred),
+            },
+            (Type::Primitive(a), Type::NegativeInteger(value)) => match a.kind() {
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
+                Primitive::I64 => Ok(inferred),
+                _ => Err(should_be),
+            },
             (Type::Primitive(a), Type::Primitive(b)) => {
                 if a.kind() == b.kind() {
                     Ok(should_be)
@@ -2398,7 +2586,11 @@ impl TypeChecker {
         context: &mut Vec<(String, TypeIndex)>,
     ) -> TypeIndex {
         match &self[type_index] {
-            Type::Primitive(_) | Type::Generic(_) | Type::Unknown => type_index,
+            Type::Integer(_)
+            | Type::NegativeInteger(_)
+            | Type::Primitive(_)
+            | Type::Generic(_)
+            | Type::Unknown => type_index,
             Type::Existential(name) => context
                 .iter()
                 .rfind(|(context_name, _)| context_name == name.kind())

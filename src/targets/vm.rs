@@ -90,10 +90,24 @@ crate::int_enum! {
     NativeFn => 0x05,
     Compound => 0x08,
     TaggedCompound => 0x09,
+    U8 => 0x0A,
+    I8 => 0x0B,
+    U16 => 0x0C,
+    I16 => 0x0D,
+    U32 => 0x0E,
+    I32 => 0x0F,
+    U64 => 0x10,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CopyableValue {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
     I64(i64),
     F64(f64),
     Boolean(bool),
@@ -357,6 +371,55 @@ impl Assemble for IrValue {
     #[allow(clippy::too_many_lines)]
     fn to_bytes(&self, compiled: &Compiled<'_, Ir<Self>>) -> Vec<u8> {
         match self {
+            Self::U8(value) => {
+                let mut bytes = vec![u8::from(TypeId::U8)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::I8(value) => {
+                let mut bytes = vec![u8::from(TypeId::I8)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::U16(value) => {
+                let mut bytes = vec![u8::from(TypeId::U16)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::I16(value) => {
+                let mut bytes = vec![u8::from(TypeId::I16)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::U32(value) => {
+                let mut bytes = vec![u8::from(TypeId::U32)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::I32(value) => {
+                let mut bytes = vec![u8::from(TypeId::I32)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::U64(value) => {
+                let mut bytes = vec![u8::from(TypeId::U64)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
             Self::I64(value) => {
                 let mut bytes = vec![u8::from(TypeId::I64)];
 
@@ -901,6 +964,62 @@ where
                 ip
             }],
         ) {
+            Ok(TypeId::U8) => Self::U8(u8::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 1;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<1>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::I8) => Self::I8(i8::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 1;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<1>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::U16) => Self::U16(u16::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<2>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::I16) => Self::I16(i16::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<2>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::U32) => Self::U32(u32::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 4;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<4>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::I32) => Self::I32(i32::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 4;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<4>()
+                    .expect("the range is the same length as the expected array"),
+            )),
+            Ok(TypeId::U64) => Self::U64(u64::from_le_bytes(
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .expect("the range is the same length as the expected array"),
+            )),
             Ok(TypeId::I64) => Self::I64(i64::from_le_bytes(
                 *bytes[(*instructive.ip_mut())..{
                     *instructive.ip_mut() += 8;

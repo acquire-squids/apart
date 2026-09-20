@@ -1,0 +1,8 @@
+funky main() {
+	let
+		a <- i32 = 65,
+		b <- u32 = 65,
+	in {
+		print_bool(a == b);
+	};
+}

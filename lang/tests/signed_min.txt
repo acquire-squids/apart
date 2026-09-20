@@ -1,0 +1,3 @@
+funky main() {
+	print_i8(-128);
+}

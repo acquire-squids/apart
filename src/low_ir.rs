@@ -125,6 +125,13 @@ crate::int_enum! {
     PrintF64 => 0x00_01,
     PrintBool => 0x00_02,
     PrintUnit => 0x00_03,
+    PrintU8 => 0x00_04,
+    PrintI8 => 0x00_05,
+    PrintU16 => 0x00_06,
+    PrintI16 => 0x00_07,
+    PrintU32 => 0x00_08,
+    PrintI32 => 0x00_09,
+    PrintU64 => 0x00_0A,
 }
 
 crate::int_enum! {
@@ -152,6 +159,13 @@ crate::int_enum! {
 
 #[derive(Debug)]
 pub enum Value {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
     I64(i64),
     F64(f64),
     Boolean(bool),
@@ -372,6 +386,13 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::BlockArgument(_) | IrValue::CallArgument(_) | IrValue::Address(_) => {
             unreachable!("these are eliminated by register allocation")
         }
+        IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
+        IrValue::I8(value) => ValueOrLocation::Value(Value::I8(*value)),
+        IrValue::U16(value) => ValueOrLocation::Value(Value::U16(*value)),
+        IrValue::I16(value) => ValueOrLocation::Value(Value::I16(*value)),
+        IrValue::U32(value) => ValueOrLocation::Value(Value::U32(*value)),
+        IrValue::I32(value) => ValueOrLocation::Value(Value::I32(*value)),
+        IrValue::U64(value) => ValueOrLocation::Value(Value::U64(*value)),
         IrValue::I64(value) => ValueOrLocation::Value(Value::I64(*value)),
         IrValue::F64(value) => ValueOrLocation::Value(Value::F64(*value)),
         IrValue::Boolean(value) => ValueOrLocation::Value(Value::Boolean(*value)),
@@ -390,6 +411,13 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     .get(source_index)
                     .and_then(|(_, source)| span.lexeme(source))
                 {
+                    Some("print_u8") => NativeFn::PrintU8,
+                    Some("print_i8") => NativeFn::PrintI8,
+                    Some("print_u16") => NativeFn::PrintU16,
+                    Some("print_i16") => NativeFn::PrintI16,
+                    Some("print_u32") => NativeFn::PrintU32,
+                    Some("print_i32") => NativeFn::PrintI32,
+                    Some("print_u64") => NativeFn::PrintU64,
                     Some("print_i64") => NativeFn::PrintI64,
                     Some("print_f64") => NativeFn::PrintF64,
                     Some("print_bool") => NativeFn::PrintBool,

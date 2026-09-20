@@ -120,6 +120,10 @@ macro_rules! output_tests {
                 "method_specialization.txt",
                 "1\n0\n2\n3\n4\n",
             );
+
+            apart::$test_macro!(type_annotation, "type_annotation.txt", "21\n",);
+
+            apart::$test_macro!(signed_min, "signed_min.txt", "-128\n",);
         }
     };
 }
@@ -239,5 +243,13 @@ mod compilation_error {
         [apart::Error::TypeCheck(
             apart::TypeCheckError::FnFieldAsMethod
         )]
+    );
+
+    apart::test_compilation_errors!(
+        signed_equals_unsigned,
+        "signed_equals_unsigned.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "i32" && got == "u32"
     );
 }

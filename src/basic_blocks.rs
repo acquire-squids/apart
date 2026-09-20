@@ -2,7 +2,7 @@ use crate::{
     Span, Spanned,
     name_resolve::Names,
     parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, UnaryOp},
-    type_check::{Type, TypeChecker},
+    type_check::{Primitive, Type, TypeChecker},
 };
 
 use std::{collections::HashMap, fmt, iter};
@@ -214,6 +214,13 @@ enum Addresslike {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
     I64(i64),
     F64(f64),
     Boolean(bool),
@@ -473,7 +480,72 @@ impl Translator {
                 unreachable!("type checking guarantees a \"Self\" isn't used as an expression");
             }
             Expr::Integer(value) => {
-                self.values.push(Value::I64(*value));
+                self.values.push(
+                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                        match primitive.kind() {
+                            Primitive::U8 => Value::U8(
+                                u8::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I8 => Value::I8(
+                                i8::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U16 => Value::U16(
+                                u16::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I16 => Value::I16(
+                                i16::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U32 => Value::U32(
+                                u32::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I32 => Value::I32(
+                                i32::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U64 => Value::U64(*value),
+                            Primitive::I64 => Value::I64(
+                                i64::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            _ => unreachable!("type checking guarantees integers are integers"),
+                        }
+                    } else {
+                        unreachable!("type checking guarantees integers are primitives")
+                    },
+                );
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
+            Expr::NegativeInteger(value) => {
+                self.values.push(
+                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                        match primitive.kind() {
+                            Primitive::I8 => Value::I8(
+                                i8::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I16 => Value::I16(
+                                i16::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I32 => Value::I32(
+                                i32::try_from(*value)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I64 => Value::I64(*value),
+                            _ => unreachable!("type checking guarantees integers are integers"),
+                        }
+                    } else {
+                        unreachable!("type checking guarantees integers are primitives")
+                    },
+                );
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -1493,6 +1565,8 @@ impl Translator {
         {
             Some(
                 Type::Unknown
+                | Type::Integer(_)
+                | Type::NegativeInteger(_)
                 | Type::Existential(_)
                 | Type::Generic(_)
                 | Type::Fn { .. }
@@ -1593,6 +1667,8 @@ impl Translator {
 
         let type_span = match &types[types[ast[target].span()]] {
             Type::Unknown
+            | Type::Integer(_)
+            | Type::NegativeInteger(_)
             | Type::Existential(_)
             | Type::Generic(_)
             | Type::Fn { .. }

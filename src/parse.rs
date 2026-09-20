@@ -428,7 +428,8 @@ impl IndexMut<ItemIndex> for &mut Ast {
 
 #[derive(Debug)]
 pub enum Expr {
-    Integer(i64),
+    Integer(u64),
+    NegativeInteger(i64),
     Float(f64),
     Boolean(bool),
     Unit,
@@ -662,6 +663,7 @@ impl Ast {
     {
         match self[expr].kind() {
             Expr::Integer(_)
+            | Expr::NegativeInteger(_)
             | Expr::Float(_)
             | Expr::Boolean(_)
             | Expr::Unit
@@ -2056,8 +2058,16 @@ impl Parser {
         let token = self.peek(lexer)?;
 
         match token.kind() {
-            Token::Minus => Some((precedence::NEGATE, (Self::negate, token.span()))),
-            Token::Bang => Some((precedence::NOT, (Self::not, token.span()))),
+            Token::Minus => {
+                let token = self.advance(lexer)?;
+
+                Some((precedence::NEGATE, (Self::negate, token.span())))
+            }
+            Token::Bang => {
+                let token = self.advance(lexer)?;
+
+                Some((precedence::NOT, (Self::not, token.span())))
+            }
             Token::Integer(_) => Some((precedence::PRIMARY, (Self::integer, token.span()))),
             Token::Float(_) => Some((precedence::PRIMARY, (Self::float, token.span()))),
             Token::OpenParenthesis => {
@@ -2286,7 +2296,7 @@ impl Parser {
         token
             .span()
             .lexeme(lexer.source())
-            .and_then(|lexeme| i64::from_str_radix(lexeme, *radix).ok())
+            .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
             .map_or_else(
                 || Err(Spanned::new(Error::InvalidInteger, token.span())),
                 |num| Ok(ast.push_expr(Spanned::new(Expr::Integer(num), token.span()))),
@@ -2366,8 +2376,50 @@ impl Parser {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(false), span)))
     }
 
-    unary_op!(negate, Negate);
     unary_op!(not, Not);
+
+    fn negate(
+        &mut self,
+        lexer: &mut Lexer,
+        ast: &mut Ast,
+        precedence: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        let expr = self.parse_expression(lexer, ast, precedence)?;
+
+        if let Expr::Integer(value) = ast[expr].kind() {
+            if let Ok(value) = i64::try_from(*value) {
+                Ok(ast.push_expr(Spanned::new(
+                    Expr::NegativeInteger(-value),
+                    span.combine_with(ast[expr].span())
+                        .expect("these spans are from the same source"),
+                )))
+            } else if *value
+                == 1 + u64::try_from(i64::MAX).expect("unsigned can always fit signed max")
+            {
+                Ok(ast.push_expr(Spanned::new(
+                    Expr::NegativeInteger(i64::MIN),
+                    span.combine_with(ast[expr].span())
+                        .expect("these spans are from the same source"),
+                )))
+            } else {
+                Err(Spanned::new(
+                    Error::InvalidInteger,
+                    span.combine_with(ast[expr].span())
+                        .expect("these spans are from the same source"),
+                ))
+            }
+        } else {
+            Ok(ast.push_expr(Spanned::new(
+                Expr::Unary {
+                    op: UnaryOp::Negate,
+                    expr,
+                },
+                span.combine_with(ast[expr].span())
+                    .expect("these spans are from the same source"),
+            )))
+        }
+    }
 
     binary_op!(path_access, PathAccess);
     binary_op!(access, Access);

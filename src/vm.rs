@@ -164,13 +164,32 @@ impl Vm {
                             _ => panic!("incorrect argument for logical not"),
                         },
                         UnaryOp::Negate => match dereference_value!(self, operand) {
+                            CopyableValue::I8(value) => {
+                                self.assign(to, CopyableValue::I8(-value));
+                            }
+                            CopyableValue::I16(value) => {
+                                self.assign(to, CopyableValue::I16(-value));
+                            }
+                            CopyableValue::I32(value) => {
+                                self.assign(to, CopyableValue::I32(-value));
+                            }
                             CopyableValue::I64(value) => {
                                 self.assign(to, CopyableValue::I64(-value));
                             }
                             CopyableValue::F64(value) => {
                                 self.assign(to, CopyableValue::F64(-value));
                             }
-                            _ => panic!("incorrect argument for negate"),
+                            CopyableValue::U8(_)
+                            | CopyableValue::U16(_)
+                            | CopyableValue::U32(_)
+                            | CopyableValue::U64(_)
+                            | CopyableValue::Boolean(_)
+                            | CopyableValue::Unit
+                            | CopyableValue::Fn(_)
+                            | CopyableValue::NativeFn(_)
+                            | CopyableValue::ValueIndex(_) => {
+                                panic!("incorrect argument for negate")
+                            }
                         },
                     }
                 }
@@ -193,6 +212,139 @@ impl Vm {
                             let rhs = dereference_value!(self, rhs);
 
                             match (lhs, rhs) {
+                                (CopyableValue::U8(lhs), CopyableValue::U8(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::U8(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::U8(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::U8(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::U8(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::U8(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::I8(lhs), CopyableValue::I8(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::I8(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::I8(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::I8(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::I8(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::I8(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::U16(lhs), CopyableValue::U16(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::U16(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::U16(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::U16(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::U16(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::U16(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::I16(lhs), CopyableValue::I16(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::I16(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::I16(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::I16(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::I16(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::I16(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::U32(lhs), CopyableValue::U32(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::U32(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::U32(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::U32(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::U32(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::U32(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::I32(lhs), CopyableValue::I32(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::I32(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::I32(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::I32(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::I32(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::I32(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::U64(lhs), CopyableValue::U64(rhs)) => self.assign(
+                                    to,
+                                    match op {
+                                        BinaryOp::Multiply => CopyableValue::U64(lhs * rhs),
+                                        BinaryOp::Divide => CopyableValue::U64(lhs / rhs),
+                                        BinaryOp::Remainder => CopyableValue::U64(lhs % rhs),
+                                        BinaryOp::Add => CopyableValue::U64(lhs + rhs),
+                                        BinaryOp::Subtract => CopyableValue::U64(lhs - rhs),
+                                        BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                        BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        BinaryOp::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
                                 (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => self.assign(
                                     to,
                                     match op {
@@ -231,7 +383,38 @@ impl Vm {
                                         ),
                                     },
                                 ),
-                                _ => panic!("incorrect argument for arithmetic"),
+                                (
+                                    CopyableValue::U8(_)
+                                    | CopyableValue::I8(_)
+                                    | CopyableValue::U16(_)
+                                    | CopyableValue::I16(_)
+                                    | CopyableValue::U32(_)
+                                    | CopyableValue::I32(_)
+                                    | CopyableValue::U64(_)
+                                    | CopyableValue::I64(_)
+                                    | CopyableValue::F64(_)
+                                    | CopyableValue::Boolean(_)
+                                    | CopyableValue::Unit
+                                    | CopyableValue::Fn(_)
+                                    | CopyableValue::NativeFn(_)
+                                    | CopyableValue::ValueIndex(_),
+                                    CopyableValue::U8(_)
+                                    | CopyableValue::I8(_)
+                                    | CopyableValue::U16(_)
+                                    | CopyableValue::I16(_)
+                                    | CopyableValue::U32(_)
+                                    | CopyableValue::I32(_)
+                                    | CopyableValue::U64(_)
+                                    | CopyableValue::I64(_)
+                                    | CopyableValue::F64(_)
+                                    | CopyableValue::Boolean(_)
+                                    | CopyableValue::Unit
+                                    | CopyableValue::Fn(_)
+                                    | CopyableValue::NativeFn(_)
+                                    | CopyableValue::ValueIndex(_),
+                                ) => {
+                                    panic!("incorrect argument for arithmetic")
+                                }
                             }
                         }
                         BinaryOp::And | BinaryOp::Or => {
@@ -548,6 +731,69 @@ impl Vm {
             NativeFn::try_from(native_fn).expect("tried to call an unknown native function");
 
         match native_fn {
+            NativeFn::PrintU8 => {
+                let CopyableValue::U8(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintI8 => {
+                let CopyableValue::I8(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintU16 => {
+                let CopyableValue::U16(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintI16 => {
+                let CopyableValue::I16(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintU32 => {
+                let CopyableValue::U32(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintI32 => {
+                let CopyableValue::I32(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
+            NativeFn::PrintU64 => {
+                let CopyableValue::U64(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
             NativeFn::PrintI64 => {
                 let CopyableValue::I64(value) = &call_arguments[0] else {
                     panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
@@ -589,6 +835,13 @@ impl Vm {
 
     fn values_eq(&self, lhs: CopyableValue, rhs: CopyableValue) -> bool {
         match (lhs, rhs) {
+            (CopyableValue::U8(lhs), CopyableValue::U8(rhs)) => lhs == rhs,
+            (CopyableValue::I8(lhs), CopyableValue::I8(rhs)) => lhs == rhs,
+            (CopyableValue::U16(lhs), CopyableValue::U16(rhs)) => lhs == rhs,
+            (CopyableValue::I16(lhs), CopyableValue::I16(rhs)) => lhs == rhs,
+            (CopyableValue::U32(lhs), CopyableValue::U32(rhs)) => lhs == rhs,
+            (CopyableValue::I32(lhs), CopyableValue::I32(rhs)) => lhs == rhs,
+            (CopyableValue::U64(lhs), CopyableValue::U64(rhs)) => lhs == rhs,
             (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => lhs == rhs,
             (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => lhs == rhs,
             (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => lhs == rhs,
