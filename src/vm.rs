@@ -1,6 +1,6 @@
 use crate::targets::vm::{NativeFn, OpCode, TypeId};
 
-use std::{io::Write, mem};
+use std::{collections::HashSet, io::Write, mem};
 
 struct CallFrame {
     fp: usize,
@@ -16,11 +16,12 @@ struct Vm {
     max_registers: usize,
     registers: Vec<CopyableValue>,
     call_frames: Vec<CallFrame>,
+    instructions: Vec<Instruction>,
     ip: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum CopyableValue {
+pub enum CopyableValue {
     I64(i64),
     F64(f64),
     Boolean(bool),
@@ -33,7 +34,12 @@ enum CopyableValue {
 }
 
 #[derive(Debug)]
-enum Value {
+pub enum Value {
+    MakeCompound(Vec<CopyableValue>),
+    MakeTaggedCompound {
+        fields: Vec<CopyableValue>,
+        tag: u16,
+    },
     Compound(Vec<CopyableValue>),
     TaggedCompound {
         fields: Vec<CopyableValue>,
@@ -42,7 +48,7 @@ enum Value {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ValueIndex(usize);
+pub struct ValueIndex(usize);
 
 impl From<ValueIndex> for usize {
     fn from(value: ValueIndex) -> Self {
@@ -50,8 +56,75 @@ impl From<ValueIndex> for usize {
     }
 }
 
-trait Deserialize {
-    fn from_bytes(bytes: &[u8], vm: &mut Vm) -> Self;
+impl Instructive for Vm {
+    fn ip_mut(&mut self) -> &mut usize {
+        &mut self.ip
+    }
+
+    fn instructions_mut(&mut self) -> &mut Vec<Instruction> {
+        &mut self.instructions
+    }
+
+    fn values_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.values
+    }
+}
+
+#[derive(Debug)]
+pub enum Instruction {
+    Unary {
+        op_code: OpCode,
+        operand: CopyableValue,
+        to: CopyableValue,
+    },
+    Binary {
+        op_code: OpCode,
+        lhs: CopyableValue,
+        rhs: CopyableValue,
+        to: CopyableValue,
+    },
+    Assign {
+        to: CopyableValue,
+        value: CopyableValue,
+    },
+    Push(CopyableValue),
+    Access {
+        index: usize,
+        of: CopyableValue,
+        to: CopyableValue,
+    },
+    AccessAssign {
+        index: usize,
+        of: CopyableValue,
+        value: CopyableValue,
+    },
+    Call {
+        callee: CopyableValue,
+        arity: usize,
+        to: CopyableValue,
+    },
+    Jump(usize, Vec<(CopyableValue, CopyableValue)>),
+    Branch {
+        condition: CopyableValue,
+        when_true: (usize, Vec<(CopyableValue, CopyableValue)>),
+        otherwise: (usize, Vec<(CopyableValue, CopyableValue)>),
+    },
+    Return(CopyableValue),
+}
+
+pub trait Instructive {
+    fn ip_mut(&mut self) -> &mut usize;
+
+    fn instructions_mut(&mut self) -> &mut Vec<Instruction>;
+
+    fn values_mut(&mut self) -> &mut Vec<Value>;
+}
+
+trait Disassemble<T>
+where
+    T: Instructive,
+{
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self;
 }
 
 /// # Panics
@@ -66,7 +139,7 @@ where
         .and_then(|max_registers| usize::try_from(max_registers).ok())
         .expect("maximum registers is unknown");
 
-    let mut evaluator = Vm {
+    let mut vm = Vm {
         stack: vec![],
         values: vec![],
         allocated: 0,
@@ -78,176 +151,178 @@ where
             from: 0,
             previous_registers: vec![],
         }],
-        ip: bytes[8..16]
-            .as_array::<8>()
-            .map(|array| u64::from_le_bytes(*array))
-            .and_then(|ip| usize::try_from(ip).ok())
-            .expect("entrypoint is unknown"),
+        ip: 0,
+        instructions: vec![],
     };
 
-    evaluator.run(bytes, out);
+    vm.read(bytes);
+
+    vm.run(out);
 }
 
 impl Vm {
     #[allow(clippy::too_many_lines)]
-    fn run<O>(&mut self, bytes: &[u8], out: &mut O)
+    fn run<O>(&mut self, out: &mut O)
     where
         O: Write,
     {
-        while self.ip < bytes.len() {
-            let op_code = <OpCode as Deserialize>::from_bytes(bytes, self);
+        let instructions = mem::take(&mut self.instructions);
 
-            match op_code {
-                OpCode::Not => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+        while self.ip < instructions.len() {
+            match instructions.get(self.ip) {
+                None => break,
+                Some(Instruction::Unary {
+                    op_code,
+                    operand,
+                    to,
+                }) => {
+                    let operand = *operand;
+                    let to = *to;
 
-                    let operand = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    match self.dereference_value(operand) {
-                        CopyableValue::Boolean(value) => {
-                            self.assign(to, CopyableValue::Boolean(!value));
-                        }
-                        _ => panic!("incorrect argument for logical not"),
-                    }
-                }
-                OpCode::Negate => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let operand = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    match self.dereference_value(operand) {
-                        CopyableValue::I64(value) => self.assign(to, CopyableValue::I64(-value)),
-                        CopyableValue::F64(value) => self.assign(to, CopyableValue::F64(-value)),
-                        _ => panic!("incorrect argument for negate"),
-                    }
-                }
-                OpCode::Multiply
-                | OpCode::Divide
-                | OpCode::Remainder
-                | OpCode::Add
-                | OpCode::Subtract
-                | OpCode::Less
-                | OpCode::Greater
-                | OpCode::LessOrEqual
-                | OpCode::GreaterOrEqual => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let rhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = self.dereference_value(lhs);
-                    let rhs = self.dereference_value(rhs);
-
-                    match (lhs, rhs) {
-                        (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => self.assign(
-                            to,
-                            match op_code {
-                                OpCode::Multiply => CopyableValue::I64(lhs * rhs),
-                                OpCode::Divide => CopyableValue::I64(lhs / rhs),
-                                OpCode::Remainder => CopyableValue::I64(lhs % rhs),
-                                OpCode::Add => CopyableValue::I64(lhs + rhs),
-                                OpCode::Subtract => CopyableValue::I64(lhs - rhs),
-                                OpCode::Less => CopyableValue::Boolean(lhs < rhs),
-                                OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
-                                OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
-                                OpCode::GreaterOrEqual => CopyableValue::Boolean(lhs >= rhs),
-                                _ => unreachable!(
-                                    "only these opcodes get past the initial match arm"
-                                ),
-                            },
-                        ),
-                        (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => self.assign(
-                            to,
-                            match op_code {
-                                OpCode::Multiply => CopyableValue::F64(lhs * rhs),
-                                OpCode::Divide => CopyableValue::F64(lhs / rhs),
-                                OpCode::Remainder => CopyableValue::F64(lhs % rhs),
-                                OpCode::Add => CopyableValue::F64(lhs + rhs),
-                                OpCode::Subtract => CopyableValue::F64(lhs - rhs),
-                                OpCode::Less => CopyableValue::Boolean(lhs < rhs),
-                                OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
-                                OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
-                                OpCode::GreaterOrEqual => CopyableValue::Boolean(lhs >= rhs),
-                                _ => unreachable!(
-                                    "only these opcodes get past the initial match arm"
-                                ),
-                            },
-                        ),
-                        _ => panic!("incorrect argument for arithmetic"),
-                    }
-                }
-                OpCode::And | OpCode::Or => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let rhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = self.dereference_value(lhs);
-                    let rhs = self.dereference_value(rhs);
-
-                    match (lhs, rhs) {
-                        (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => self.assign(
-                            to,
-                            CopyableValue::Boolean(match op_code {
-                                OpCode::And => lhs && rhs,
-                                OpCode::Or => lhs || rhs,
-                                _ => unreachable!(
-                                    "only these opcodes get past the initial match arm"
-                                ),
-                            }),
-                        ),
-                        _ => panic!("incorrect argument for logic"),
-                    }
-                }
-                OpCode::Equal | OpCode::NotEqual => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let rhs = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let lhs = self.dereference_value(lhs);
-                    let rhs = self.dereference_value(rhs);
-
-                    self.assign(
-                        to,
-                        match op_code {
-                            OpCode::Equal => CopyableValue::Boolean(self.values_eq(lhs, rhs)),
-                            OpCode::NotEqual => CopyableValue::Boolean(!self.values_eq(lhs, rhs)),
-                            _ => unreachable!("only these opcodes get past the initial match arm"),
+                    match op_code {
+                        OpCode::Not => match self.dereference_value(operand) {
+                            CopyableValue::Boolean(value) => {
+                                self.assign(to, CopyableValue::Boolean(!value));
+                            }
+                            _ => panic!("incorrect argument for logical not"),
                         },
-                    );
+                        OpCode::Negate => match self.dereference_value(operand) {
+                            CopyableValue::I64(value) => {
+                                self.assign(to, CopyableValue::I64(-value));
+                            }
+                            CopyableValue::F64(value) => {
+                                self.assign(to, CopyableValue::F64(-value));
+                            }
+                            _ => panic!("incorrect argument for negate"),
+                        },
+                        _ => unreachable!("there are no other unary operators"),
+                    }
                 }
-                OpCode::Assign => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                Some(Instruction::Binary {
+                    op_code,
+                    lhs,
+                    rhs,
+                    to,
+                }) => {
+                    let lhs = *lhs;
+                    let rhs = *rhs;
+                    let to = *to;
 
-                    let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                    match op_code {
+                        OpCode::Multiply
+                        | OpCode::Divide
+                        | OpCode::Remainder
+                        | OpCode::Add
+                        | OpCode::Subtract
+                        | OpCode::Less
+                        | OpCode::Greater
+                        | OpCode::LessOrEqual
+                        | OpCode::GreaterOrEqual => {
+                            let lhs = self.dereference_value(lhs);
+                            let rhs = self.dereference_value(rhs);
+
+                            match (lhs, rhs) {
+                                (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => self.assign(
+                                    to,
+                                    match op_code {
+                                        OpCode::Multiply => CopyableValue::I64(lhs * rhs),
+                                        OpCode::Divide => CopyableValue::I64(lhs / rhs),
+                                        OpCode::Remainder => CopyableValue::I64(lhs % rhs),
+                                        OpCode::Add => CopyableValue::I64(lhs + rhs),
+                                        OpCode::Subtract => CopyableValue::I64(lhs - rhs),
+                                        OpCode::Less => CopyableValue::Boolean(lhs < rhs),
+                                        OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        OpCode::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => self.assign(
+                                    to,
+                                    match op_code {
+                                        OpCode::Multiply => CopyableValue::F64(lhs * rhs),
+                                        OpCode::Divide => CopyableValue::F64(lhs / rhs),
+                                        OpCode::Remainder => CopyableValue::F64(lhs % rhs),
+                                        OpCode::Add => CopyableValue::F64(lhs + rhs),
+                                        OpCode::Subtract => CopyableValue::F64(lhs - rhs),
+                                        OpCode::Less => CopyableValue::Boolean(lhs < rhs),
+                                        OpCode::Greater => CopyableValue::Boolean(lhs > rhs),
+                                        OpCode::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                        OpCode::GreaterOrEqual => {
+                                            CopyableValue::Boolean(lhs >= rhs)
+                                        }
+                                        _ => unreachable!(
+                                            "only these opcodes get past the initial match arm"
+                                        ),
+                                    },
+                                ),
+                                _ => panic!("incorrect argument for arithmetic"),
+                            }
+                        }
+                        OpCode::And | OpCode::Or => {
+                            let lhs = self.dereference_value(lhs);
+                            let rhs = self.dereference_value(rhs);
+
+                            match (lhs, rhs) {
+                                (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => self
+                                    .assign(
+                                        to,
+                                        CopyableValue::Boolean(match op_code {
+                                            OpCode::And => lhs && rhs,
+                                            OpCode::Or => lhs || rhs,
+                                            _ => unreachable!(
+                                                "only these opcodes get past the initial match arm"
+                                            ),
+                                        }),
+                                    ),
+                                _ => panic!("incorrect argument for logic"),
+                            }
+                        }
+                        OpCode::Equal | OpCode::NotEqual => {
+                            let lhs = self.dereference_value(lhs);
+                            let rhs = self.dereference_value(rhs);
+
+                            self.assign(
+                                to,
+                                match op_code {
+                                    OpCode::Equal => {
+                                        CopyableValue::Boolean(self.values_eq(lhs, rhs))
+                                    }
+                                    OpCode::NotEqual => {
+                                        CopyableValue::Boolean(!self.values_eq(lhs, rhs))
+                                    }
+                                    _ => unreachable!(
+                                        "only these opcodes get past the initial match arm"
+                                    ),
+                                },
+                            );
+                        }
+                        _ => unreachable!("there are no other binary operators"),
+                    }
+                }
+                Some(Instruction::Assign { to, value }) => {
+                    let value = *value;
+                    let to = *to;
 
                     let value = self.dereference_value(value);
 
                     self.assign(to, value);
                 }
-                OpCode::Push => {
-                    let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                Some(Instruction::Push(value)) => {
+                    let value = *value;
 
                     let value = self.dereference_value(value);
 
                     self.stack.push(value);
                 }
-                OpCode::Access => {
-                    let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let index = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    self.ip += 8;
-
-                    let of = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                Some(Instruction::Access { index, of, to }) => {
+                    let index = *index;
+                    let of = *of;
+                    let to = *to;
 
                     let value = if let CopyableValue::ValueIndex(value_index) =
                         self.dereference_value(of)
@@ -263,18 +338,10 @@ impl Vm {
 
                     self.assign(to, value);
                 }
-                OpCode::AccessAssign => {
-                    let index = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    self.ip += 8;
-
-                    let of = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                Some(Instruction::AccessAssign { index, of, value }) => {
+                    let index = *index;
+                    let of = *of;
+                    let value = *value;
 
                     let value = self.dereference_value(value);
 
@@ -288,16 +355,10 @@ impl Vm {
                         panic!("tried to assign to an invalid compound field");
                     }
                 }
-                OpCode::Call => {
-                    let callee = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let arity = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|arity| usize::try_from(arity).ok())
-                        .expect("call arity is not a valid usize");
-
-                    self.ip += 8;
+                Some(Instruction::Call { callee, arity, to }) => {
+                    let callee = *callee;
+                    let arity = *arity;
+                    let to = *to;
 
                     match self.dereference_value(callee) {
                         CopyableValue::Fn(callee) => {
@@ -314,13 +375,13 @@ impl Vm {
                             self.ip = callee;
 
                             self.call_frames.push(call_frame);
+
+                            continue;
                         }
                         CopyableValue::NativeFn(index) => {
                             let call_arguments = self.stack.split_off(self.stack.len() - arity);
 
                             let value = Self::native_fn_call(call_arguments.as_slice(), index, out);
-
-                            let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
 
                             let value = self.dereference_value(value);
 
@@ -331,140 +392,61 @@ impl Vm {
                         }
                     }
                 }
-                OpCode::Jump => {
-                    let to = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    self.ip += 8;
-
-                    let argument_count = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("jump address is not a valid usize");
-
-                    self.ip += 8;
-
-                    let mut arguments = vec![];
-
-                    for _ in 0..argument_count {
-                        let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                        let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                        arguments.push((to, self.dereference_value(value)));
-                    }
+                Some(Instruction::Jump(destination, arguments)) => {
+                    let arguments = arguments
+                        .iter()
+                        .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                        .collect::<Vec<_>>();
 
                     for (to, argument) in arguments {
                         self.assign(to, argument);
                     }
 
-                    self.ip = bytes[to..(to + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|ip| usize::try_from(ip).ok())
-                        .expect("branch address is not a valid usize");
+                    self.ip = *destination;
+
+                    continue;
                 }
-                OpCode::Branch => {
-                    let condition = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                    let when_true = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    self.ip += 8;
-
-                    let otherwise = bytes[(self.ip)..(self.ip + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    self.ip += 8;
+                Some(Instruction::Branch {
+                    condition,
+                    when_true,
+                    otherwise,
+                }) => {
+                    let condition = *condition;
 
                     match self.dereference_value(condition) {
                         CopyableValue::Boolean(true) => {
-                            let argument_count = bytes[(self.ip)..(self.ip + 8)]
-                                .as_array::<8>()
-                                .map(|array| u64::from_le_bytes(*array))
-                                .and_then(|argument_count| usize::try_from(argument_count).ok())
-                                .expect("jump address is not a valid usize");
-
-                            self.ip += 8;
-
-                            let mut arguments = vec![];
-
-                            for _ in 0..argument_count {
-                                let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                                let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                                arguments.push((to, self.dereference_value(value)));
-                            }
+                            let arguments = when_true
+                                .1
+                                .iter()
+                                .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                                .collect::<Vec<_>>();
 
                             for (to, argument) in arguments {
                                 self.assign(to, argument);
                             }
 
-                            self.ip = bytes[when_true..(when_true + 8)]
-                                .as_array::<8>()
-                                .map(|array| u64::from_le_bytes(*array))
-                                .and_then(|ip| usize::try_from(ip).ok())
-                                .expect("branch address is not a valid usize");
+                            self.ip = when_true.0;
                         }
                         CopyableValue::Boolean(false) => {
-                            let argument_count = bytes[(self.ip)..(self.ip + 8)]
-                                .as_array::<8>()
-                                .map(|array| u64::from_le_bytes(*array))
-                                .and_then(|argument_count| usize::try_from(argument_count).ok())
-                                .expect("jump address is not a valid usize");
-
-                            self.ip += 8;
-
-                            for _ in 0..argument_count {
-                                let _ = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                                let _ = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-                            }
-
-                            let argument_count = bytes[(self.ip)..(self.ip + 8)]
-                                .as_array::<8>()
-                                .map(|array| u64::from_le_bytes(*array))
-                                .and_then(|argument_count| usize::try_from(argument_count).ok())
-                                .expect("jump address is not a valid usize");
-
-                            self.ip += 8;
-
-                            let mut arguments = vec![];
-
-                            for _ in 0..argument_count {
-                                let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                                let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                                arguments.push((to, self.dereference_value(value)));
-                            }
+                            let arguments = otherwise
+                                .1
+                                .iter()
+                                .map(|(to, argument)| (*to, self.dereference_value(*argument)))
+                                .collect::<Vec<_>>();
 
                             for (to, argument) in arguments {
                                 self.assign(to, argument);
                             }
 
-                            self.ip = bytes[otherwise..(otherwise + 8)]
-                                .as_array::<8>()
-                                .map(|array| u64::from_le_bytes(*array))
-                                .and_then(|ip| usize::try_from(ip).ok())
-                                .expect("branch address is not a valid usize");
+                            self.ip = otherwise.0;
                         }
                         _ => panic!("branch condition was not a boolean"),
                     }
+
+                    continue;
                 }
-                OpCode::Return => {
-                    let value = <CopyableValue as Deserialize>::from_bytes(bytes, self);
+                Some(Instruction::Return(value)) => {
+                    let value = *value;
 
                     let value = self.dereference_value(value);
 
@@ -476,10 +458,10 @@ impl Vm {
                         self.registers[..(call_frame.previous_registers.len())]
                             .copy_from_slice(call_frame.previous_registers.as_slice());
 
-                        if !self.call_frames.is_empty() {
-                            let to = <CopyableValue as Deserialize>::from_bytes(bytes, self);
-
-                            self.assign(to, value);
+                        if !self.call_frames.is_empty()
+                            && let Some(Instruction::Call { to, .. }) = instructions.get(self.ip)
+                        {
+                            self.assign(*to, value);
                         }
                     }
 
@@ -492,6 +474,8 @@ impl Vm {
                     }
                 }
             }
+
+            self.ip += 1;
         }
 
         self.gc();
@@ -530,18 +514,55 @@ impl Vm {
         }
     }
 
-    fn dereference_value(&self, value: CopyableValue) -> CopyableValue {
+    fn dereference_value(&mut self, value: CopyableValue) -> CopyableValue {
         match value {
-            CopyableValue::Register(index) => self.dereference_value(self.registers[index]),
+            CopyableValue::Register(index) => self.registers[index],
             CopyableValue::StackOffset(offset) => self
                 .call_frames
                 .last()
                 .map(|frame| frame.fp + offset)
-                .and_then(|offset| self.stack.get(offset))
-                .map_or_else(
-                    || panic!("the stack is too short"),
-                    |stack_value| self.dereference_value(*stack_value),
-                ),
+                .and_then(|offset| self.stack.get(offset).copied())
+                .expect("the stack is too short"),
+            CopyableValue::ValueIndex(value_index) => {
+                match self.values.get(usize::from(value_index)) {
+                    None => panic!("tried to find a value that doesn't exist"),
+                    Some(Value::MakeCompound(fields)) => {
+                        let fields = fields
+                            .clone()
+                            .into_iter()
+                            .map(|value| self.dereference_value(value))
+                            .collect::<Vec<_>>();
+
+                        self.values.push(Value::Compound(fields));
+
+                        let value_index =
+                            CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+
+                        self.allocated += self.size_of_value(value_index);
+
+                        value_index
+                    }
+                    Some(Value::MakeTaggedCompound { fields, tag }) => {
+                        let tag = *tag;
+
+                        let fields = fields
+                            .clone()
+                            .into_iter()
+                            .map(|value| self.dereference_value(value))
+                            .collect::<Vec<_>>();
+
+                        self.values.push(Value::TaggedCompound { fields, tag });
+
+                        let value_index =
+                            CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+
+                        self.allocated += self.size_of_value(value_index);
+
+                        value_index
+                    }
+                    Some(Value::Compound(_) | Value::TaggedCompound { .. }) => value,
+                }
+            }
             _ => value,
         }
     }
@@ -655,6 +676,17 @@ impl Vm {
         let mut marked = vec![const { None }; self.values.len()];
         let mut marked_count = 0;
 
+        for v in (0..(self.values.len())).filter(|v| {
+            matches!(
+                self.values.get(*v),
+                Some(Value::MakeCompound(_) | Value::MakeTaggedCompound { .. })
+            )
+        }) {
+            let value = CopyableValue::ValueIndex(ValueIndex(v));
+
+            self.mark_value(&mut marked, value, &mut marked_count);
+        }
+
         for value in &self.stack {
             self.mark_value(&mut marked, *value, &mut marked_count);
         }
@@ -680,7 +712,10 @@ impl Vm {
     ) {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
-                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                Value::MakeCompound(values)
+                | Value::MakeTaggedCompound { fields: values, .. }
+                | Value::Compound(values)
+                | Value::TaggedCompound { fields: values, .. } => {
                     for value in values {
                         self.mark_value(marked, *value, marked_count);
                     }
@@ -760,6 +795,31 @@ impl Vm {
                 .and_then(|marked| *marked)
                 .map_or(CopyableValue::Unit, |replacement_index| {
                     match &self.values[usize::from(index)] {
+                        Value::MakeCompound(values) => {
+                            let values = values
+                                .iter()
+                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((replacement_index, Value::Compound(values)));
+                        }
+                        Value::MakeTaggedCompound {
+                            fields: values,
+                            tag,
+                        } => {
+                            let values = values
+                                .iter()
+                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((
+                                replacement_index,
+                                Value::TaggedCompound {
+                                    fields: values,
+                                    tag: *tag,
+                                },
+                            ));
+                        }
                         Value::Compound(values) => {
                             let values = values
                                 .iter()
@@ -797,13 +857,14 @@ impl Vm {
     fn size_of_value(&self, value: CopyableValue) -> usize {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
-                Value::Compound(values) => {
+                Value::Compound(values) | Value::MakeCompound(values) => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
                         + mem::size_of_val(&self.values[usize::from(index)])
                 }
-                Value::TaggedCompound { fields: values, .. } => {
+                Value::TaggedCompound { fields: values, .. }
+                | Value::MakeTaggedCompound { fields: values, .. } => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
@@ -815,21 +876,327 @@ impl Vm {
         }
     }
 
-    fn push_value(&mut self, value: Value) -> CopyableValue {
-        let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len()));
+    #[allow(clippy::too_many_lines)]
+    fn read(&mut self, bytes: &[u8]) {
+        self.ip = 16;
 
-        self.values.push(value);
+        let block_count = bytes[8..16]
+            .as_array::<8>()
+            .map(|array| u64::from_le_bytes(*array))
+            .and_then(|index| usize::try_from(index).ok())
+            .expect("block count is not a valid usize");
 
-        value_index
+        if block_count == 0 {
+            return;
+        }
+
+        let entrypoint = bytes[(self.ip)..(self.ip + 8)]
+            .as_array::<8>()
+            .map(|array| u64::from_le_bytes(*array))
+            .and_then(|index| usize::try_from(index).ok())
+            .expect("block address is not a valid usize");
+
+        let mut block_byte_offsets = HashSet::new();
+
+        for _ in 0..block_count {
+            let block_byte_offset = bytes[(self.ip)..(self.ip + 8)]
+                .as_array::<8>()
+                .map(|array| u64::from_le_bytes(*array))
+                .and_then(|index| usize::try_from(index).ok())
+                .expect("block address is not a valid usize");
+
+            self.ip += 8;
+
+            block_byte_offsets.insert(block_byte_offset);
+        }
+
+        let mut block_addresses = vec![];
+
+        self.ip = entrypoint;
+
+        while self.ip < bytes.len() {
+            if block_byte_offsets.contains(&self.ip) {
+                block_addresses.push(self.instructions.len());
+            }
+
+            let op_code = OpCode::from_bytes(bytes, self);
+
+            match op_code {
+                OpCode::Not | OpCode::Negate => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let operand = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions.push(Instruction::Unary {
+                        op_code,
+                        operand,
+                        to,
+                    });
+                }
+                OpCode::Multiply
+                | OpCode::Divide
+                | OpCode::Remainder
+                | OpCode::Add
+                | OpCode::Subtract
+                | OpCode::Less
+                | OpCode::Greater
+                | OpCode::LessOrEqual
+                | OpCode::GreaterOrEqual
+                | OpCode::Equal
+                | OpCode::NotEqual
+                | OpCode::And
+                | OpCode::Or => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let lhs = CopyableValue::from_bytes(bytes, self);
+
+                    let rhs = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions.push(Instruction::Binary {
+                        op_code,
+                        lhs,
+                        rhs,
+                        to,
+                    });
+                }
+                OpCode::Assign => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions.push(Instruction::Assign { to, value });
+                }
+                OpCode::Push => {
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions.push(Instruction::Push(value));
+                }
+                OpCode::Access => {
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    let index = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|index| usize::try_from(index).ok())
+                        .expect("access index is not a valid usize");
+
+                    self.ip += 8;
+
+                    let of = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions
+                        .push(Instruction::Access { index, of, to });
+                }
+                OpCode::AccessAssign => {
+                    let index = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|index| usize::try_from(index).ok())
+                        .expect("access index is not a valid usize");
+
+                    self.ip += 8;
+
+                    let of = CopyableValue::from_bytes(bytes, self);
+
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions
+                        .push(Instruction::AccessAssign { index, of, value });
+                }
+                OpCode::Call => {
+                    let callee = CopyableValue::from_bytes(bytes, self);
+
+                    let arity = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|arity| usize::try_from(arity).ok())
+                        .expect("call arity is not a valid usize");
+
+                    self.ip += 8;
+
+                    let to = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions
+                        .push(Instruction::Call { callee, arity, to });
+                }
+                OpCode::Jump => {
+                    let to = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let argument_count = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    self.instructions.push(Instruction::Jump(to, arguments));
+                }
+                OpCode::Branch => {
+                    let condition = CopyableValue::from_bytes(bytes, self);
+
+                    let when_true = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let otherwise = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|to| usize::try_from(to).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let argument_count = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    let when_true = (when_true, arguments);
+
+                    let argument_count = bytes[(self.ip)..(self.ip + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|argument_count| usize::try_from(argument_count).ok())
+                        .expect("jump address is not a valid usize");
+
+                    self.ip += 8;
+
+                    let mut arguments = vec![];
+
+                    for _ in 0..argument_count {
+                        let to = CopyableValue::from_bytes(bytes, self);
+
+                        let value = CopyableValue::from_bytes(bytes, self);
+
+                        arguments.push((to, value));
+                    }
+
+                    let otherwise = (otherwise, arguments);
+
+                    self.instructions.push(Instruction::Branch {
+                        condition,
+                        when_true,
+                        otherwise,
+                    });
+                }
+                OpCode::Return => {
+                    let value = CopyableValue::from_bytes(bytes, self);
+
+                    self.instructions.push(Instruction::Return(value));
+                }
+            }
+        }
+
+        for instruction in &mut self.instructions {
+            match instruction {
+                Instruction::Unary { operand: value, .. }
+                | Instruction::Assign { value, .. }
+                | Instruction::Push(value)
+                | Instruction::Access { of: value, .. }
+                | Instruction::Call { callee: value, .. }
+                | Instruction::Return(value) => {
+                    if let CopyableValue::Fn(address) = value {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+                }
+                Instruction::Binary { lhs, rhs, .. }
+                | Instruction::AccessAssign {
+                    of: lhs,
+                    value: rhs,
+                    ..
+                } => {
+                    if let CopyableValue::Fn(address) = lhs {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+
+                    if let CopyableValue::Fn(address) = rhs {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+                }
+                Instruction::Jump(address, arguments) => {
+                    *address = block_addresses[(*address - 16) / 8];
+
+                    for (_, argument) in arguments {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+                }
+                Instruction::Branch {
+                    condition,
+                    when_true,
+                    otherwise,
+                } => {
+                    if let CopyableValue::Fn(address) = condition {
+                        *address = block_addresses[(*address - 16) / 8];
+                    }
+
+                    when_true.0 = block_addresses[(when_true.0 - 16) / 8];
+
+                    otherwise.0 = block_addresses[(otherwise.0 - 16) / 8];
+
+                    for (_, argument) in &mut when_true.1 {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+
+                    for (_, argument) in &mut otherwise.1 {
+                        if let CopyableValue::Fn(address) = argument {
+                            *address = block_addresses[(*address - 16) / 8];
+                        }
+                    }
+                }
+            }
+        }
+
+        self.ip = 0;
     }
 }
 
-impl Deserialize for OpCode {
-    fn from_bytes(bytes: &[u8], vm: &mut Vm) -> Self {
+impl<T> Disassemble<T> for OpCode
+where
+    T: Instructive,
+{
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self {
         match Self::try_from(
             bytes[{
-                let ip = vm.ip;
-                vm.ip += 1;
+                let ip = *instructive.ip_mut();
+                *instructive.ip_mut() += 1;
                 ip
             }],
         ) {
@@ -839,28 +1206,31 @@ impl Deserialize for OpCode {
     }
 }
 
-impl Deserialize for CopyableValue {
+impl<T> Disassemble<T> for CopyableValue
+where
+    T: Instructive,
+{
     #[allow(clippy::too_many_lines)]
-    fn from_bytes(bytes: &[u8], vm: &mut Vm) -> Self {
+    fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self {
         match TypeId::try_from(
             bytes[{
-                let ip = vm.ip;
-                vm.ip += 1;
+                let ip = *instructive.ip_mut();
+                *instructive.ip_mut() += 1;
                 ip
             }],
         ) {
             Ok(TypeId::I64) => Self::I64(i64::from_le_bytes(
-                *bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .expect("the range is the same length as the expected array"),
             )),
             Ok(TypeId::F64) => Self::F64(f64::from_le_bytes(
-                *bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                *bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .expect("the range is the same length as the expected array"),
@@ -868,45 +1238,37 @@ impl Deserialize for CopyableValue {
             Ok(TypeId::Boolean) => Self::Boolean(
                 bool::try_from(
                     bytes[{
-                        let ip = vm.ip;
-                        vm.ip += 1;
+                        let ip = *instructive.ip_mut();
+                        *instructive.ip_mut() += 1;
                         ip
                     }],
                 )
                 .expect("a boolean could not be created from its byte"),
             ),
             Ok(TypeId::Unit) => Self::Unit,
-            Ok(TypeId::Fn) => {
-                let jump_address = bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+            Ok(TypeId::Fn) => Self::Fn(
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
                     .and_then(|address| usize::try_from(address).ok())
-                    .expect("a function was not a valid usize");
-
-                Self::Fn(
-                    bytes[jump_address..(jump_address + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|address| usize::try_from(address).ok())
-                        .expect("a function was not a valid usize"),
-                )
-            }
+                    .expect("a function was not a valid usize"),
+            ),
             Ok(TypeId::NativeFn) => Self::NativeFn(
-                bytes[(vm.ip)..{
-                    vm.ip += 2;
-                    vm.ip
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<2>()
                     .map(|array| u16::from_le_bytes(*array))
                     .expect("a native function was not valid"),
             ),
             Ok(TypeId::StackOffset) => Self::StackOffset(
-                bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
@@ -914,9 +1276,9 @@ impl Deserialize for CopyableValue {
                     .expect("a stack offset was not a valid usize"),
             ),
             Ok(TypeId::Register) => Self::Register(
-                bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
@@ -924,9 +1286,9 @@ impl Deserialize for CopyableValue {
                     .expect("a register was not a valid usize"),
             ),
             Ok(TypeId::Compound) => {
-                let field_count = bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                let field_count = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
@@ -936,34 +1298,27 @@ impl Deserialize for CopyableValue {
                 let mut fields = vec![];
 
                 for _ in 0..field_count {
-                    let field = <Self as Deserialize>::from_bytes(bytes, vm);
-
-                    let field = vm.dereference_value(field);
-
-                    vm.allocated += mem::size_of_val(&field);
+                    let field = Self::from_bytes(bytes, instructive);
 
                     fields.push(field);
                 }
 
-                let value_index = vm.push_value(Value::Compound(fields));
+                instructive.values_mut().push(Value::MakeCompound(fields));
 
-                vm.allocated +=
-                    mem::size_of_val(vm.values.last().expect("the value was just pushed"));
-
-                value_index
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
             }
             Ok(TypeId::TaggedCompound) => {
-                let tag = bytes[(vm.ip)..{
-                    vm.ip += 2;
-                    vm.ip
+                let tag = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 2;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<2>()
                     .map(|array| u16::from_le_bytes(*array))
                     .expect("a tagged compound's tag was not a valid u16");
 
-                let field_count = bytes[(vm.ip)..{
-                    vm.ip += 8;
-                    vm.ip
+                let field_count = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
@@ -973,21 +1328,16 @@ impl Deserialize for CopyableValue {
                 let mut fields = vec![];
 
                 for _ in 0..field_count {
-                    let field = <Self as Deserialize>::from_bytes(bytes, vm);
-
-                    let field = vm.dereference_value(field);
-
-                    vm.allocated += mem::size_of_val(&field);
+                    let field = Self::from_bytes(bytes, instructive);
 
                     fields.push(field);
                 }
 
-                let value_index = vm.push_value(Value::TaggedCompound { tag, fields });
+                instructive
+                    .values_mut()
+                    .push(Value::MakeTaggedCompound { tag, fields });
 
-                vm.allocated +=
-                    mem::size_of_val(vm.values.last().expect("the value was just pushed"));
-
-                value_index
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
             }
             Err(error) => panic!("unknown type id {error}"),
         }

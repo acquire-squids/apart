@@ -1,6 +1,6 @@
 use crate::{
     Compiled,
-    basic_blocks::{Instruction, Value as IrValue},
+    basic_blocks::{Instruction as IrInstruction, Value as IrValue},
     parse::{BinaryOp, UnaryOp},
     ssa::{BlockTerminator, Ssa},
 };
@@ -21,6 +21,13 @@ pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
             .as_slice(),
     );
 
+    bytecode.extend_from_slice(
+        u64::try_from(compiled.result().blocks().len())
+            .expect("128-bit usize not allowed!  sorry!")
+            .to_le_bytes()
+            .as_slice(),
+    );
+
     for _ in ssa.blocks() {
         bytecode.extend_from_slice(
             u64::try_from(bytecode.len())
@@ -33,7 +40,7 @@ pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
     for (b, block) in ssa.blocks().iter().enumerate() {
         let ip = bytecode.len();
 
-        bytecode[(8 + b * 8)..(8 + b * 8 + 8)].copy_from_slice(
+        bytecode[(16 + b * 8)..(16 + b * 8 + 8)].copy_from_slice(
             u64::try_from(ip)
                 .expect("128-bit usize not allowed!  sorry!")
                 .to_le_bytes()
@@ -49,7 +56,7 @@ pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
                 bytecode.push(0xC0);
 
                 bytecode.extend_from_slice(
-                    u64::try_from(8 + usize::from(jump_to.block()) * 8)
+                    u64::try_from(16 + usize::from(jump_to.block()) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
@@ -81,14 +88,14 @@ pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
                 bytecode.append(&mut condition.to_bytes(compiled));
 
                 bytecode.extend_from_slice(
-                    u64::try_from(8 + usize::from(when_true.block()) * 8)
+                    u64::try_from(16 + usize::from(when_true.block()) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
                 );
 
                 bytecode.extend_from_slice(
-                    u64::try_from(8 + usize::from(otherwise.block()) * 8)
+                    u64::try_from(16 + usize::from(otherwise.block()) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
@@ -217,11 +224,11 @@ int_enum! {
     PrintUnit => 0x00_03,
 }
 
-trait Serialize {
+trait Assemble {
     fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8>;
 }
 
-impl Serialize for Instruction {
+impl Assemble for IrInstruction {
     #[allow(clippy::too_many_lines)]
     fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
         match self {
@@ -355,7 +362,7 @@ impl Serialize for Instruction {
     }
 }
 
-impl Serialize for IrValue {
+impl Assemble for IrValue {
     #[allow(clippy::too_many_lines)]
     fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
         match self {
@@ -386,7 +393,7 @@ impl Serialize for IrValue {
                 let mut bytes = vec![u8::from(TypeId::Fn)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(8 + usize::from(*block_index) * 8)
+                    u64::try_from(16 + usize::from(*block_index) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
