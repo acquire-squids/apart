@@ -1,8 +1,10 @@
 use crate::{
     Compiled,
-    basic_blocks::{Instruction as IrInstruction, Value as IrValue},
-    parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
-    ssa::{BlockTerminator, Ssa},
+    basic_blocks::BlockIndex,
+    low_ir::{
+        BinaryOp, Instruction as IrInstruction, Ir, Location, NativeFn, Register, StackOffset,
+        UnaryOp, Value as IrValue, ValueOrLocation,
+    },
 };
 
 use std::collections::HashSet;
@@ -11,7 +13,7 @@ use std::collections::HashSet;
 /// Panics if `usize` doesn't fit in a u64
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
+pub fn compile(compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
     let ssa = compiled.result();
 
     let mut bytecode = vec![];
@@ -52,132 +54,12 @@ pub fn compile(compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
         for instruction in block.instructions() {
             bytecode.append(&mut instruction.to_bytes(compiled));
         }
-
-        match block.terminator() {
-            BlockTerminator::Jump(jump_to) => {
-                bytecode.push(0xC0);
-
-                bytecode.extend_from_slice(
-                    u64::try_from(16 + usize::from(jump_to.block()) * 8)
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                bytecode.extend_from_slice(
-                    u64::try_from(jump_to.arguments().len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (argument, to) in jump_to
-                    .arguments()
-                    .iter()
-                    .zip(compiled.result().blocks()[usize::from(jump_to.block())].parameters())
-                {
-                    bytecode.append(&mut to.to_bytes(compiled));
-                    bytecode.append(&mut argument.to_bytes(compiled));
-                }
-            }
-            BlockTerminator::Branch {
-                condition,
-                when_true,
-                otherwise,
-            } => {
-                bytecode.push(0xC1);
-
-                bytecode.append(&mut condition.to_bytes(compiled));
-
-                bytecode.extend_from_slice(
-                    u64::try_from(16 + usize::from(when_true.block()) * 8)
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                bytecode.extend_from_slice(
-                    u64::try_from(16 + usize::from(otherwise.block()) * 8)
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                bytecode.extend_from_slice(
-                    u64::try_from(when_true.arguments().len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (argument, to) in when_true
-                    .arguments()
-                    .iter()
-                    .zip(compiled.result().blocks()[usize::from(when_true.block())].parameters())
-                {
-                    bytecode.append(&mut to.to_bytes(compiled));
-                    bytecode.append(&mut argument.to_bytes(compiled));
-                }
-
-                bytecode.extend_from_slice(
-                    u64::try_from(otherwise.arguments().len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (argument, to) in otherwise
-                    .arguments()
-                    .iter()
-                    .zip(compiled.result().blocks()[usize::from(otherwise.block())].parameters())
-                {
-                    bytecode.append(&mut to.to_bytes(compiled));
-                    bytecode.append(&mut argument.to_bytes(compiled));
-                }
-            }
-            BlockTerminator::Return(value) => {
-                bytecode.push(0xC2);
-
-                bytecode.append(&mut value.to_bytes(compiled));
-            }
-        }
     }
 
     bytecode
 }
 
-macro_rules! int_enum {
-    (
-        $v:vis $name:ident as $int:ty ;
-        $($variant:ident => $value:literal,)+
-    ) => {
-        #[derive(Debug)]
-        $v enum $name {
-            $($variant,)+
-        }
-
-        impl From<$name> for $int {
-            fn from(value: $name) -> Self {
-                match value {
-                    $($name::$variant => $value,)+
-                }
-            }
-        }
-
-        impl TryFrom<$int> for $name {
-            type Error = $int;
-
-            fn try_from(value: $int) -> Result<Self, Self::Error> {
-                match value {
-                    $($value => Ok(Self::$variant),)+
-                    _ => Err(value),
-                }
-            }
-        }
-    };
-}
-
-int_enum! {
+crate::int_enum! {
     pub OpCode as u8 ;
     Unary => 0x20,
     Binary => 0x40,
@@ -191,37 +73,14 @@ int_enum! {
     Return => 0xC2,
 }
 
-int_enum! {
-    pub UnaryOp as u8 ;
-    Not => 0x00,
-    Negate => 0x01,
-}
-
-int_enum! {
-    pub BinaryOp as u8 ;
-    Multiply => 0x00,
-    Divide => 0x01,
-    Remainder => 0x02,
-    Add => 0x03,
-    Subtract => 0x04,
-    Less => 0x05,
-    Greater => 0x06,
-    LessOrEqual => 0x07,
-    GreaterOrEqual => 0x08,
-    Equal => 0x09,
-    NotEqual => 0x0A,
-    And => 0x0B,
-    Or => 0x0C,
-}
-
-int_enum! {
+crate::int_enum! {
     pub ValueAt as u8 ;
     Value => 0x00,
     StackOffset => 0x01,
     Register => 0x02,
 }
 
-int_enum! {
+crate::int_enum! {
     pub TypeId as u8 ;
     I64 => 0x00,
     F64 => 0x01,
@@ -233,70 +92,66 @@ int_enum! {
     TaggedCompound => 0x09,
 }
 
-int_enum! {
-    pub NativeFn as u16 ;
-    PrintI64 => 0x00_00,
-    PrintF64 => 0x00_01,
-    PrintBool => 0x00_02,
-    PrintUnit => 0x00_03,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CopyableValue {
+    I64(i64),
+    F64(f64),
+    Boolean(bool),
+    Unit,
+    Fn(BlockIndex),
+    NativeFn(NativeFn),
+    ValueIndex(ValueIndex),
+}
+
+#[derive(Debug)]
+pub enum Value {
+    MakeCompound(Vec<ValueOrLocation<CopyableValue>>),
+    MakeTaggedCompound {
+        fields: Vec<ValueOrLocation<CopyableValue>>,
+        tag: u16,
+    },
+    Compound(Vec<CopyableValue>),
+    TaggedCompound {
+        fields: Vec<CopyableValue>,
+        tag: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValueIndex(pub usize);
+
+impl From<ValueIndex> for usize {
+    fn from(value: ValueIndex) -> Self {
+        value.0
+    }
 }
 
 trait Assemble {
-    fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8>;
+    fn to_bytes(&self, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8>;
 }
 
-impl Assemble for IrInstruction {
+impl Assemble for IrInstruction<IrValue> {
     #[allow(clippy::too_many_lines)]
-    fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
+    fn to_bytes(&self, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
         match self {
             Self::NoOp => vec![],
-            Self::Unary {
-                op,
-                operand,
-                temporary,
-            } => {
+            Self::Unary { op, operand, to } => {
                 let mut bytes = vec![u8::from(OpCode::Unary)];
 
-                bytes.push(u8::from(match op {
-                    AstUnaryOp::Not => UnaryOp::Not,
-                    AstUnaryOp::Negate => UnaryOp::Negate,
-                }));
+                bytes.push(u8::from(*op));
 
-                bytes.append(&mut temporary.to_bytes(compiled));
+                bytes.append(&mut to.to_bytes(compiled));
 
                 bytes.append(&mut operand.to_bytes(compiled));
 
                 bytes
             }
-            Self::Binary {
-                op,
-                lhs,
-                rhs,
-                temporary,
-            } => {
+            Self::Binary { op, lhs, rhs, to } => {
                 let mut bytes = vec![u8::from(OpCode::Binary)];
 
-                match op {
-                    AstBinaryOp::PathAccess | AstBinaryOp::Access | AstBinaryOp::Assign => {}
-                    _ => bytes.push(u8::from(match op {
-                        AstBinaryOp::Multiply => BinaryOp::Multiply,
-                        AstBinaryOp::Divide => BinaryOp::Divide,
-                        AstBinaryOp::Remainder => BinaryOp::Remainder,
-                        AstBinaryOp::Add => BinaryOp::Add,
-                        AstBinaryOp::Subtract => BinaryOp::Subtract,
-                        AstBinaryOp::Less => BinaryOp::Less,
-                        AstBinaryOp::Greater => BinaryOp::Greater,
-                        AstBinaryOp::LessOrEqual => BinaryOp::LessOrEqual,
-                        AstBinaryOp::GreaterOrEqual => BinaryOp::GreaterOrEqual,
-                        AstBinaryOp::Equal => BinaryOp::Equal,
-                        AstBinaryOp::NotEqual => BinaryOp::NotEqual,
-                        AstBinaryOp::And => BinaryOp::And,
-                        AstBinaryOp::Or => BinaryOp::Or,
-                        _ => unreachable!("unhandled binary operator"),
-                    })),
-                }
+                bytes.push(u8::from(*op));
 
-                bytes.append(&mut temporary.to_bytes(compiled));
+                bytes.append(&mut to.to_bytes(compiled));
 
                 bytes.append(&mut lhs.to_bytes(compiled));
 
@@ -320,11 +175,7 @@ impl Assemble for IrInstruction {
 
                 bytes
             }
-            Self::Call {
-                callee,
-                arity,
-                temporary,
-            } => {
+            Self::Call { callee, arity, to } => {
                 let mut bytes = vec![u8::from(OpCode::Call)];
 
                 bytes.append(&mut callee.to_bytes(compiled));
@@ -336,18 +187,14 @@ impl Assemble for IrInstruction {
                         .as_slice(),
                 );
 
-                bytes.append(&mut temporary.to_bytes(compiled));
+                bytes.append(&mut to.to_bytes(compiled));
 
                 bytes
             }
-            Self::Access {
-                index,
-                of,
-                temporary,
-            } => {
+            Self::Access { index, of, to } => {
                 let mut bytes = vec![u8::from(OpCode::Access)];
 
-                bytes.append(&mut temporary.to_bytes(compiled));
+                bytes.append(&mut to.to_bytes(compiled));
 
                 bytes.extend_from_slice(
                     u64::try_from(*index)
@@ -376,84 +223,113 @@ impl Assemble for IrInstruction {
 
                 bytes
             }
-        }
-    }
-}
-
-impl Assemble for IrValue {
-    #[allow(clippy::too_many_lines)]
-    fn to_bytes(&self, compiled: &Compiled<'_, Ssa>) -> Vec<u8> {
-        match self {
-            Self::BlockArgument(_) | Self::CallArgument(_) | Self::Address(_) => {
-                unreachable!("these are eliminated by register allocation")
-            }
-            Self::Integer(value) => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::I64)];
-
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
-
-                bytes
-            }
-            Self::Float(value) => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::F64)];
-
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
-
-                bytes
-            }
-            Self::Boolean(value) => {
-                vec![
-                    u8::from(ValueAt::Value),
-                    u8::from(TypeId::Boolean),
-                    u8::from(*value),
-                ]
-            }
-            Self::Unit | Self::Runtime => {
-                vec![u8::from(ValueAt::Value), u8::from(TypeId::Unit)]
-            }
-            Self::Fn(block_index) => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::Fn)];
+            Self::Jump(destination, arguments) => {
+                let mut bytes = vec![u8::from(OpCode::Jump)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(16 + usize::from(*block_index) * 8)
+                    u64::try_from(16 + usize::from(*destination) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
                 );
 
-                bytes
-            }
-            Self::NativeFn(span) => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::NativeFn)];
-
-                let source_index = compiled
-                    .sources()
-                    .iter()
-                    .position(|(id, _)| *id == span.source_id())
-                    .expect("the source must exist");
-
                 bytes.extend_from_slice(
-                    match compiled
-                        .sources()
-                        .get(source_index)
-                        .and_then(|(_, source)| span.lexeme(source))
-                    {
-                        Some("print_i64") => u16::from(NativeFn::PrintI64).to_le_bytes(),
-                        Some("print_f64") => u16::from(NativeFn::PrintF64).to_le_bytes(),
-                        Some("print_bool") => u16::from(NativeFn::PrintBool).to_le_bytes(),
-                        Some("print_unit") => u16::from(NativeFn::PrintUnit).to_le_bytes(),
-                        _ => unreachable!("unknown native function"),
-                    }
-                    .as_slice(),
+                    u64::try_from(arguments.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
                 );
 
+                for (to, argument) in arguments {
+                    bytes.append(&mut to.to_bytes(compiled));
+                    bytes.append(&mut argument.to_bytes(compiled));
+                }
+
                 bytes
             }
+            Self::Branch {
+                condition,
+                when_true,
+                otherwise,
+            } => {
+                let mut bytes = vec![u8::from(OpCode::Branch)];
+
+                bytes.append(&mut condition.to_bytes(compiled));
+
+                bytes.extend_from_slice(
+                    u64::try_from(16 + usize::from(when_true.0) * 8)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes.extend_from_slice(
+                    u64::try_from(16 + usize::from(otherwise.0) * 8)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes.extend_from_slice(
+                    u64::try_from(when_true.1.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                for (to, argument) in &when_true.1 {
+                    bytes.append(&mut to.to_bytes(compiled));
+                    bytes.append(&mut argument.to_bytes(compiled));
+                }
+
+                bytes.extend_from_slice(
+                    u64::try_from(otherwise.1.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                for (to, argument) in &otherwise.1 {
+                    bytes.append(&mut to.to_bytes(compiled));
+                    bytes.append(&mut argument.to_bytes(compiled));
+                }
+
+                bytes
+            }
+            Self::Return(value) => {
+                let mut bytes = vec![u8::from(OpCode::Return)];
+
+                bytes.append(&mut value.to_bytes(compiled));
+
+                bytes
+            }
+        }
+    }
+}
+
+impl Assemble for ValueOrLocation<IrValue> {
+    fn to_bytes(&self, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
+        match self {
+            Self::Value(value) => {
+                let mut bytes = vec![u8::from(ValueAt::Value)];
+
+                bytes.append(&mut value.to_bytes(compiled));
+
+                bytes
+            }
+            Self::At(location) => location.to_bytes(compiled),
+        }
+    }
+}
+
+impl Assemble for Location {
+    fn to_bytes(&self, _: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
+        match self {
             Self::StackOffset(offset) => {
                 let mut bytes = vec![u8::from(ValueAt::StackOffset)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(*offset)
+                    u64::try_from(usize::from(*offset))
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
@@ -465,7 +341,7 @@ impl Assemble for IrValue {
                 let mut bytes = vec![u8::from(ValueAt::Register)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(*index)
+                    u64::try_from(usize::from(*index))
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
@@ -473,8 +349,55 @@ impl Assemble for IrValue {
 
                 bytes
             }
+        }
+    }
+}
+
+impl Assemble for IrValue {
+    #[allow(clippy::too_many_lines)]
+    fn to_bytes(&self, compiled: &Compiled<'_, Ir<Self>>) -> Vec<u8> {
+        match self {
+            Self::I64(value) => {
+                let mut bytes = vec![u8::from(TypeId::I64)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::F64(value) => {
+                let mut bytes = vec![u8::from(TypeId::F64)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::Boolean(value) => {
+                vec![u8::from(TypeId::Boolean), u8::from(*value)]
+            }
+            Self::Unit => {
+                vec![u8::from(TypeId::Unit)]
+            }
+            Self::Fn(block_index) => {
+                let mut bytes = vec![u8::from(TypeId::Fn)];
+
+                bytes.extend_from_slice(
+                    u64::try_from(16 + usize::from(*block_index) * 8)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes
+            }
+            Self::NativeFn(native_fn) => {
+                let mut bytes = vec![u8::from(TypeId::NativeFn)];
+
+                bytes.extend_from_slice(u16::from(*native_fn).to_le_bytes().as_slice());
+
+                bytes
+            }
             Self::Compound(values) => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::Compound)];
+                let mut bytes = vec![u8::from(TypeId::Compound)];
 
                 bytes.extend_from_slice(
                     u64::try_from(values.len())
@@ -490,7 +413,7 @@ impl Assemble for IrValue {
                 bytes
             }
             Self::TaggedCompound { tag, fields } => {
-                let mut bytes = vec![u8::from(ValueAt::Value), u8::from(TypeId::TaggedCompound)];
+                let mut bytes = vec![u8::from(TypeId::TaggedCompound)];
 
                 bytes.extend_from_slice(tag.to_le_bytes().as_slice());
 
@@ -511,112 +434,6 @@ impl Assemble for IrValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CopyableValue {
-    I64(i64),
-    F64(f64),
-    Boolean(bool),
-    Unit,
-    Fn(usize),
-    NativeFn(u16),
-    ValueIndex(ValueIndex),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ValueOrLocation {
-    Value(CopyableValue),
-    At(Location),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Location {
-    StackOffset(StackOffset),
-    Register(Register),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StackOffset(pub usize);
-
-impl From<StackOffset> for usize {
-    fn from(value: StackOffset) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Register(pub usize);
-
-impl From<Register> for usize {
-    fn from(value: Register) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug)]
-pub enum Value {
-    MakeCompound(Vec<ValueOrLocation>),
-    MakeTaggedCompound {
-        fields: Vec<ValueOrLocation>,
-        tag: u16,
-    },
-    Compound(Vec<CopyableValue>),
-    TaggedCompound {
-        fields: Vec<CopyableValue>,
-        tag: u16,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueIndex(pub usize);
-
-impl From<ValueIndex> for usize {
-    fn from(value: ValueIndex) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug)]
-pub enum Instruction {
-    Unary {
-        op: UnaryOp,
-        operand: ValueOrLocation,
-        to: Location,
-    },
-    Binary {
-        op: BinaryOp,
-        lhs: ValueOrLocation,
-        rhs: ValueOrLocation,
-        to: Location,
-    },
-    Assign {
-        to: Location,
-        value: ValueOrLocation,
-    },
-    Push(ValueOrLocation),
-    Access {
-        index: usize,
-        of: ValueOrLocation,
-        to: Location,
-    },
-    AccessAssign {
-        index: usize,
-        of: ValueOrLocation,
-        value: ValueOrLocation,
-    },
-    Call {
-        callee: ValueOrLocation,
-        arity: usize,
-        to: Location,
-    },
-    Jump(usize, Vec<(Location, ValueOrLocation)>),
-    Branch {
-        condition: ValueOrLocation,
-        when_true: (usize, Vec<(Location, ValueOrLocation)>),
-        otherwise: (usize, Vec<(Location, ValueOrLocation)>),
-    },
-    Return(ValueOrLocation),
-}
-
 pub trait Disassemble<T>
 where
     T: Instructive,
@@ -627,7 +444,7 @@ where
 pub trait Instructive: Sized {
     fn ip_mut(&mut self) -> &mut usize;
 
-    fn instructions_mut(&mut self) -> &mut Vec<Instruction>;
+    fn instructions_mut(&mut self) -> &mut Vec<IrInstruction<CopyableValue>>;
 
     fn values_mut(&mut self) -> &mut Vec<Value>;
 
@@ -685,7 +502,7 @@ pub trait Instructive: Sized {
                     let operand = ValueOrLocation::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::Unary { op, operand, to });
+                        .push(IrInstruction::Unary { op, operand, to });
                 }
                 OpCode::Binary => {
                     let op = BinaryOp::from_bytes(bytes, self);
@@ -697,7 +514,7 @@ pub trait Instructive: Sized {
                     let rhs = ValueOrLocation::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::Binary { op, lhs, rhs, to });
+                        .push(IrInstruction::Binary { op, lhs, rhs, to });
                 }
                 OpCode::Assign => {
                     let to = Location::from_bytes(bytes, self);
@@ -705,12 +522,12 @@ pub trait Instructive: Sized {
                     let value = ValueOrLocation::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::Assign { to, value });
+                        .push(IrInstruction::Assign { to, value });
                 }
                 OpCode::Push => {
                     let value = ValueOrLocation::from_bytes(bytes, self);
 
-                    self.instructions_mut().push(Instruction::Push(value));
+                    self.instructions_mut().push(IrInstruction::Push(value));
                 }
                 OpCode::Access => {
                     let to = Location::from_bytes(bytes, self);
@@ -726,7 +543,7 @@ pub trait Instructive: Sized {
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::Access { index, of, to });
+                        .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessAssign => {
                     let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
@@ -742,7 +559,7 @@ pub trait Instructive: Sized {
                     let value = ValueOrLocation::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::AccessAssign { index, of, value });
+                        .push(IrInstruction::AccessAssign { index, of, value });
                 }
                 OpCode::Call => {
                     let callee = ValueOrLocation::from_bytes(bytes, self);
@@ -758,7 +575,7 @@ pub trait Instructive: Sized {
                     let to = Location::from_bytes(bytes, self);
 
                     self.instructions_mut()
-                        .push(Instruction::Call { callee, arity, to });
+                        .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::Jump => {
                     let to = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
@@ -788,7 +605,7 @@ pub trait Instructive: Sized {
                     }
 
                     self.instructions_mut()
-                        .push(Instruction::Jump(to, arguments));
+                        .push(IrInstruction::Jump(BlockIndex(to), arguments));
                 }
                 OpCode::Branch => {
                     let condition = ValueOrLocation::from_bytes(bytes, self);
@@ -827,7 +644,7 @@ pub trait Instructive: Sized {
                         arguments.push((to, value));
                     }
 
-                    let when_true = (when_true, arguments);
+                    let when_true = (BlockIndex(when_true), arguments);
 
                     let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
                         .as_array::<8>()
@@ -847,9 +664,9 @@ pub trait Instructive: Sized {
                         arguments.push((to, value));
                     }
 
-                    let otherwise = (otherwise, arguments);
+                    let otherwise = (BlockIndex(otherwise), arguments);
 
-                    self.instructions_mut().push(Instruction::Branch {
+                    self.instructions_mut().push(IrInstruction::Branch {
                         condition,
                         when_true,
                         otherwise,
@@ -858,68 +675,72 @@ pub trait Instructive: Sized {
                 OpCode::Return => {
                     let value = ValueOrLocation::from_bytes(bytes, self);
 
-                    self.instructions_mut().push(Instruction::Return(value));
+                    self.instructions_mut().push(IrInstruction::Return(value));
                 }
             }
         }
 
         for instruction in self.instructions_mut() {
             match instruction {
-                Instruction::Unary { operand: value, .. }
-                | Instruction::Assign { value, .. }
-                | Instruction::Push(value)
-                | Instruction::Access { of: value, .. }
-                | Instruction::Call { callee: value, .. }
-                | Instruction::Return(value) => {
+                IrInstruction::NoOp => {}
+                IrInstruction::Unary { operand: value, .. }
+                | IrInstruction::Assign { value, .. }
+                | IrInstruction::Push(value)
+                | IrInstruction::Access { of: value, .. }
+                | IrInstruction::Call { callee: value, .. }
+                | IrInstruction::Return(value) => {
                     if let ValueOrLocation::Value(CopyableValue::Fn(address)) = value {
-                        *address = block_addresses[(*address - 16) / 8];
+                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                     }
                 }
-                Instruction::Binary { lhs, rhs, .. }
-                | Instruction::AccessAssign {
+                IrInstruction::Binary { lhs, rhs, .. }
+                | IrInstruction::AccessAssign {
                     of: lhs,
                     value: rhs,
                     ..
                 } => {
                     if let ValueOrLocation::Value(CopyableValue::Fn(address)) = lhs {
-                        *address = block_addresses[(*address - 16) / 8];
+                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                     }
 
                     if let ValueOrLocation::Value(CopyableValue::Fn(address)) = rhs {
-                        *address = block_addresses[(*address - 16) / 8];
+                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                     }
                 }
-                Instruction::Jump(address, arguments) => {
-                    *address = block_addresses[(*address - 16) / 8];
+                IrInstruction::Jump(address, arguments) => {
+                    *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
 
                     for (_, argument) in arguments {
                         if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address = block_addresses[(*address - 16) / 8];
+                            *address =
+                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                         }
                     }
                 }
-                Instruction::Branch {
+                IrInstruction::Branch {
                     condition,
                     when_true,
                     otherwise,
                 } => {
                     if let ValueOrLocation::Value(CopyableValue::Fn(address)) = condition {
-                        *address = block_addresses[(*address - 16) / 8];
+                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                     }
 
-                    when_true.0 = block_addresses[(when_true.0 - 16) / 8];
+                    when_true.0 = BlockIndex(block_addresses[(usize::from(when_true.0) - 16) / 8]);
 
-                    otherwise.0 = block_addresses[(otherwise.0 - 16) / 8];
+                    otherwise.0 = BlockIndex(block_addresses[(usize::from(otherwise.0) - 16) / 8]);
 
                     for (_, argument) in &mut when_true.1 {
                         if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address = block_addresses[(*address - 16) / 8];
+                            *address =
+                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                         }
                     }
 
                     for (_, argument) in &mut otherwise.1 {
                         if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address = block_addresses[(*address - 16) / 8];
+                            *address =
+                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
                         }
                     }
                 }
@@ -984,7 +805,7 @@ where
     }
 }
 
-impl<T> Disassemble<T> for ValueOrLocation
+impl<T> Disassemble<T> for ValueOrLocation<CopyableValue>
 where
     T: Instructive,
 {
@@ -1107,7 +928,7 @@ where
                 .expect("a boolean could not be created from its byte"),
             ),
             Ok(TypeId::Unit) => Self::Unit,
-            Ok(TypeId::Fn) => Self::Fn(
+            Ok(TypeId::Fn) => Self::Fn(BlockIndex(
                 bytes[(*instructive.ip_mut())..{
                     *instructive.ip_mut() += 8;
                     *instructive.ip_mut()
@@ -1116,7 +937,7 @@ where
                     .map(|array| u64::from_le_bytes(*array))
                     .and_then(|address| usize::try_from(address).ok())
                     .expect("a function was not a valid usize"),
-            ),
+            )),
             Ok(TypeId::NativeFn) => Self::NativeFn(
                 bytes[(*instructive.ip_mut())..{
                     *instructive.ip_mut() += 2;
@@ -1124,6 +945,7 @@ where
                 }]
                     .as_array::<2>()
                     .map(|array| u16::from_le_bytes(*array))
+                    .and_then(|native_fn| NativeFn::try_from(native_fn).ok())
                     .expect("a native function was not valid"),
             ),
             Ok(TypeId::Compound) => {

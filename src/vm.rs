@@ -1,6 +1,6 @@
-use crate::targets::vm::{
-    BinaryOp, CopyableValue, Instruction, Instructive, Location, NativeFn, UnaryOp, Value,
-    ValueIndex, ValueOrLocation,
+use crate::{
+    low_ir::{BinaryOp, Instruction, Location, NativeFn, UnaryOp, ValueOrLocation},
+    targets::vm::{CopyableValue, Instructive, Value, ValueIndex},
 };
 
 use std::{io::Write, mem};
@@ -19,7 +19,7 @@ struct Vm {
     max_registers: usize,
     registers: Vec<CopyableValue>,
     call_frames: Vec<CallFrame>,
-    instructions: Vec<Instruction>,
+    instructions: Vec<Instruction<CopyableValue>>,
     ip: usize,
 }
 
@@ -28,7 +28,7 @@ impl Instructive for Vm {
         &mut self.ip
     }
 
-    fn instructions_mut(&mut self) -> &mut Vec<Instruction> {
+    fn instructions_mut(&mut self) -> &mut Vec<Instruction<CopyableValue>> {
         &mut self.instructions
     }
 
@@ -75,18 +75,18 @@ macro_rules! dereference_value {
         $self:ident, $value:expr $(,)?
     ) => {
         match $value {
-            $crate::targets::vm::ValueOrLocation::At($crate::targets::vm::Location::Register(
-                index,
-            )) => $self.registers[usize::from(index)],
-            $crate::targets::vm::ValueOrLocation::At(
-                $crate::targets::vm::Location::StackOffset(offset),
-            ) => $self
-                .call_frames
-                .last()
-                .map_or($self.stack[usize::from(offset)], |frame| {
-                    $self.stack[frame.fp + usize::from(offset)]
-                }),
-            $crate::targets::vm::ValueOrLocation::Value(
+            $crate::low_ir::ValueOrLocation::At($crate::low_ir::Location::Register(index)) => {
+                $self.registers[usize::from(index)]
+            }
+            $crate::low_ir::ValueOrLocation::At($crate::low_ir::Location::StackOffset(offset)) => {
+                $self
+                    .call_frames
+                    .last()
+                    .map_or($self.stack[usize::from(offset)], |frame| {
+                        $self.stack[frame.fp + usize::from(offset)]
+                    })
+            }
+            $crate::low_ir::ValueOrLocation::Value(
                 $crate::targets::vm::CopyableValue::ValueIndex(value_index),
             ) => match $self.values.get(usize::from(value_index)) {
                 None => panic!("tried to find a value that doesn't exist"),
@@ -135,7 +135,7 @@ macro_rules! dereference_value {
                     | $crate::targets::vm::Value::TaggedCompound { .. },
                 ) => $crate::targets::vm::CopyableValue::ValueIndex(value_index),
             },
-            $crate::targets::vm::ValueOrLocation::Value(value) => value,
+            $crate::low_ir::ValueOrLocation::Value(value) => value,
         }
     };
 }
@@ -151,6 +151,7 @@ impl Vm {
         while self.ip < instructions.len() {
             match instructions.get(self.ip) {
                 None => break,
+                Some(Instruction::NoOp) => {}
                 Some(Instruction::Unary { op, operand, to }) => {
                     let operand = *operand;
                     let to = *to;
@@ -339,7 +340,7 @@ impl Vm {
                                 previous_registers: Vec::with_capacity(self.max_registers),
                             };
 
-                            self.ip = callee;
+                            self.ip = usize::from(callee);
 
                             self.call_frames.push(call_frame);
 
@@ -348,7 +349,11 @@ impl Vm {
                         CopyableValue::NativeFn(index) => {
                             let call_arguments = self.stack.split_off(self.stack.len() - arity);
 
-                            let value = Self::native_fn_call(call_arguments.as_slice(), index, out);
+                            let value = Self::native_fn_call(
+                                call_arguments.as_slice(),
+                                u16::from(index),
+                                out,
+                            );
 
                             self.assign(to, value);
                         }
@@ -367,7 +372,7 @@ impl Vm {
                         self.assign(to, argument);
                     }
 
-                    self.ip = *destination;
+                    self.ip = usize::from(*destination);
 
                     continue;
                 }
@@ -390,7 +395,7 @@ impl Vm {
                                 self.assign(to, argument);
                             }
 
-                            self.ip = when_true.0;
+                            self.ip = usize::from(when_true.0);
                         }
                         CopyableValue::Boolean(false) => {
                             let arguments = otherwise
@@ -403,7 +408,7 @@ impl Vm {
                                 self.assign(to, argument);
                             }
 
-                            self.ip = otherwise.0;
+                            self.ip = usize::from(otherwise.0);
                         }
                         _ => panic!("branch condition was not a boolean"),
                     }
@@ -475,7 +480,7 @@ impl Vm {
         }
     }
 
-    fn dereference_value(&mut self, value: ValueOrLocation) -> CopyableValue {
+    fn dereference_value(&mut self, value: ValueOrLocation<CopyableValue>) -> CopyableValue {
         match value {
             ValueOrLocation::At(Location::Register(index)) => self.registers[usize::from(index)],
             ValueOrLocation::At(Location::StackOffset(offset)) => {

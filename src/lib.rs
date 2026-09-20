@@ -2,6 +2,7 @@ mod allocate_registers;
 mod basic_blocks;
 mod evaluate;
 mod lex;
+mod low_ir;
 mod name_resolve;
 mod optimize;
 mod parse;
@@ -11,10 +12,13 @@ mod type_check;
 pub mod vm;
 
 pub use {
-    basic_blocks::{Address, Instruction, Value},
+    low_ir::{
+        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, StackOffset,
+        UnaryOp, Value as IrValue, ValueOrLocation,
+    },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
-    ssa::{Block, BlockTerminator, JumpTo, Ssa},
+    ssa::Ssa,
     type_check::Error as TypeCheckError,
 };
 
@@ -70,7 +74,7 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
-pub fn evaluate<O>(compiled: &Compiled<'_, Ssa>, out: &mut O)
+pub fn evaluate<O>(compiled: &Compiled<'_, ssa::Ssa>, out: &mut O)
 where
     O: Write,
 {
@@ -81,6 +85,14 @@ where
     );
 }
 
+#[must_use]
+pub fn lower<'a>(compiled: &Compiled<'a, ssa::Ssa>) -> Compiled<'a, Ir<IrValue>> {
+    Compiled {
+        sources_with_core: compiled.sources().to_vec(),
+        result: low_ir::lower(compiled),
+    }
+}
+
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc)]
@@ -88,7 +100,7 @@ pub fn compile<'a>(
     sources: &[(usize, &'a str)],
     max_registers: usize,
     optimized: bool,
-) -> Result<Compiled<'a, Ssa>, Compiled<'a, Vec<Spanned<Error>>>> {
+) -> Result<Compiled<'a, ssa::Ssa>, Compiled<'a, Vec<Spanned<Error>>>> {
     let mut source_ids = sources
         .iter()
         .map(|(source_id, _)| *source_id)
@@ -302,6 +314,7 @@ macro_rules! __test_vm_output_single_function {
             let mut out = vec![];
 
             let result = $crate::compile([(0, SOURCE)].as_slice(), $registers, $optimized)
+                .map(|compiled| $crate::lower(&compiled))
                 .map(|compiled| $crate::targets::vm::compile(&compiled))
                 .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
                 .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
@@ -426,3 +439,37 @@ macro_rules! __test_compilation_errors {
 }
 
 pub use __test_compilation_errors as test_compilation_errors;
+
+#[macro_export]
+macro_rules! __int_enum {
+    (
+        $v:vis $name:ident as $int:ty ;
+        $($variant:ident => $value:literal,)+
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        $v enum $name {
+            $($variant,)+
+        }
+
+        impl From<$name> for $int {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => $value,)+
+                }
+            }
+        }
+
+        impl TryFrom<$int> for $name {
+            type Error = $int;
+
+            fn try_from(value: $int) -> Result<Self, Self::Error> {
+                match value {
+                    $($value => Ok(Self::$variant),)+
+                    _ => Err(value),
+                }
+            }
+        }
+    };
+}
+
+pub use __int_enum as int_enum;

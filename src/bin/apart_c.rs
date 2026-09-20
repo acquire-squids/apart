@@ -53,6 +53,8 @@ fn main() -> ExitCode {
                                 evaluate(&compiled);
                             }
 
+                            let compiled = apart::lower(&compiled);
+
                             let output_path = Path::new("main.apart");
 
                             if output_path.exists() && output_path.is_file()
