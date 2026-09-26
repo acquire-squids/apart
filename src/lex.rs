@@ -73,24 +73,6 @@ impl Lexer {
         self.source_id
     }
 
-    pub const fn source(&self) -> &str {
-        self.source.as_str()
-    }
-
-    pub fn peek(&mut self) -> Option<&<Self as Iterator>::Item> {
-        if self.lookahead.is_none() {
-            self.lookahead = self.next();
-        }
-
-        self.lookahead.as_ref()
-    }
-
-    pub const fn restore(&mut self, from: Span) {
-        self.byte_offset = from.start();
-
-        self.lookahead = None;
-    }
-
     const fn at(&self) -> usize {
         self.byte_offset
     }

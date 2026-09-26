@@ -7,6 +7,7 @@ mod optimize;
 mod parse;
 mod ssa;
 pub mod targets;
+mod token_tree;
 mod type_check;
 pub mod vm;
 
@@ -17,6 +18,7 @@ pub use {
     },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
+    token_tree::Error as TokenTreeError,
     type_check::Error as TypeCheckError,
 };
 
@@ -53,6 +55,7 @@ impl<'a, T> Compiled<'a, T> {
 
 #[derive(Debug)]
 pub enum Error {
+    TokenTree(TokenTreeError),
     Parse(ParseError),
     NameResolve(NameResolveError),
     TypeCheck(TypeCheckError),
@@ -61,6 +64,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TokenTree(error) => write!(f, "{error}"),
             Self::Parse(error) => write!(f, "{error}"),
             Self::NameResolve(error) => write!(f, "{error}"),
             Self::TypeCheck(error) => write!(f, "{error}"),
@@ -74,7 +78,7 @@ impl Reportable for Error {}
 
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
-#[allow(clippy::missing_panics_doc)]
+#[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 pub fn compile<'a>(
     sources: &[(usize, &'a str)],
     max_registers: usize,
@@ -125,18 +129,39 @@ pub fn compile<'a>(
 
     let mut ast = parse::Ast::new(core_source_id);
 
+    let mut errors = vec![];
+
     for (source_id, source) in sources {
         let mut lexer = lex::Lexer::new(*source_id);
 
         lexer.push_source(source);
 
-        parse::parse(&mut lexer, &mut ast).map_err(|errors| Compiled {
+        let token_trees = match token_tree::tokens_to_token_trees(&mut lexer) {
+            Ok(token_trees) => token_trees,
+            Err(token_tree_errors) => {
+                for token_tree_error in token_tree_errors {
+                    errors.push(token_tree_error.transmute(Error::TokenTree));
+                }
+
+                continue;
+            }
+        };
+
+        match parse::parse(&token_trees, (source, *source_id), &mut ast) {
+            Ok(()) => {}
+            Err(parse_errors) => {
+                for parse_error in parse_errors {
+                    errors.push(parse_error.transmute(Error::Parse));
+                }
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(Compiled {
             sources_with_core: sources_with_core.clone(),
-            result: errors
-                .into_iter()
-                .map(|error| error.transmute(Error::Parse))
-                .collect::<Vec<_>>(),
-        })?;
+            result: errors,
+        });
     }
 
     let names = name_resolve::resolve_names(&ast).map_err(|errors| Compiled {

@@ -1,6 +1,7 @@
 use crate::{
     Reportable, Span, Spanned,
-    lex::{self, Lexer, Token},
+    lex::{Lexer, Token},
+    token_tree::{self, Forest, TokenTree, TokenTreeIndex, TreeKind},
 };
 
 use std::{
@@ -8,25 +9,31 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-pub fn parse(lexer: &mut Lexer, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
-    let mut parser = Parser::new(false);
+pub fn parse(
+    forest: &Forest,
+    (source, source_id): (&str, usize),
+    ast: &mut Ast,
+) -> Result<(), Vec<Spanned<Error>>> {
+    let mut parser = Parser::new(forest, (source, source_id), false);
 
-    parser.parse(lexer, ast)
+    parser.parse(ast)
 }
 
-struct Parser {
+struct Parser<'s, 'p> {
     errors: Vec<Spanned<Error>>,
+    forest: &'p Forest,
+    current_tree: TokenTreeIndex,
+    at: usize,
+    source: &'s str,
+    source_id: usize,
     is_core: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
     ExpectedExpr,
-    Lex(lex::Error),
     InvalidInteger,
     InvalidFloat,
-    UnclosedGroup,
-    UnclosedBlock,
     BlockWithoutSemicolon,
     InvalidName,
     NameIsKeyword,
@@ -40,12 +47,8 @@ pub enum Error {
     FnWithoutParameters,
     FnParameterWithoutName,
     FnParameterWithoutLeftArrow,
-    UnclosedFnParameters,
     FnWithoutBody,
-    UnclosedFnBody,
     CallWithoutComma,
-    UnclosedCall,
-    UnclosedFnTypeParameters,
     FnParametersWithoutComma,
     FnTypeParametersWithoutComma,
     FnTypeWithoutParameters,
@@ -63,15 +66,13 @@ pub enum Error {
     IfWithoutCondition,
     WhileWithoutCondition,
     ReturnWithoutValue,
-    UnnamedGeneric,
+    GenericWithoutName,
     GenericsWithoutComma,
-    UnclosedGenerics,
     ProductWithoutName,
     ProductWithoutFields,
     ProductFieldWithoutName,
     ProductFieldWithoutLeftArrow,
     ProductFieldsWithoutComma,
-    UnclosedProduct,
     SumWithoutName,
     SumWithoutVariants,
     SumVariantWithoutName,
@@ -79,15 +80,13 @@ pub enum Error {
     SumVariantFieldWithoutName,
     SumVariantFieldWithoutLeftArrow,
     SumVariantFieldsWithoutComma,
-    UnclosedSumVariant,
     SumVariantsWithoutComma,
-    UnclosedSum,
     ModWithoutName,
     ModWithoutBody,
-    UnclosedMod,
     TeachWithoutBody,
     InvalidAssociatedItem,
-    UnclosedTeach,
+    ExpectedBlock,
+    ExpectedCallArguments,
 }
 
 impl fmt::Display for Error {
@@ -95,14 +94,11 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ExpectedExpr => write!(f, "expected an expression"),
-            Self::Lex(lex_error) => write!(f, "{lex_error}"),
             Self::InvalidInteger => write!(
                 f,
                 "this integer is invalid because it doesn't fit within 64 bits unsigned"
             ),
             Self::InvalidFloat => write!(f, "this integer is not a valid f64"),
-            Self::UnclosedGroup => write!(f, "this group expression was never closed"),
-            Self::UnclosedBlock => write!(f, "this block expression was never closed"),
             Self::BlockWithoutSemicolon => write!(
                 f,
                 "if there is another expression here, a semicolon should be between it and the previous expression"
@@ -149,23 +145,16 @@ impl fmt::Display for Error {
                     "expected a \"<-\" after the function parameter name, and then a type signature"
                 )
             }
-            Self::UnclosedFnParameters | Self::UnclosedFnTypeParameters => {
-                write!(f, "this list of function parameters was never closed")
-            }
             Self::FnWithoutBody => {
                 write!(
                     f,
                     "expected a block expression to serve as the function body"
                 )
             }
-            Self::UnclosedFnBody => {
-                write!(f, "this function body was never closed")
-            }
             Self::CallWithoutComma => write!(
                 f,
                 "if there is another expression here, a comma should be between it and the previous expression"
             ),
-            Self::UnclosedCall => write!(f, "this call was never closed"),
             Self::FnParametersWithoutComma | Self::FnTypeParametersWithoutComma => write!(
                 f,
                 "if there is another parameter here, a comma should be between it and the previous parameter"
@@ -223,7 +212,7 @@ impl fmt::Display for Error {
             Self::ReturnWithoutValue => {
                 write!(f, "there must be a value to return")
             }
-            Self::UnnamedGeneric => {
+            Self::GenericWithoutName => {
                 write!(f, "expected the name of a generic")
             }
             Self::GenericsWithoutComma => {
@@ -231,9 +220,6 @@ impl fmt::Display for Error {
                     f,
                     "if there is another generic here, a comma should be between it and the previous generic"
                 )
-            }
-            Self::UnclosedGenerics => {
-                write!(f, "this list of generics was never closed")
             }
             Self::ProductWithoutName => {
                 write!(f, "expected a product name")
@@ -258,9 +244,6 @@ impl fmt::Display for Error {
                     f,
                     "if there is another product field here, a comma should be between it and the previous field"
                 )
-            }
-            Self::UnclosedProduct => {
-                write!(f, "this product was never closed")
             }
             Self::SumWithoutName => {
                 write!(f, "expected a sum name")
@@ -295,17 +278,11 @@ impl fmt::Display for Error {
                     "if there is another sum variant field here, a comma should be between it and the previous field"
                 )
             }
-            Self::UnclosedSumVariant => {
-                write!(f, "this sum variant was never closed")
-            }
             Self::SumVariantsWithoutComma => {
                 write!(
                     f,
                     "if there is another sum variant here, a comma should be between it and the previous variant"
                 )
-            }
-            Self::UnclosedSum => {
-                write!(f, "this sum was never closed")
             }
             Self::ModWithoutName => {
                 write!(f, "expected a module name")
@@ -316,9 +293,6 @@ impl fmt::Display for Error {
                     "the module's items should be here, within curly brackets"
                 )
             }
-            Self::UnclosedMod => {
-                write!(f, "this module was never closed")
-            }
             Self::TeachWithoutBody => {
                 write!(
                     f,
@@ -328,9 +302,11 @@ impl fmt::Display for Error {
             Self::InvalidAssociatedItem => {
                 write!(f, "only functions can be associated with a type")
             }
-            Self::UnclosedTeach => {
-                write!(f, "this \"teach\" was never closed")
-            }
+            Self::ExpectedBlock => write!(f, "expected zero or more expressions within brackets"),
+            Self::ExpectedCallArguments => write!(
+                f,
+                "expected zero or more comma-separated expressions within parentheses"
+            ),
         }
     }
 }
@@ -345,13 +321,9 @@ impl Reportable for Error {
             Self::ExpectedExpr => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
             ],
-            Self::UnclosedGroup | Self::UnclosedFnParameters | Self::UnclosedFnTypeParameters | Self::UnclosedCall => vec!["you're probably missing a \")\" somewhere".to_string()],
-            Self::UnclosedGenerics => vec!["you're probably missing a \"]\" somewhere".to_string()],
-            Self::UnclosedBlock | Self::UnclosedProduct | Self::UnclosedSumVariant | Self::UnclosedSum | Self::UnclosedMod | Self::UnclosedTeach => vec!["you're probably missing a \"}\" somewhere".to_string()],
             Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", or \"teach\"".to_string()],
             Self::ExpectedType => vec!["type signatures can start with \"funky\" or a name".to_string()],
-            Self::Lex(_)
-            | Self::InvalidFloat
+            Self::InvalidFloat
             | Self::BlockWithoutSemicolon
             | Self::NameIsKeyword
             | Self::LetInWithoutEqual
@@ -364,7 +336,6 @@ impl Reportable for Error {
             | Self::FnParameterWithoutName
             | Self::FnParameterWithoutLeftArrow
             | Self::FnWithoutBody
-            | Self::UnclosedFnBody
             | Self::CallWithoutComma
             | Self::FnParametersWithoutComma
             | Self::FnTypeParametersWithoutComma
@@ -382,7 +353,7 @@ impl Reportable for Error {
             | Self::IfWithoutCondition
             | Self::WhileWithoutCondition
             | Self::ReturnWithoutValue
-            | Self::UnnamedGeneric
+            | Self::GenericWithoutName
             | Self::GenericsWithoutComma
             | Self::ProductWithoutName
             | Self::ProductWithoutFields
@@ -400,7 +371,9 @@ impl Reportable for Error {
             | Self::ModWithoutName
             | Self::ModWithoutBody
             | Self::TeachWithoutBody
-            | Self::InvalidAssociatedItem => vec![],
+            | Self::InvalidAssociatedItem
+            | Self::ExpectedBlock
+            | Self::ExpectedCallArguments => vec![],
         }
     }
 }
@@ -712,9 +685,28 @@ impl Ast {
 
         lexer.push_source(crate::CORE_SOURCE);
 
-        let mut parser = Parser::new(true);
+        let report_data = reporting::ReportData::new(
+            crate::CORE_SOURCE,
+            "CORE ERROR",
+            crate::CORE_PATH,
+            "...",
+            reporting::ReportColors::new(),
+        );
 
-        if let Err(errors) = parser.parse(&mut lexer, &mut self) {
+        let forest = match token_tree::tokens_to_token_trees(&mut lexer) {
+            Err(errors) => {
+                for error in errors {
+                    let _ = report_data.report(&error, &mut std::io::stderr().lock());
+                }
+
+                panic!("core failed to parse");
+            }
+            Ok(forest) => forest,
+        };
+
+        let mut parser = Parser::new(&forest, (crate::CORE_SOURCE, core_id), true);
+
+        if let Err(errors) = parser.parse(&mut self) {
             let report_data = reporting::ReportData::new(
                 crate::CORE_SOURCE,
                 "CORE ERROR",
@@ -820,16 +812,21 @@ impl Ast {
     }
 }
 
-impl Parser {
-    const fn new(is_core: bool) -> Self {
+impl<'s, 'p> Parser<'s, 'p> {
+    const fn new(forest: &'p Forest, (source, source_id): (&'s str, usize), is_core: bool) -> Self {
         Self {
             errors: vec![],
+            forest,
+            current_tree: forest.root(),
+            at: 0,
+            source,
+            source_id,
             is_core,
         }
     }
 
-    fn keyword<'a>(&self, lexer: &'a Lexer, span: Span) -> Option<&'a str> {
-        let lexeme = span.lexeme(lexer.source())?;
+    fn keyword(&self, span: Span) -> Option<&'s str> {
+        let lexeme = span.lexeme(self.source)?;
 
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
@@ -841,152 +838,228 @@ impl Parser {
         }
     }
 
-    fn advance(&mut self, lexer: &mut Lexer) -> Option<Spanned<Token>> {
-        if self.peek(lexer).is_some() {
-            lexer.next().and_then(Result::ok)
-        } else {
-            None
-        }
+    fn in_token_tree(&self, token_tree_index: TokenTreeIndex) -> bool {
+        self.current_tree == token_tree_index
+            || matches!(
+                self.forest.get_tree(self.current_tree),
+                Some(TokenTree::Tree { outer: Some(outer), .. })
+                    if *outer == token_tree_index && self.at == 0
+            )
     }
 
-    fn peek<'a>(&mut self, lexer: &'a mut Lexer) -> Option<&'a Spanned<Token>> {
-        while lexer.peek().is_some_and(Result::is_err)
-            && let Some(Err(error)) = lexer.next()
+    fn leave_finished_token_trees(&mut self) {
+        while let Some(TokenTree::Tree { tokens, outer, .. }) =
+            self.forest.get_tree(self.current_tree)
+            && self.at >= tokens.len()
+            && let Some(outer) = outer
+            && let Some(TokenTree::Tree { tokens, .. }) = self.forest.get_tree(*outer)
         {
-            self.errors.push(error.transmute(Error::Lex));
+            self.at = tokens
+                .iter()
+                .position(|other_tree| *other_tree == self.current_tree)
+                .map_or(tokens.len(), |at| at + 1);
+
+            self.current_tree = *outer;
+        }
+    }
+
+    fn advance_token_tree(&mut self) -> Option<&'p TokenTree> {
+        self.leave_finished_token_trees();
+
+        while let Some(TokenTree::Tree { tokens, .. }) = self.forest.get_tree(self.current_tree) {
+            let next_token_tree = if let Some(token_tree_index) = tokens.get(self.at) {
+                match self.forest.get_tree(*token_tree_index) {
+                    Some(
+                        tree @ TokenTree::Tree {
+                            tokens: inner_tokens,
+                            ..
+                        },
+                    ) => {
+                        if inner_tokens.is_empty() {
+                            self.at += 1;
+                        } else {
+                            self.current_tree = *token_tree_index;
+                            self.at = 0;
+                        }
+
+                        Some(tree)
+                    }
+                    Some(token @ TokenTree::Token(_)) => {
+                        self.at += 1;
+
+                        Some(token)
+                    }
+                    None => unreachable!("all token trees should exist"),
+                }
+            } else {
+                None
+            };
+
+            self.leave_finished_token_trees();
+
+            if next_token_tree.is_some() {
+                return next_token_tree;
+            }
         }
 
-        lexer
-            .peek()
-            .and_then(|guaranteed_token| guaranteed_token.as_ref().ok())
+        None
     }
 
-    fn check_next<'a>(&mut self, lexer: &'a mut Lexer, token: Token) -> Option<&'a Spanned<Token>> {
-        self.peek(lexer)
-            .filter(|next_token| next_token.kind() == &token)
+    fn peek_token_tree(&self) -> Option<&'p TokenTree> {
+        self.forest
+            .get_tree(self.current_tree)
+            .and_then(|token_tree| match token_tree {
+                TokenTree::Tree { tokens, .. } => tokens
+                    .get(self.at)
+                    .and_then(|token_tree_index| self.forest.get_tree(*token_tree_index)),
+                TokenTree::Token(_) => unreachable!("the current tree is never a single token"),
+            })
     }
 
-    fn match_next(&mut self, lexer: &mut Lexer, token: Token) -> Option<Spanned<Token>> {
-        self.check_next(lexer, token)
-            .map(|_| ())
-            .and_then(|()| self.advance(lexer))
+    fn check_next_token_tree(&self, tree_kind: TreeKind) -> Option<&'p TokenTree> {
+        self.peek_token_tree().filter(|next_token_tree| matches!(next_token_tree, TokenTree::Tree { kind, .. } if *kind == tree_kind))
     }
 
-    fn span_or_end(&mut self, lexer: &mut Lexer) -> Span {
-        let source_len = lexer.source().len();
-        let source_id = lexer.source_id();
+    fn match_next_token_tree(&mut self, tree_kind: TreeKind) -> Option<&'p TokenTree> {
+        self.check_next_token_tree(tree_kind)
+            .and_then(|_| self.advance_token_tree())
+    }
 
-        self.peek(lexer).map_or_else(
+    fn consume_next_token_tree_with_span(
+        &mut self,
+        tree_kind: TreeKind,
+        error: Error,
+        span: Span,
+    ) -> Result<&'p TokenTree, Spanned<Error>> {
+        self.match_next_token_tree(tree_kind)
+            .ok_or_else(|| Spanned::new(error, span))
+    }
+
+    fn consume_next_token_tree(
+        &mut self,
+        tree_kind: TreeKind,
+        error: Error,
+    ) -> Result<&'p TokenTree, Spanned<Error>> {
+        let span = self.span_or_end();
+
+        self.consume_next_token_tree_with_span(tree_kind, error, span)
+    }
+
+    fn check_next(&self, token_kind: Token) -> Option<&'p Spanned<Token>> {
+        self.peek_token_tree()
+            .and_then(|next_token_tree| match next_token_tree {
+                TokenTree::Token(token) if *token.kind() == token_kind => Some(token),
+                TokenTree::Token(_) | TokenTree::Tree { .. } => None,
+            })
+    }
+
+    fn match_next(&mut self, token: Token) -> Option<&'p Spanned<Token>> {
+        self.check_next(token).inspect(|_| {
+            self.advance_token_tree();
+        })
+    }
+
+    fn span_or_end(&self) -> Span {
+        let source_len = self.source.len();
+        let source_id = self.source_id;
+
+        self.peek_token_tree().map_or_else(
             || Span::new(source_id, source_len, source_len),
-            Spanned::span,
+            |token_tree| match token_tree {
+                TokenTree::Token(token) => token.span(),
+                TokenTree::Tree { span, .. } => *span,
+            },
         )
     }
 
     fn consume_next_with_span(
         &mut self,
-        lexer: &mut Lexer,
         token: Token,
         error: Error,
         span: Span,
-    ) -> Result<Spanned<Token>, Spanned<Error>> {
-        self.match_next(lexer, token)
+    ) -> Result<&'p Spanned<Token>, Spanned<Error>> {
+        self.match_next(token)
             .ok_or_else(|| Spanned::new(error, span))
     }
 
     fn consume_next(
         &mut self,
-        lexer: &mut Lexer,
         token: Token,
         error: Error,
-    ) -> Result<Spanned<Token>, Spanned<Error>> {
-        let span = self.span_or_end(lexer);
+    ) -> Result<&'p Spanned<Token>, Spanned<Error>> {
+        let span = self.span_or_end();
 
-        self.consume_next_with_span(lexer, token, error, span)
+        self.consume_next_with_span(token, error, span)
     }
 
-    fn check_keyword_next<'a>(
-        &mut self,
-        lexer: &'a mut Lexer,
-        lexeme: &str,
-    ) -> Option<&'a Spanned<Token>> {
-        if self.peek(lexer).cloned().is_some_and(|next_token| {
-            *next_token.kind() == Token::Identifier
+    fn check_keyword_next(&self, lexeme: &str) -> Option<&'p Spanned<Token>> {
+        if self.peek_token_tree().is_some_and(|next_token_tree| {
+            matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Identifier
                 && self
-                    .keyword(lexer, next_token.span())
-                    .is_some_and(|text| text == lexeme)
+                    .keyword(next_token.span())
+                    .is_some_and(|text| text == lexeme))
         }) {
-            self.peek(lexer)
+            self.check_next(Token::Identifier)
         } else {
             None
         }
     }
 
-    fn match_keyword_next(&mut self, lexer: &mut Lexer, lexeme: &str) -> Option<Spanned<Token>> {
-        self.check_keyword_next(lexer, lexeme)
-            .map(|_| ())
-            .and_then(|()| self.advance(lexer))
+    fn match_keyword_next(&mut self, lexeme: &str) -> Option<&'p Spanned<Token>> {
+        self.check_keyword_next(lexeme).inspect(|_| {
+            self.advance_token_tree();
+        })
     }
 
-    fn consume_name(
-        &mut self,
-        lexer: &mut Lexer,
-        error: Error,
-    ) -> Result<Spanned<Token>, Spanned<Error>> {
-        if self.peek(lexer).cloned().is_some_and(|next_token| {
-            *next_token.kind() == Token::Identifier
-                && self.keyword(lexer, next_token.span()).is_none()
+    fn consume_name(&mut self, error: Error) -> Result<&'p Spanned<Token>, Spanned<Error>> {
+        if self.peek_token_tree().is_some_and(|next_token_tree| {
+            matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Identifier
+                && self
+                    .keyword(next_token.span())
+                .is_none()
+            )
         }) {
-            self.consume_next(lexer, Token::Identifier, error)
+            self.consume_next(Token::Identifier, error)
         } else {
-            Err(Spanned::new(error, self.span_or_end(lexer)))
+            Err(Spanned::new(error, self.span_or_end()))
         }
     }
 
     fn consume_keyword(
         &mut self,
-        lexer: &mut Lexer,
         error: Error,
         lexeme: &str,
-    ) -> Result<Spanned<Token>, Spanned<Error>> {
-        self.match_keyword_next(lexer, lexeme)
-            .ok_or_else(|| Spanned::new(error, self.span_or_end(lexer)))
+    ) -> Result<&'p Spanned<Token>, Spanned<Error>> {
+        self.match_keyword_next(lexeme)
+            .ok_or_else(|| Spanned::new(error, self.span_or_end()))
     }
 
-    fn spanned_name(&mut self, lexer: &mut Lexer) -> Result<Spanned<String>, Spanned<Error>> {
-        let name_span = self.consume_name(lexer, Error::InvalidName)?.span();
+    fn spanned_name(&mut self) -> Result<Spanned<String>, Spanned<Error>> {
+        let name_span = self.consume_name(Error::InvalidName)?.span();
 
         Ok(Spanned::new(
             name_span
-                .lexeme(lexer.source())
-                .ok_or_else(|| {
-                    Spanned::new(
-                        Error::InvalidName,
-                        Span::new(
-                            lexer.source_id(),
-                            lexer.source().len(),
-                            lexer.source().len(),
-                        ),
-                    )
-                })?
+                .lexeme(self.source)
+                .ok_or_else(|| Spanned::new(Error::InvalidName, self.span_or_end()))?
                 .to_string(),
             name_span,
         ))
     }
 }
 
-impl Parser {
-    fn parse(&mut self, lexer: &mut Lexer, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
+impl Parser<'_, '_> {
+    fn parse(&mut self, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
         let mut succeeded = None;
 
-        while self.peek(lexer).is_some() {
-            match self.parse_item(lexer, ast) {
+        while self.peek_token_tree().is_some() {
+            match self.parse_item(ast) {
                 Err(error) => {
                     if succeeded.is_none_or(|succeeded| succeeded) {
                         self.errors.push(error);
                         succeeded = Some(false);
                     }
 
-                    self.advance(lexer);
+                    self.advance_token_tree();
                 }
                 Ok(item) => {
                     succeeded = Some(true);
@@ -1003,64 +1076,55 @@ impl Parser {
     }
 }
 
-impl Parser {
-    fn parse_item(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-    ) -> Result<ItemIndex, Spanned<Error>> {
-        let visibility = if self.match_keyword_next(lexer, "pub").is_some() {
+impl Parser<'_, '_> {
+    fn parse_item(&mut self, ast: &mut Ast) -> Result<ItemIndex, Spanned<Error>> {
+        let visibility = if self.match_keyword_next("pub").is_some() {
             Visibility::Public
         } else {
             Visibility::Private
         };
 
-        if let Some(token) = self.match_next(lexer, Token::Identifier) {
-            if let Some(keyword) = self.keyword(lexer, token.span()) {
+        if let Some(token) = self.match_next(Token::Identifier) {
+            if let Some(keyword) = self.keyword(token.span()) {
                 let span = token.span();
 
                 match keyword {
-                    "primitive" => self.parse_primitive(lexer, ast, span),
+                    "primitive" => self.parse_primitive(ast, span),
                     "native" => {
                         let token =
-                            self.consume_next(lexer, Token::Identifier, Error::ExpectedNativeItem)?;
+                            self.consume_next(Token::Identifier, Error::ExpectedNativeItem)?;
 
                         let native_span = span;
                         let span = token.span();
 
-                        if self.keyword(lexer, span) == Some("funky") {
-                            self.parse_native_function(lexer, ast, native_span, visibility)
+                        if self.keyword(span) == Some("funky") {
+                            self.parse_native_function(ast, native_span, visibility)
                         } else {
                             Err(Spanned::new(Error::UnknownNativeItem, token.span()))
                         }
                     }
-                    "funky" => self.parse_fn(lexer, ast, span, visibility),
-                    "product" => self.parse_product(lexer, ast, span, visibility, true),
-                    "sum" => self.parse_sum(lexer, ast, span, visibility),
-                    "mod" => self.parse_mod(lexer, ast, span, visibility),
-                    "teach" => self.parse_teach(lexer, ast, span),
+                    "funky" => self.parse_fn(ast, span, visibility),
+                    "product" => self.parse_product(ast, span, visibility, true),
+                    "sum" => self.parse_sum(ast, span, visibility),
+                    "mod" => self.parse_mod(ast, span, visibility),
+                    "teach" => self.parse_teach(ast, span),
                     _ => Err(Spanned::new(Error::ExpectedItem, span)),
                 }
             } else {
                 Err(Spanned::new(Error::ExpectedItem, token.span()))
             }
         } else {
-            Err(Spanned::new(Error::ExpectedItem, self.span_or_end(lexer)))
+            Err(Spanned::new(Error::ExpectedItem, self.span_or_end()))
         }
     }
 
-    fn parse_primitive(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        span: Span,
-    ) -> Result<ItemIndex, Spanned<Error>> {
+    fn parse_primitive(&mut self, ast: &mut Ast, span: Span) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::PrimitiveWithoutName))?;
 
         let semicolon_span = self
-            .consume_next(lexer, Token::Semicolon, Error::PrimitiveWithoutSemicolon)?
+            .consume_next(Token::Semicolon, Error::PrimitiveWithoutSemicolon)?
             .span();
 
         let span = span
@@ -1072,23 +1136,20 @@ impl Parser {
 
     fn parse_native_function(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
         visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::NativeFnWithoutName))?;
 
-        self.consume_next(lexer, Token::Equal, Error::NativeFnWithoutEqual)?;
+        self.consume_next(Token::Equal, Error::NativeFnWithoutEqual)?;
 
-        let signature = self
-            .parse_type_signature(lexer)
-            .map_err(|error| error.transmute(|_| Error::NativeFnWithoutType))?;
+        let signature = self.parse_type_signature()?;
 
         let semicolon_span = self
-            .consume_next(lexer, Token::Semicolon, Error::NativeFnWithoutSemicolon)?
+            .consume_next(Token::Semicolon, Error::NativeFnWithoutSemicolon)?
             .span();
 
         let span = span
@@ -1108,108 +1169,101 @@ impl Parser {
     #[allow(clippy::too_many_lines)]
     fn parse_fn(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
         visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::FnWithoutName))?;
 
-        let generics = self.parse_generics(lexer)?;
+        let generics = self.parse_generics()?;
 
-        let parameters_span = self
-            .consume_next(lexer, Token::OpenParenthesis, Error::FnWithoutParameters)?
-            .span();
+        let parameters_span = self.span_or_end();
 
-        let mut parameters = vec![];
-
-        while self.peek(lexer).is_some()
-            && self.check_next(lexer, Token::CloseParenthesis).is_none()
-        {
-            let parameter_name = self
-                .spanned_name(lexer)
-                .map_err(|error| error.transmute(|_| Error::FnParameterWithoutName))?;
-
-            let less = self.consume_next(lexer, Token::Less, Error::FnParameterWithoutLeftArrow)?;
-
-            let minus =
-                self.consume_next(lexer, Token::Minus, Error::FnParameterWithoutLeftArrow)?;
-
-            if minus.span().start() != less.span().end() {
-                return Err(Spanned::new(
-                    Error::FnParameterWithoutLeftArrow,
-                    less.span()
-                        .combine_with(minus.span())
-                        .expect("these spans are from the same source"),
-                ));
-            }
-
-            let type_signature = self.parse_type_signature(lexer)?;
-
-            parameters.push(Parameter {
-                name: parameter_name,
-                type_signature,
-            });
-
-            if self.check_next(lexer, Token::CloseParenthesis).is_none() {
-                self.consume_next(lexer, Token::Comma, Error::FnParametersWithoutComma)?;
-            }
-        }
-
-        let parameters_end = self
-            .consume_next_with_span(
-                lexer,
-                Token::CloseParenthesis,
-                Error::UnclosedFnParameters,
+        let parameters = if let TokenTree::Tree { tokens, .. } = self
+            .consume_next_token_tree_with_span(
+                TreeKind::Parentheses,
+                Error::FnWithoutParameters,
                 parameters_span,
             )?
-            .span();
+            && !tokens.is_empty()
+        {
+            let mut parameters = vec![];
 
-        let return_type = if let Some(minus) = self.match_next(lexer, Token::Minus) {
+            let current_tree = self.current_tree;
+
+            while self.in_token_tree(current_tree) {
+                let parameter_name = self
+                    .spanned_name()
+                    .map_err(|error| error.transmute(|_| Error::FnParameterWithoutName))?;
+
+                let less = self.consume_next(Token::Less, Error::FnParameterWithoutLeftArrow)?;
+
+                let minus = self.consume_next(Token::Minus, Error::FnParameterWithoutLeftArrow)?;
+
+                if minus.span().start() != less.span().end() {
+                    return Err(Spanned::new(
+                        Error::FnParameterWithoutLeftArrow,
+                        less.span()
+                            .combine_with(minus.span())
+                            .expect("these spans are from the same source"),
+                    ));
+                }
+
+                let type_signature = self.parse_type_signature()?;
+
+                parameters.push(Parameter {
+                    name: parameter_name,
+                    type_signature,
+                });
+
+                if self.in_token_tree(current_tree) {
+                    self.consume_next(Token::Comma, Error::FnParametersWithoutComma)?;
+                }
+            }
+
+            parameters
+        } else {
+            vec![]
+        };
+
+        let current_tree = self.current_tree;
+        let at = self.at;
+
+        let return_type = if let Some(minus) = self.match_next(Token::Minus) {
             if self
-                .match_next(lexer, Token::Greater)
+                .match_next(Token::Greater)
                 .is_some_and(|greater| minus.span().end() == greater.span().start())
             {
-                self.parse_type_signature(lexer)?
+                self.parse_type_signature()?
             } else {
-                lexer.restore(minus.span());
+                self.current_tree = current_tree;
+                self.at = at;
 
                 Spanned::new(
                     TypeSignature::Normal {
-                        name: Spanned::new("unit".to_string(), parameters_end),
+                        name: Spanned::new("unit".to_string(), parameters_span),
                         generics: vec![],
                     },
-                    parameters_end,
+                    parameters_span,
                 )
             }
         } else {
             Spanned::new(
                 TypeSignature::Normal {
-                    name: Spanned::new("unit".to_string(), parameters_end),
+                    name: Spanned::new("unit".to_string(), parameters_span),
                     generics: vec![],
                 },
-                parameters_end,
+                parameters_span,
             )
         };
 
-        let body_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::FnWithoutBody)?
-            .span();
+        let body_span = self.span_or_end();
 
-        let mut exprs = vec![];
+        let exprs = self.block_exprs(ast)?;
 
-        self.block_exprs(lexer, ast, &mut exprs)?;
-
-        let fn_end = self
-            .consume_next(lexer, Token::CloseBracket, Error::UnclosedFnBody)?
-            .span();
-
-        let body = ast.push_expr(Spanned::new(
-            Expr::Block(exprs),
-            body_span.combine_with(fn_end).unwrap_or(body_span),
-        ));
+        let body = ast.push_expr(Spanned::new(Expr::Block(exprs), body_span));
 
         let funky = ast.push_item(Spanned::new(
             Item::Fn {
@@ -1220,115 +1274,110 @@ impl Parser {
                 generics,
                 body,
             },
-            span.combine_with(fn_end).unwrap_or(span),
+            span.combine_with(body_span).unwrap_or(span),
         ));
 
         Ok(funky)
     }
 
-    fn parse_generics(
-        &mut self,
-        lexer: &mut Lexer,
-    ) -> Result<Vec<Spanned<String>>, Spanned<Error>> {
-        let mut generics = vec![];
-
-        if let Some(span) = self
-            .match_next(lexer, Token::OpenSquareBracket)
-            .map(|token| token.span())
-        {
-            while self.peek(lexer).is_some()
-                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
+    fn parse_generics(&mut self) -> Result<Vec<Spanned<String>>, Spanned<Error>> {
+        Ok(
+            if let Some(TokenTree::Tree { tokens, .. }) =
+                self.match_next_token_tree(TreeKind::SquareBrackets)
+                && !tokens.is_empty()
             {
-                let generic_name = self
-                    .spanned_name(lexer)
-                    .map_err(|error| error.transmute(|_| Error::UnnamedGeneric))?;
+                let mut generics = vec![];
 
-                generics.push(generic_name);
+                let current_tree = self.current_tree;
 
-                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
-                    self.consume_next(lexer, Token::Comma, Error::GenericsWithoutComma)?;
+                while self.in_token_tree(current_tree) {
+                    let generic_name = self
+                        .spanned_name()
+                        .map_err(|error| error.transmute(|_| Error::GenericWithoutName))?;
+
+                    generics.push(generic_name);
+
+                    if self.in_token_tree(current_tree) {
+                        self.consume_next(Token::Comma, Error::GenericsWithoutComma)?;
+                    }
                 }
-            }
 
-            self.consume_next_with_span(
-                lexer,
-                Token::CloseSquareBracket,
-                Error::UnclosedGenerics,
-                span,
-            )?;
-        }
-
-        Ok(generics)
+                generics
+            } else {
+                vec![]
+            },
+        )
     }
 
     #[allow(clippy::too_many_lines)]
     fn parse_product(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
         visibility: Visibility,
         allow_generics: bool,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::ProductWithoutName))?;
 
         let generics = if allow_generics {
-            self.parse_generics(lexer)?
+            self.parse_generics()?
         } else {
             vec![]
         };
 
-        let fields_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
-            .span();
+        let fields_span = self.span_or_end();
 
-        let mut fields = vec![];
-
-        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
-            let name = self
-                .spanned_name(lexer)
-                .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
-
-            let less =
-                self.consume_next(lexer, Token::Less, Error::ProductFieldWithoutLeftArrow)?;
-
-            let minus =
-                self.consume_next(lexer, Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
-
-            if minus.span().start() != less.span().end() {
-                return Err(Spanned::new(
-                    Error::ProductFieldWithoutLeftArrow,
-                    less.span()
-                        .combine_with(minus.span())
-                        .expect("these spans are from the same source"),
-                ));
-            }
-
-            let type_signature = self.parse_type_signature(lexer)?;
-
-            fields.push(Parameter {
-                name,
-                type_signature,
-            });
-
-            if self.check_next(lexer, Token::CloseBracket).is_none() {
-                self.consume_next(lexer, Token::Comma, Error::ProductFieldsWithoutComma)?;
-            }
-        }
-
-        // sort fields to keep the order consistent in other passes
-        fields.sort_by(|a, b| a.name().kind().cmp(b.name().kind()));
-
-        let fields_end = self
-            .consume_next_with_span(
-                lexer,
-                Token::CloseBracket,
-                Error::UnclosedProduct,
+        let fields = if let TokenTree::Tree { tokens, .. } = self
+            .consume_next_token_tree_with_span(
+                TreeKind::Brackets,
+                Error::ProductWithoutFields,
                 fields_span,
             )?
-            .span();
+            && !tokens.is_empty()
+        {
+            let mut fields = vec![];
+
+            let current_tree = self.current_tree;
+
+            while self.in_token_tree(current_tree) {
+                let name = self
+                    .spanned_name()
+                    .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
+
+                let less = self.consume_next(Token::Less, Error::ProductFieldWithoutLeftArrow)?;
+
+                let minus = self.consume_next(Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+
+                if minus.span().start() != less.span().end() {
+                    return Err(Spanned::new(
+                        Error::ProductFieldWithoutLeftArrow,
+                        less.span()
+                            .combine_with(minus.span())
+                            .expect("these spans are from the same source"),
+                    ));
+                }
+
+                let type_signature = self.parse_type_signature()?;
+
+                fields.push(Parameter {
+                    name,
+                    type_signature,
+                });
+
+                if self.in_token_tree(current_tree) {
+                    self.consume_next(Token::Comma, Error::ProductFieldsWithoutComma)?;
+                }
+            }
+
+            // sort fields to keep the order consistent in other passes
+            fields.sort_by(|a, b| a.name().kind().cmp(b.name().kind()));
+
+            fields
+        } else {
+            vec![]
+        };
 
         Ok(ast.push_item(Spanned::new(
             Item::Product {
@@ -1337,35 +1386,41 @@ impl Parser {
                 generics,
                 fields,
             },
-            span.combine_with(fields_end).unwrap_or(span),
+            span.combine_with(fields_span).unwrap_or(span),
         )))
     }
 
     fn parse_sum(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
         visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::ProductWithoutName))?;
 
-        let generics = self.parse_generics(lexer)?;
+        let generics = self.parse_generics()?;
 
-        let variants_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::ProductWithoutFields)?
-            .span();
+        let variants_span = self.span_or_end();
 
-        let mut variants = vec![];
-
-        while let Some(span) = self.peek(lexer).map(Spanned::span)
-            && self.check_next(lexer, Token::CloseBracket).is_none()
+        let variants = if let TokenTree::Tree { tokens, .. } = self
+            .consume_next_token_tree_with_span(
+                TreeKind::Brackets,
+                Error::SumWithoutVariants,
+                variants_span,
+            )?
+            && !tokens.is_empty()
         {
-            variants.push(
-                self.parse_product(lexer, ast, span, visibility, false)
-                    .map_err(|error| {
+            let mut variants = vec![];
+
+            let current_tree = self.current_tree;
+
+            while self.in_token_tree(current_tree) {
+                let span = self.span_or_end();
+
+                variants.push(self.parse_product(ast, span, visibility, false).map_err(
+                    |error| {
                         error.transmute(|error| match error {
                             Error::ProductWithoutName => Error::SumVariantWithoutName,
                             Error::ProductWithoutFields => Error::SumVariantWithoutFields,
@@ -1374,34 +1429,29 @@ impl Parser {
                                 Error::SumVariantFieldWithoutLeftArrow
                             }
                             Error::ProductFieldsWithoutComma => Error::SumVariantFieldsWithoutComma,
-                            Error::UnclosedProduct => Error::UnclosedSumVariant,
                             _ => unreachable!("no other errors are produced by `parse_product`"),
                         })
-                    })?,
-            );
+                    },
+                )?);
 
-            if self.check_next(lexer, Token::CloseBracket).is_none() {
-                self.consume_next(lexer, Token::Comma, Error::SumVariantsWithoutComma)?;
+                if self.in_token_tree(current_tree) {
+                    self.consume_next(Token::Comma, Error::SumVariantsWithoutComma)?;
+                }
             }
-        }
 
-        // sort variants to keep the order consistent in other passes
-        variants.sort_by_key(|a| {
-            let Item::Product { name, .. } = ast[*a].kind() else {
-                unreachable!("only products are sum variants");
-            };
+            // sort variants to keep the order consistent in other passes
+            variants.sort_by_key(|a| {
+                let Item::Product { name, .. } = ast[*a].kind() else {
+                    unreachable!("only products are sum variants");
+                };
 
-            name.kind()
-        });
+                name.kind()
+            });
 
-        let variants_end = self
-            .consume_next_with_span(
-                lexer,
-                Token::CloseBracket,
-                Error::UnclosedSum,
-                variants_span,
-            )?
-            .span();
+            variants
+        } else {
+            vec![]
+        };
 
         Ok(ast.push_item(Spanned::new(
             Item::Sum {
@@ -1410,41 +1460,43 @@ impl Parser {
                 generics,
                 variants,
             },
-            span.combine_with(variants_end).unwrap_or(span),
+            span.combine_with(variants_span).unwrap_or(span),
         )))
     }
 
     fn parse_mod(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         span: Span,
         visibility: Visibility,
     ) -> Result<ItemIndex, Spanned<Error>> {
         let name = self
-            .spanned_name(lexer)
+            .spanned_name()
             .map_err(|error| error.transmute(|_| Error::ModWithoutName))?;
 
-        let generics = self.parse_generics(lexer)?;
+        let generics = self.parse_generics()?;
 
-        let contents_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::ModWithoutBody)?
-            .span();
+        let contents_span = self.span_or_end();
 
-        let mut contents = vec![];
-
-        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
-            contents.push(self.parse_item(lexer, ast)?);
-        }
-
-        let contents_end = self
-            .consume_next_with_span(
-                lexer,
-                Token::CloseBracket,
-                Error::UnclosedMod,
+        let contents =
+            if let TokenTree::Tree { tokens, .. } = self.consume_next_token_tree_with_span(
+                TreeKind::Brackets,
+                Error::ModWithoutBody,
                 contents_span,
-            )?
-            .span();
+            )? && !tokens.is_empty()
+            {
+                let mut contents = vec![];
+
+                let current_tree = self.current_tree;
+
+                while self.in_token_tree(current_tree) {
+                    contents.push(self.parse_item(ast)?);
+                }
+
+                contents
+            } else {
+                vec![]
+            };
 
         Ok(ast.push_item(Spanned::new(
             Item::Mod {
@@ -1453,53 +1505,50 @@ impl Parser {
                 generics,
                 contents,
             },
-            span.combine_with(contents_end)
+            span.combine_with(contents_span)
                 .expect("these spans are from the same source"),
         )))
     }
 
-    fn parse_teach(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        span: Span,
-    ) -> Result<ItemIndex, Spanned<Error>> {
-        let generics = self.parse_generics(lexer)?;
+    fn parse_teach(&mut self, ast: &mut Ast, span: Span) -> Result<ItemIndex, Spanned<Error>> {
+        let generics = self.parse_generics()?;
 
-        let student = self.parse_type_signature(lexer)?;
+        let student = self.parse_type_signature()?;
 
-        let contents_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::TeachWithoutBody)?
-            .span();
+        let contents_span = self.span_or_end();
 
-        let mut body = vec![];
+        let body = if let TokenTree::Tree { tokens, .. } = self.consume_next_token_tree_with_span(
+            TreeKind::Brackets,
+            Error::TeachWithoutBody,
+            contents_span,
+        )? && !tokens.is_empty()
+        {
+            let mut body = vec![];
 
-        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
-            let item = self.parse_item(lexer, ast)?;
+            let current_tree = self.current_tree;
 
-            match &ast[item].kind() {
-                Item::Primitive(_)
-                | Item::Product { .. }
-                | Item::Sum { .. }
-                | Item::Mod { .. }
-                | Item::Teach { .. } => {
-                    self.errors
-                        .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
+            while self.in_token_tree(current_tree) {
+                let item = self.parse_item(ast)?;
+
+                match &ast[item].kind() {
+                    Item::Primitive(_)
+                    | Item::Product { .. }
+                    | Item::Sum { .. }
+                    | Item::Mod { .. }
+                    | Item::Teach { .. } => {
+                        self.errors
+                            .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
+                    }
+                    Item::NativeFn { .. } | Item::Fn { .. } => {}
                 }
-                Item::NativeFn { .. } | Item::Fn { .. } => {}
+
+                body.push(item);
             }
 
-            body.push(item);
-        }
-
-        let contents_end = self
-            .consume_next_with_span(
-                lexer,
-                Token::CloseBracket,
-                Error::UnclosedTeach,
-                contents_span,
-            )?
-            .span();
+            body
+        } else {
+            vec![]
+        };
 
         Ok(ast.push_item(Spanned::new(
             Item::Teach {
@@ -1507,27 +1556,27 @@ impl Parser {
                 body,
                 generics,
             },
-            span.combine_with(contents_end)
+            span.combine_with(contents_span)
                 .expect("these spans are from the same source"),
         )))
     }
 
-    fn path_element(&mut self, lexer: &mut Lexer) -> Result<Spanned<PathElement>, Spanned<Error>> {
-        let span = self.span_or_end(lexer);
+    fn path_element(&mut self) -> Result<Spanned<PathElement>, Spanned<Error>> {
+        let span = self.span_or_end();
 
-        match self.keyword(lexer, span) {
+        match self.keyword(span) {
             Some("root") => {
-                self.advance(lexer);
+                self.advance_token_tree();
 
                 Ok(Spanned::new(PathElement::Root, span))
             }
             Some("super") => {
-                self.advance(lexer);
+                self.advance_token_tree();
 
                 Ok(Spanned::new(PathElement::Super, span))
             }
             _ => {
-                let name = self.spanned_name(lexer)?;
+                let name = self.spanned_name()?;
 
                 Ok(name.transmute(PathElement::Name))
             }
@@ -1535,191 +1584,163 @@ impl Parser {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn parse_type_signature(
-        &mut self,
-        lexer: &mut Lexer,
-    ) -> Result<Spanned<TypeSignature>, Spanned<Error>> {
-        let token = self.peek(lexer);
+    fn parse_type_signature(&mut self) -> Result<Spanned<TypeSignature>, Spanned<Error>> {
+        if let Some(token) = self.check_next(Token::Identifier) {
+            let span = token.span();
 
-        match token.map(Spanned::kind) {
-            Some(Token::Identifier) => {
-                let span = token
-                    .expect("if the token has a kind, it has a span")
-                    .span();
+            match self.keyword(span) {
+                Some("funky") => {
+                    self.advance_token_tree();
 
-                match self.keyword(lexer, span) {
-                    Some("funky") => {
-                        self.advance(lexer);
+                    let parameters_span = self.span_or_end();
 
-                        let open_span = self
-                            .consume_next(
-                                lexer,
-                                Token::OpenParenthesis,
-                                Error::FnTypeWithoutParameters,
-                            )?
-                            .span();
-
+                    let parameters = if let TokenTree::Tree { tokens, .. } = self
+                        .consume_next_token_tree_with_span(
+                            TreeKind::Parentheses,
+                            Error::FnTypeWithoutParameters,
+                            parameters_span,
+                        )?
+                        && !tokens.is_empty()
+                    {
                         let mut parameters = vec![];
 
-                        while self.peek(lexer).is_some()
-                            && self.check_next(lexer, Token::CloseParenthesis).is_none()
-                        {
-                            parameters.push(self.parse_type_signature(lexer)?);
+                        let current_tree = self.current_tree;
 
-                            if self.check_next(lexer, Token::CloseParenthesis).is_none() {
+                        while self.in_token_tree(current_tree) {
+                            parameters.push(self.parse_type_signature()?);
+
+                            if self.in_token_tree(current_tree) {
                                 self.consume_next(
-                                    lexer,
                                     Token::Comma,
                                     Error::FnTypeParametersWithoutComma,
                                 )?;
                             }
                         }
 
-                        let close_span = self
-                            .consume_next_with_span(
-                                lexer,
-                                Token::CloseParenthesis,
-                                Error::UnclosedFnTypeParameters,
-                                open_span,
-                            )?
-                            .span();
+                        parameters
+                    } else {
+                        vec![]
+                    };
 
-                        let span = span
-                            .combine_with(close_span)
-                            .expect("these spans are from the same source");
+                    let current_tree = self.current_tree;
+                    let at = self.at;
 
-                        let return_type = if let Some(minus) = self.match_next(lexer, Token::Minus)
+                    let return_type = if let Some(minus) = self.match_next(Token::Minus) {
+                        if let Some(greater) = self.match_next(Token::Greater)
+                            && minus.span().end() == greater.span().start()
                         {
-                            if let Some(greater) = self.match_next(lexer, Token::Greater)
-                                && minus.span().end() == greater.span().start()
-                            {
-                                self.parse_type_signature(lexer)?
-                            } else {
-                                lexer.restore(minus.span());
-
-                                Spanned::new(
-                                    TypeSignature::Normal {
-                                        name: Spanned::new("unit".to_string(), close_span),
-                                        generics: vec![],
-                                    },
-                                    close_span,
-                                )
-                            }
+                            self.parse_type_signature()?
                         } else {
+                            self.current_tree = current_tree;
+                            self.at = at;
+
                             Spanned::new(
                                 TypeSignature::Normal {
-                                    name: Spanned::new("unit".to_string(), close_span),
+                                    name: Spanned::new("unit".to_string(), parameters_span),
                                     generics: vec![],
                                 },
-                                close_span,
+                                parameters_span,
                             )
-                        };
-
-                        let return_span = return_type.span();
-
-                        Ok(Spanned::new(
-                            TypeSignature::Fn {
-                                parameters,
-                                return_type: Box::new(return_type),
+                        }
+                    } else {
+                        Spanned::new(
+                            TypeSignature::Normal {
+                                name: Spanned::new("unit".to_string(), parameters_span),
+                                generics: vec![],
                             },
-                            span.combine_with(return_span)
-                                .expect("these spans are from the same source"),
-                        ))
+                            parameters_span,
+                        )
+                    };
+
+                    let return_span = return_type.span();
+
+                    Ok(Spanned::new(
+                        TypeSignature::Fn {
+                            parameters,
+                            return_type: Box::new(return_type),
+                        },
+                        span.combine_with(return_span)
+                            .expect("these spans are from the same source"),
+                    ))
+                }
+                Some("Self") => {
+                    self.advance_token_tree();
+
+                    Ok(Spanned::new(TypeSignature::SelfTy, span))
+                }
+                None | Some("root" | "super") => {
+                    let mut path = vec![self.path_element()?];
+
+                    while self.peek_token_tree().is_some()
+                        && self.match_next(Token::Tilde).is_some()
+                    {
+                        let path_element = self.path_element()?;
+
+                        path.push(path_element);
                     }
-                    Some("Self") => {
-                        self.advance(lexer);
 
-                        Ok(Spanned::new(TypeSignature::SelfTy, span))
-                    }
-                    None | Some("root" | "super") => {
-                        let mut path = vec![self.path_element(lexer)?];
+                    let mut generics = vec![];
 
-                        while self.peek(lexer).is_some()
-                            && self.match_next(lexer, Token::Tilde).is_some()
-                        {
-                            let path_element = self.path_element(lexer)?;
+                    let span = if let Some(TokenTree::Tree { tokens, span, .. }) =
+                        self.match_next_token_tree(TreeKind::SquareBrackets)
+                        && !tokens.is_empty()
+                    {
+                        let current_tree = self.current_tree;
 
-                            path.push(path_element);
+                        while self.in_token_tree(current_tree) {
+                            generics.push(self.parse_type_signature()?);
+
+                            if self.in_token_tree(current_tree) {
+                                self.consume_next(Token::Comma, Error::GenericsWithoutComma)?;
+                            }
                         }
 
-                        let mut generics = vec![];
+                        *span
+                    } else {
+                        path[0].span()
+                    };
 
-                        let span = if let Some(open_span) = self
-                            .match_next(lexer, Token::OpenSquareBracket)
-                            .map(|token| token.span())
-                        {
-                            while self.peek(lexer).is_some()
-                                && self.check_next(lexer, Token::CloseSquareBracket).is_none()
-                            {
-                                generics.push(self.parse_type_signature(lexer)?);
+                    let name = path
+                        .pop()
+                        .expect("the path is guaranteed to have at least one name");
 
-                                if self.check_next(lexer, Token::CloseSquareBracket).is_none() {
-                                    self.consume_next(
-                                        lexer,
-                                        Token::Comma,
-                                        Error::GenericsWithoutComma,
-                                    )?;
-                                }
+                    let name = if let PathElement::Name(end_of_path) = name.kind() {
+                        Ok(Spanned::new(end_of_path.clone(), name.span()))
+                    } else {
+                        Err(Spanned::new(Error::InvalidName, name.span()))
+                    }?;
+
+                    let span = name
+                        .span()
+                        .combine_with(span)
+                        .expect("these spans are from the same source");
+
+                    Ok(Spanned::new(
+                        if path.is_empty() {
+                            TypeSignature::Normal { name, generics }
+                        } else {
+                            TypeSignature::Path {
+                                path,
+                                name,
+                                generics,
                             }
-
-                            self.consume_next_with_span(
-                                lexer,
-                                Token::CloseSquareBracket,
-                                Error::UnclosedGenerics,
-                                open_span,
-                            )?
-                            .span()
-                        } else {
-                            path[0].span()
-                        };
-
-                        let name = path
-                            .pop()
-                            .expect("the path is guaranteed to have at least one name");
-
-                        let name = if let PathElement::Name(end_of_path) = name.kind() {
-                            Ok(Spanned::new(end_of_path.clone(), name.span()))
-                        } else {
-                            Err(Spanned::new(Error::InvalidName, name.span()))
-                        }?;
-
-                        let span = name
-                            .span()
-                            .combine_with(span)
-                            .expect("these spans are from the same source");
-
-                        Ok(Spanned::new(
-                            if path.is_empty() {
-                                TypeSignature::Normal { name, generics }
-                            } else {
-                                TypeSignature::Path {
-                                    path,
-                                    name,
-                                    generics,
-                                }
-                            },
-                            span,
-                        ))
-                    }
-                    Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
+                        },
+                        span,
+                    ))
                 }
+                Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
             }
-            Some(_) => Err(Spanned::new(
-                Error::ExpectedType,
-                token
-                    .map(Spanned::span)
-                    .expect("if the token has a kind, it has a span"),
-            )),
-            None => Err(Spanned::new(Error::ExpectedType, self.span_or_end(lexer))),
+        } else {
+            Err(Spanned::new(Error::ExpectedType, self.span_or_end()))
         }
     }
 }
 
 mod precedence {
-    use super::{Ast, Error, ExprIndex, Lexer, Parser, Span, Spanned};
+    use super::{Ast, Error, ExprIndex, Parser, Span, Spanned};
 
-    pub type ParseFn =
-        fn(&mut Parser, &mut Lexer, &mut Ast, u16, Span) -> Result<ExprIndex, Spanned<Error>>;
+    pub type ParseFn<'s, 'p> =
+        fn(&mut Parser<'s, 'p>, &mut Ast, u16, Span) -> Result<ExprIndex, Spanned<Error>>;
 
     pub const PRIMARY: u16 = 0xEE00;
 
@@ -1786,18 +1807,17 @@ mod precedence {
 
 macro_rules! infix_op_precedence {
     (
-        $parser:ident, $lexer:ident ;
+        $parser:ident, $first_kind:ident ;
         $(2nd token $dual_kind:ident => $dual_parse_fn:ident ($dual_left_precedence:ident, $dual_right_precedence:ident), $($is_dual:lifetime)?)?
         $parse_fn:ident ($left_precedence:ident, $right_precedence:ident) $(,)?
     ) => {{
-        let token = $parser.advance($lexer)?;
+        let token = $parser.match_next($crate::lex::Token::$first_kind)?;
 
         $($($is_dual)? if
-            $parser.peek($lexer)
+            $parser.check_next($crate::lex::Token::$dual_kind)
             .is_some_and(|next_token| {
-                *next_token.kind() == $crate::lex::Token::$dual_kind
-                    && token.span().end() == next_token.span().start()
-            }) && let Some(next_token) = $parser.advance($lexer)
+                token.span().end() == next_token.span().start()
+            }) && let Some(next_token) = $parser.match_next($crate::lex::Token::$dual_kind)
         {
             Some((
                 (
@@ -1830,12 +1850,11 @@ macro_rules! unary_op {
     ) => {
         fn $name(
             &mut self,
-            lexer: &mut $crate::lex::Lexer,
             ast: &mut $crate::parse::Ast,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
-            let expr = self.parse_expression(lexer, ast, precedence)?;
+            let expr = self.parse_expression(ast, precedence)?;
 
             Ok(ast.push_expr($crate::Spanned::new(
                 $crate::parse::Expr::Unary {
@@ -1855,12 +1874,11 @@ macro_rules! binary_op {
     ) => {
         fn $name(
             &mut self,
-            lexer: &mut $crate::lex::Lexer,
             ast: &mut $crate::parse::Ast,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
-            let rhs = self.parse_expression(lexer, ast, precedence)?;
+            let rhs = self.parse_expression(ast, precedence)?;
 
             Ok(ast.push_expr($crate::Spanned::new(
                 $crate::parse::Expr::BinaryNoLhs {
@@ -1874,31 +1892,37 @@ macro_rules! binary_op {
     };
 }
 
-impl Parser {
+impl<'s, 'p> Parser<'s, 'p> {
     #[allow(clippy::too_many_lines)]
     fn parse_expression(
         &mut self,
-        lexer: &mut Lexer,
         mut ast: &mut Ast,
         min_precedence: u16,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let Some((precedence, (prefix_fn, prefix_span))) = self.prefix_precedence(lexer) else {
-            return Err(Spanned::new(Error::ExpectedExpr, self.span_or_end(lexer)));
+        let within_tree = self.current_tree;
+
+        let Some((precedence, (prefix_fn, prefix_span))) = self.prefix_precedence() else {
+            return Err(Spanned::new(Error::ExpectedExpr, self.span_or_end()));
         };
 
-        let mut lhs = prefix_fn(self, lexer, ast, precedence, prefix_span)?;
+        let mut lhs = prefix_fn(self, ast, precedence, prefix_span)?;
 
         loop {
-            if let Some((left_precedence, (postfix_fn, postfix_span))) =
-                self.postfix_precedence(lexer)
+            let current_tree = self.current_tree;
+            let at = self.at;
+
+            if self.in_token_tree(within_tree)
+                && let Some((left_precedence, (postfix_fn, postfix_span))) =
+                    self.postfix_precedence()
             {
                 if left_precedence < min_precedence {
-                    lexer.restore(postfix_span);
+                    self.current_tree = current_tree;
+                    self.at = at;
+
                     break;
                 }
 
-                let unfinished_postfix =
-                    postfix_fn(self, lexer, ast, left_precedence, postfix_span);
+                let unfinished_postfix = postfix_fn(self, ast, left_precedence, postfix_span);
 
                 let unfinished_postfix = match unfinished_postfix.as_ref().map_err(Spanned::kind) {
                     Ok(expr_index) => *expr_index,
@@ -1907,7 +1931,8 @@ impl Parser {
                         | Error::ProductFieldWithoutLeftArrow
                         | Error::ProductFieldsWithoutComma,
                     ) => {
-                        lexer.restore(postfix_span);
+                        self.current_tree = current_tree;
+                        self.at = at;
 
                         break;
                     }
@@ -1982,13 +2007,15 @@ impl Parser {
                                             Spanned::new("Self".to_string(), ast[lhs].span())
                                         }
                                         _ => {
-                                            lexer.restore(ast[unfinished_postfix].span());
+                                            self.current_tree = current_tree;
+                                            self.at = at;
 
                                             break;
                                         }
                                     },
                                     _ => {
-                                        lexer.restore(ast[unfinished_postfix].span());
+                                        self.current_tree = current_tree;
+                                        self.at = at;
 
                                         break;
                                     }
@@ -2012,15 +2039,21 @@ impl Parser {
                 continue;
             }
 
-            if let Some(((left_precedence, right_precedence), (infix_fn, infix_span))) =
-                self.infix_precedence(lexer)
+            let current_tree = self.current_tree;
+            let at = self.at;
+
+            if self.in_token_tree(within_tree)
+                && let Some(((left_precedence, right_precedence), (infix_fn, infix_span))) =
+                    self.infix_precedence()
             {
                 if left_precedence < min_precedence {
-                    lexer.restore(infix_span);
+                    self.current_tree = current_tree;
+                    self.at = at;
+
                     break;
                 }
 
-                let unfinished_infix = infix_fn(self, lexer, ast, right_precedence, infix_span)?;
+                let unfinished_infix = infix_fn(self, ast, right_precedence, infix_span)?;
 
                 match ast[unfinished_infix].kind() {
                     Expr::BinaryNoLhs { op, rhs } => {
@@ -2050,247 +2083,252 @@ impl Parser {
         Ok(lhs)
     }
 
-    fn prefix_precedence(
-        &mut self,
-        lexer: &mut Lexer,
-    ) -> Option<(u16, (precedence::ParseFn, Span))> {
-        let token = self.peek(lexer)?;
+    fn prefix_precedence(&mut self) -> Option<(u16, (precedence::ParseFn<'s, 'p>, Span))> {
+        match self.peek_token_tree()? {
+            TokenTree::Tree {
+                span,
+                kind: TreeKind::Parentheses,
+                ..
+            } => Some((precedence::PRIMARY, (Self::group, *span))),
+            TokenTree::Tree {
+                span,
+                kind: TreeKind::Brackets,
+                ..
+            } => Some((precedence::PRIMARY, (Self::block, *span))),
+            TokenTree::Token(token) => match token.kind() {
+                Token::Minus => {
+                    self.advance_token_tree()?;
 
-        match token.kind() {
-            Token::Minus => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::NEGATE, (Self::negate, token.span())))
-            }
-            Token::Bang => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::NOT, (Self::not, token.span())))
-            }
-            Token::Integer(_) => Some((precedence::PRIMARY, (Self::integer, token.span()))),
-            Token::Float(_) => Some((precedence::PRIMARY, (Self::float, token.span()))),
-            Token::OpenParenthesis => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::PRIMARY, (Self::group, token.span())))
-            }
-            Token::OpenBracket => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::PRIMARY, (Self::block, token.span())))
-            }
-            Token::Identifier => {
-                let span = token.span();
-
-                match self.keyword(lexer, span) {
-                    Some("root" | "super") => {
-                        Some((precedence::PRIMARY, (Self::path_element_expr, span)))
-                    }
-                    Some("Self") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::self_type_expr, span)))
-                    }
-                    Some("let") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::let_in, span)))
-                    }
-                    Some("if") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::if_expr, span)))
-                    }
-                    Some("while") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::while_expr, span)))
-                    }
-                    Some("return") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::RETURN, (Self::return_expr, span)))
-                    }
-                    Some("true") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::so_true, span)))
-                    }
-                    Some("false") => {
-                        self.advance(lexer)?;
-
-                        Some((precedence::PRIMARY, (Self::so_false, span)))
-                    }
-                    Some(_) => None,
-                    None => Some((precedence::PRIMARY, (Self::name, span))),
+                    Some((precedence::NEGATE, (Self::negate, token.span())))
                 }
-            }
-            _ => None,
+                Token::Bang => {
+                    self.advance_token_tree()?;
+
+                    Some((precedence::NOT, (Self::not, token.span())))
+                }
+                Token::Integer(_) => Some((precedence::PRIMARY, (Self::integer, token.span()))),
+                Token::Float(_) => Some((precedence::PRIMARY, (Self::float, token.span()))),
+                Token::Identifier => {
+                    let span = token.span();
+
+                    match self.keyword(span) {
+                        Some("root" | "super") => {
+                            Some((precedence::PRIMARY, (Self::path_element_expr, span)))
+                        }
+                        Some("Self") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::self_type_expr, span)))
+                        }
+                        Some("let") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::let_in, span)))
+                        }
+                        Some("if") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::if_expr, span)))
+                        }
+                        Some("while") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::while_expr, span)))
+                        }
+                        Some("return") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::RETURN, (Self::return_expr, span)))
+                        }
+                        Some("true") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::so_true, span)))
+                        }
+                        Some("false") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::so_false, span)))
+                        }
+                        Some(_) => None,
+                        None => Some((precedence::PRIMARY, (Self::name, span))),
+                    }
+                }
+                _ => None,
+            },
+            TokenTree::Tree { .. } => None,
         }
     }
 
-    fn postfix_precedence(
-        &mut self,
-        lexer: &mut Lexer,
-    ) -> Option<(u16, (precedence::ParseFn, Span))> {
-        let token = self.peek(lexer)?;
-
-        match token.kind() {
-            Token::OpenParenthesis => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::CALL, (Self::call, token.span())))
-            }
-            Token::Semicolon => {
-                let token = self.advance(lexer)?;
+    fn postfix_precedence(&mut self) -> Option<(u16, (precedence::ParseFn<'s, 'p>, Span))> {
+        match self.peek_token_tree()? {
+            TokenTree::Tree {
+                kind: TreeKind::Parentheses,
+                span,
+                ..
+            } => Some((precedence::CALL, (Self::call, *span))),
+            TokenTree::Tree {
+                kind: TreeKind::Brackets,
+                span,
+                ..
+            } => Some((precedence::AS_PRODUCT, (Self::product_expr, *span))),
+            TokenTree::Token(token) if matches!(token.kind(), Token::Semicolon) => {
+                self.advance_token_tree()?;
 
                 Some((precedence::AS_UNIT, (Self::as_unit, token.span())))
             }
-            Token::OpenBracket => {
-                let token = self.advance(lexer)?;
-
-                Some((precedence::AS_PRODUCT, (Self::product_expr, token.span())))
-            }
-            _ => None,
+            TokenTree::Tree { .. } | TokenTree::Token(_) => None,
         }
     }
 
     #[allow(clippy::too_many_lines)]
-    fn infix_precedence(
-        &mut self,
-        lexer: &mut Lexer,
-    ) -> Option<((u16, u16), (precedence::ParseFn, Span))> {
-        let token = self.peek(lexer)?;
+    fn infix_precedence(&mut self) -> Option<((u16, u16), (precedence::ParseFn<'s, 'p>, Span))> {
+        if let TokenTree::Token(token) = self.peek_token_tree()? {
+            match token.kind() {
+                Token::Tilde => infix_op_precedence!(
+                    self, Tilde ;
+                    path_access (LEFT_PATH_ACCESS, RIGHT_PATH_ACCESS),
+                ),
+                Token::Dot => infix_op_precedence!(
+                    self, Dot ;
+                    access (LEFT_ACCESS, RIGHT_ACCESS),
+                ),
+                Token::Star => infix_op_precedence!(
+                    self, Star ;
+                    multiply (LEFT_MULTIPLY, RIGHT_MULTIPLY),
+                ),
+                Token::Slash => infix_op_precedence!(
+                    self, Slash ;
+                    divide (LEFT_DIVIDE, RIGHT_DIVIDE),
+                ),
+                Token::Percent => infix_op_precedence!(
+                    self, Percent ;
+                    remainder (LEFT_REMAINDER, RIGHT_REMAINDER),
+                ),
+                Token::Plus => infix_op_precedence!(
+                    self, Plus ;
+                    add (LEFT_ADD, RIGHT_ADD),
+                ),
+                Token::Minus => infix_op_precedence!(
+                    self, Minus ;
+                    subtract (LEFT_SUBTRACT, RIGHT_SUBTRACT),
+                ),
+                Token::Less => infix_op_precedence!(
+                    self, Less ;
+                    2nd token Equal => less_or_equal (LEFT_LESS_OR_EQUAL, RIGHT_LESS_OR_EQUAL),
+                    less (LEFT_LESS, RIGHT_LESS),
+                ),
+                Token::Greater => infix_op_precedence!(
+                    self, Greater ;
+                    2nd token Equal => greater_or_equal (LEFT_GREATER_OR_EQUAL, RIGHT_GREATER_OR_EQUAL),
+                    greater (LEFT_GREATER, RIGHT_GREATER),
+                ),
+                Token::Equal => infix_op_precedence!(
+                    self, Equal ;
+                    2nd token Equal => equal (LEFT_EQUAL, RIGHT_EQUAL),
+                    assign (LEFT_ASSIGN, RIGHT_ASSIGN),
+                ),
+                Token::Bang => {
+                    let current_tree = self.current_tree;
+                    let at = self.at;
 
-        match token.kind() {
-            Token::Tilde => infix_op_precedence!(
-                self, lexer;
-                path_access (LEFT_PATH_ACCESS, RIGHT_PATH_ACCESS),
-            ),
-            Token::Dot => infix_op_precedence!(
-                self, lexer;
-                access (LEFT_ACCESS, RIGHT_ACCESS),
-            ),
-            Token::Star => infix_op_precedence!(
-                self, lexer;
-                multiply (LEFT_MULTIPLY, RIGHT_MULTIPLY),
-            ),
-            Token::Slash => infix_op_precedence!(
-                self, lexer;
-                divide (LEFT_DIVIDE, RIGHT_DIVIDE),
-            ),
-            Token::Percent => infix_op_precedence!(
-                self, lexer;
-                remainder (LEFT_REMAINDER, RIGHT_REMAINDER),
-            ),
-            Token::Plus => infix_op_precedence!(
-                self, lexer;
-                add (LEFT_ADD, RIGHT_ADD),
-            ),
-            Token::Minus => infix_op_precedence!(
-                self, lexer;
-                subtract (LEFT_SUBTRACT, RIGHT_SUBTRACT),
-            ),
-            Token::Less => infix_op_precedence!(
-                self, lexer;
-                2nd token Equal => less_or_equal (LEFT_LESS_OR_EQUAL, RIGHT_LESS_OR_EQUAL),
-                less (LEFT_LESS, RIGHT_LESS),
-            ),
-            Token::Greater => infix_op_precedence!(
-                self, lexer;
-                2nd token Equal => greater_or_equal (LEFT_GREATER_OR_EQUAL, RIGHT_GREATER_OR_EQUAL),
-                greater (LEFT_GREATER, RIGHT_GREATER),
-            ),
-            Token::Equal => infix_op_precedence!(
-                self, lexer;
-                2nd token Equal => equal (LEFT_EQUAL, RIGHT_EQUAL),
-                assign (LEFT_ASSIGN, RIGHT_ASSIGN),
-            ),
-            Token::Bang => {
-                let token = self.advance(lexer)?;
+                    let token = self.match_next(Token::Bang)?;
 
-                if self.peek(lexer).is_some_and(|next_token| {
-                    *next_token.kind() == Token::Equal
-                        && token.span().end() == next_token.span().start()
-                }) && let Some(next_token) = self.advance(lexer)
-                {
-                    Some((
-                        (precedence::LEFT_NOT_EQUAL, precedence::RIGHT_NOT_EQUAL),
-                        (
-                            Self::not_equal,
-                            token
-                                .span()
-                                .combine_with(next_token.span())
-                                .expect("these spans are from the same source"),
-                        ),
-                    ))
-                } else {
-                    lexer.restore(token.span());
+                    if self.peek_token_tree().is_some_and(|next_token_tree| {
+                        matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Equal
+                            && token.span().end() == next_token.span().start()
+                        )
+                    }) && let Some(next_token) = self.match_next(Token::Equal)
+                    {
+                        Some((
+                            (precedence::LEFT_NOT_EQUAL, precedence::RIGHT_NOT_EQUAL),
+                            (
+                                Self::not_equal,
+                                token
+                                    .span()
+                                    .combine_with(next_token.span())
+                                    .expect("these spans are from the same source"),
+                            ),
+                        ))
+                    } else {
+                        self.current_tree = current_tree;
+                        self.at = at;
 
-                    None
+                        None
+                    }
                 }
-            }
-            Token::Ampersand => {
-                let token = self.advance(lexer)?;
+                Token::Ampersand => {
+                    let current_tree = self.current_tree;
+                    let at = self.at;
 
-                if self.peek(lexer).is_some_and(|next_token| {
-                    *next_token.kind() == Token::Ampersand
-                        && token.span().end() == next_token.span().start()
-                }) && let Some(next_token) = self.advance(lexer)
-                {
-                    Some((
-                        (precedence::LEFT_AND, precedence::RIGHT_AND),
-                        (
-                            Self::and,
-                            token
-                                .span()
-                                .combine_with(next_token.span())
-                                .expect("these spans are from the same source"),
-                        ),
-                    ))
-                } else {
-                    lexer.restore(token.span());
+                    let token = self.match_next(Token::Ampersand)?;
 
-                    None
+                    if self.peek_token_tree().is_some_and(|next_token_tree| {
+                        matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Ampersand
+                            && token.span().end() == next_token.span().start()
+                        )
+                    }) && let Some(next_token) = self.match_next(Token::Ampersand)
+                    {
+                        Some((
+                            (precedence::LEFT_AND, precedence::RIGHT_AND),
+                            (
+                                Self::and,
+                                token
+                                    .span()
+                                    .combine_with(next_token.span())
+                                    .expect("these spans are from the same source"),
+                            ),
+                        ))
+                    } else {
+                        self.current_tree = current_tree;
+                        self.at = at;
+
+                        None
+                    }
                 }
-            }
-            Token::Pipe => {
-                let token = self.advance(lexer)?;
+                Token::Pipe => {
+                    let current_tree = self.current_tree;
+                    let at = self.at;
 
-                if self.peek(lexer).is_some_and(|next_token| {
-                    *next_token.kind() == Token::Pipe
-                        && token.span().end() == next_token.span().start()
-                }) && let Some(next_token) = self.advance(lexer)
-                {
-                    Some((
-                        (precedence::LEFT_OR, precedence::RIGHT_OR),
-                        (
-                            Self::or,
-                            token
-                                .span()
-                                .combine_with(next_token.span())
-                                .expect("these spans are from the same source"),
-                        ),
-                    ))
-                } else {
-                    lexer.restore(token.span());
+                    let token = self.match_next(Token::Pipe)?;
 
-                    None
+                    if self.peek_token_tree().is_some_and(|next_token_tree| {
+                        matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Pipe
+                            && token.span().end() == next_token.span().start()
+                        )
+                    }) && let Some(next_token) = self.match_next(Token::Pipe)
+                    {
+                        Some((
+                            (precedence::LEFT_OR, precedence::RIGHT_OR),
+                            (
+                                Self::or,
+                                token
+                                    .span()
+                                    .combine_with(next_token.span())
+                                    .expect("these spans are from the same source"),
+                            ),
+                        ))
+                    } else {
+                        self.current_tree = current_tree;
+                        self.at = at;
+
+                        None
+                    }
                 }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         }
     }
 
-    fn integer(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn integer(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
-            .advance(lexer)
+            .advance_token_tree()
+            .and_then(|token_tree| match token_tree {
+                TokenTree::Token(token) => Some(token),
+                TokenTree::Tree { .. } => None,
+            })
             .expect("`integer` is only called when the next token is already checked");
 
         let Token::Integer(radix) = token.kind() else {
@@ -2299,7 +2337,7 @@ impl Parser {
 
         token
             .span()
-            .lexeme(lexer.source())
+            .lexeme(self.source)
             .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
             .map_or_else(
                 || Err(Spanned::new(Error::InvalidInteger, token.span())),
@@ -2307,15 +2345,13 @@ impl Parser {
             )
     }
 
-    fn float(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn float(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
-            .advance(lexer)
+            .advance_token_tree()
+            .and_then(|token_tree| match token_tree {
+                TokenTree::Token(token) => Some(token),
+                TokenTree::Tree { .. } => None,
+            })
             .expect("`float` is only called when the next token is already checked");
 
         let Token::Float(radix) = token.kind() else {
@@ -2324,7 +2360,7 @@ impl Parser {
 
         match token
             .span()
-            .lexeme(lexer.source())
+            .lexeme(self.source)
             .and_then(|lexeme| lexeme.split_once('.'))
             .and_then(|(whole, fraction)| {
                 Some((
@@ -2347,24 +2383,12 @@ impl Parser {
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_true(
-        &mut self,
-        _: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_true(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(true), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_false(
-        &mut self,
-        _: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_false(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(false), span)))
     }
 
@@ -2372,12 +2396,11 @@ impl Parser {
 
     fn negate(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let expr = self.parse_expression(lexer, ast, precedence)?;
+        let expr = self.parse_expression(ast, precedence)?;
 
         if let Expr::Integer(value) = ast[expr].kind() {
             if let Ok(value) = i64::try_from(*value) {
@@ -2430,75 +2453,47 @@ impl Parser {
     binary_op!(or, Or);
     binary_op!(assign, Assign);
 
-    fn group(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        let expr = self.parse_expression(lexer, ast, 0)?;
+    fn group(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+        self.advance_token_tree();
 
-        let span = span
-            .combine_with(
-                self.consume_next_with_span(
-                    lexer,
-                    Token::CloseParenthesis,
-                    Error::UnclosedGroup,
-                    span,
-                )?
-                .span(),
-            )
-            .expect("these spans are from the same source");
+        let expr = self.parse_expression(ast, 0)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::Group(expr), span)))
     }
 
-    fn block_exprs(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        exprs: &mut Vec<ExprIndex>,
-    ) -> Result<(), Spanned<Error>> {
-        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
-            let expr = self.parse_expression(lexer, ast, 0)?;
-
-            exprs.push(expr);
-
-            if !matches!(
-                ast[expr].kind(),
-                Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::AsUnit(_)
-            ) && self.check_next(lexer, Token::CloseBracket).is_none()
+    fn block_exprs(&mut self, ast: &mut Ast) -> Result<Vec<ExprIndex>, Spanned<Error>> {
+        Ok(
+            if let TokenTree::Tree { tokens, .. } =
+                self.consume_next_token_tree(TreeKind::Brackets, Error::ExpectedBlock)?
+                && !tokens.is_empty()
             {
-                self.consume_next(lexer, Token::Semicolon, Error::BlockWithoutSemicolon)?;
-            }
-        }
+                let mut exprs = vec![];
 
-        Ok(())
+                let current_tree = self.current_tree;
+
+                while self.in_token_tree(current_tree) {
+                    let expr = self.parse_expression(ast, 0)?;
+
+                    exprs.push(expr);
+
+                    if !matches!(
+                        ast[expr].kind(),
+                        Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::AsUnit(_)
+                    ) && self.in_token_tree(current_tree)
+                    {
+                        self.consume_next(Token::Semicolon, Error::BlockWithoutSemicolon)?;
+                    }
+                }
+
+                exprs
+            } else {
+                vec![]
+            },
+        )
     }
 
-    fn block(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        let mut exprs = vec![];
-
-        self.block_exprs(lexer, ast, &mut exprs)?;
-
-        let span = span
-            .combine_with(
-                self.consume_next_with_span(
-                    lexer,
-                    Token::CloseBracket,
-                    Error::UnclosedBlock,
-                    span,
-                )?
-                .span(),
-            )
-            .expect("these spans are from the same source");
+    fn block(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+        let exprs = self.block_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
     }
@@ -2506,7 +2501,6 @@ impl Parser {
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     fn self_type_expr(
         &mut self,
-        _: &mut Lexer,
         ast: &mut Ast,
         _: u16,
         span: Span,
@@ -2516,47 +2510,38 @@ impl Parser {
 
     fn path_element_expr(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         _: u16,
         _: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let path_element = self.path_element(lexer)?;
+        let path_element = self.path_element()?;
 
         Ok(ast.push_expr(path_element.transmute(Expr::PathElement)))
     }
 
-    fn name(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        let name = self.spanned_name(lexer)?;
+    fn name(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
+        let name = self.spanned_name()?;
 
         Ok(ast.push_expr(name.transmute(Expr::Name)))
     }
 
-    fn let_in(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn let_in(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         let mut exprs = vec![];
 
-        while self.peek(lexer).is_some() && self.check_keyword_next(lexer, "in").is_none() {
-            let name = self.spanned_name(lexer)?;
+        while self.peek_token_tree().is_some() && self.check_keyword_next("in").is_none() {
+            let name = self.spanned_name()?;
 
-            let type_signature = if let Some(less) = self.match_next(lexer, Token::Less) {
-                if let Some(minus) = self.match_next(lexer, Token::Minus)
+            let current_tree = self.current_tree;
+            let at = self.at;
+
+            let type_signature = if let Some(less) = self.match_next(Token::Less) {
+                if let Some(minus) = self.match_next(Token::Minus)
                     && minus.span().start() == less.span().end()
                 {
-                    Some(self.parse_type_signature(lexer)?)
+                    Some(self.parse_type_signature()?)
                 } else {
-                    lexer.restore(less.span());
+                    self.current_tree = current_tree;
+                    self.at = at;
 
                     None
                 }
@@ -2564,9 +2549,9 @@ impl Parser {
                 None
             };
 
-            self.consume_next(lexer, Token::Equal, Error::LetInWithoutEqual)?;
+            self.consume_next(Token::Equal, Error::LetInWithoutEqual)?;
 
-            let value = self.parse_expression(lexer, ast, 0)?;
+            let value = self.parse_expression(ast, 0)?;
 
             let span = name
                 .span()
@@ -2582,66 +2567,59 @@ impl Parser {
                 span,
             )));
 
-            if self.check_keyword_next(lexer, "in").is_none() {
-                self.consume_next(lexer, Token::Comma, Error::LetInWithoutComma)?;
+            if self.check_keyword_next("in").is_none() {
+                self.consume_next(Token::Comma, Error::LetInWithoutComma)?;
             }
         }
 
-        self.consume_keyword(lexer, Error::LetInWithoutIn, "in")?
-            .span();
+        self.consume_keyword(Error::LetInWithoutIn, "in")?.span();
 
-        self.consume_next(lexer, Token::OpenBracket, Error::LetInWithoutBlock)?;
+        let block_span = self.span_or_end();
 
-        self.block_exprs(lexer, ast, &mut exprs)?;
+        exprs.append(&mut self.block_exprs(ast).map_err(|error| {
+            error.transmute(|error| match error {
+                Error::ExpectedBlock => Error::LetInWithoutBlock,
+                error => error,
+            })
+        })?);
 
         let span = span
-            .combine_with(
-                self.consume_next_with_span(
-                    lexer,
-                    Token::CloseBracket,
-                    Error::UnclosedBlock,
-                    span,
-                )?
-                .span(),
-            )
+            .combine_with(block_span)
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
     }
 
-    fn if_expr(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn if_expr(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         let condition = self
-            .parse_expression(lexer, ast, 0)
+            .parse_expression(ast, 0)
             .map_err(|error| error.transmute(|_| Error::IfWithoutCondition))?;
 
-        if self.check_next(lexer, Token::OpenBracket).is_none() {
-            return Err(Spanned::new(
-                Error::IfThenWithoutBlock,
-                self.span_or_end(lexer),
-            ));
+        if self.check_next_token_tree(TreeKind::Brackets).is_none() {
+            return Err(Spanned::new(Error::IfThenWithoutBlock, self.span_or_end()));
         }
 
-        let when_true_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::IfThenWithoutBlock)?
-            .span();
+        let when_true_span = self.span_or_end();
 
-        let when_true = self.block(lexer, ast, 0, when_true_span)?;
+        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
+            error.transmute(|error| match error {
+                Error::ExpectedBlock => Error::IfThenWithoutBlock,
+                error => error,
+            })
+        })?;
 
-        let otherwise = if self.match_keyword_next(lexer, "else").is_some() {
-            if let Some(next_token) = self.match_keyword_next(lexer, "if") {
-                self.if_expr(lexer, ast, 0, next_token.span())?
+        let otherwise = if self.match_keyword_next("else").is_some() {
+            if let Some(next_token) = self.match_keyword_next("if") {
+                self.if_expr(ast, 0, next_token.span())?
             } else {
-                let otherwise_span = self
-                    .consume_next(lexer, Token::OpenBracket, Error::IfElseWithoutBlock)?
-                    .span();
+                let otherwise_span = self.span_or_end();
 
-                self.block(lexer, ast, 0, otherwise_span)?
+                self.block(ast, 0, otherwise_span).map_err(|error| {
+                    error.transmute(|error| match error {
+                        Error::ExpectedBlock => Error::IfElseWithoutBlock,
+                        error => error,
+                    })
+                })?
             }
         } else {
             ast.push_expr(Spanned::new(
@@ -2667,27 +2645,26 @@ impl Parser {
 
     fn while_expr(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
         let condition = self
-            .parse_expression(lexer, ast, 0)
+            .parse_expression(ast, 0)
             .map_err(|error| error.transmute(|_| Error::WhileWithoutCondition))?;
 
-        if self.check_next(lexer, Token::OpenBracket).is_none() {
-            return Err(Spanned::new(
-                Error::WhileWithoutBlock,
-                self.span_or_end(lexer),
-            ));
+        if self.check_next_token_tree(TreeKind::Brackets).is_none() {
+            return Err(Spanned::new(Error::WhileWithoutBlock, self.span_or_end()));
         }
 
-        let when_true_span = self
-            .consume_next(lexer, Token::OpenBracket, Error::WhileWithoutBlock)?
-            .span();
+        let when_true_span = self.span_or_end();
 
-        let when_true = self.block(lexer, ast, 0, when_true_span)?;
+        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
+            error.transmute(|error| match error {
+                Error::ExpectedBlock => Error::WhileWithoutBlock,
+                error => error,
+            })
+        })?;
 
         let span = span
             .combine_with(ast[when_true].span())
@@ -2702,68 +2679,52 @@ impl Parser {
         )))
     }
 
-    fn call_exprs(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        exprs: &mut Vec<ExprIndex>,
-    ) -> Result<(), Spanned<Error>> {
-        while self.peek(lexer).is_some()
-            && self.check_next(lexer, Token::CloseParenthesis).is_none()
-        {
-            let expr = self.parse_expression(lexer, ast, 0)?;
+    fn call_exprs(&mut self, ast: &mut Ast) -> Result<Vec<ExprIndex>, Spanned<Error>> {
+        Ok(
+            if let TokenTree::Tree { tokens, .. } =
+                self.consume_next_token_tree(TreeKind::Parentheses, Error::ExpectedCallArguments)?
+                && !tokens.is_empty()
+            {
+                let mut exprs = vec![];
 
-            exprs.push(expr);
+                let current_tree = self.current_tree;
 
-            if self.check_next(lexer, Token::CloseParenthesis).is_none() {
-                self.consume_next(lexer, Token::Comma, Error::CallWithoutComma)?;
-            }
-        }
+                while self.in_token_tree(current_tree) {
+                    let expr = self.parse_expression(ast, 0)?;
 
-        Ok(())
+                    exprs.push(expr);
+
+                    if self.in_token_tree(current_tree) {
+                        self.consume_next(Token::Comma, Error::CallWithoutComma)?;
+                    }
+                }
+
+                exprs
+            } else {
+                vec![]
+            },
+        )
     }
 
-    fn call(
-        &mut self,
-        lexer: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        let mut arguments = vec![];
+    fn call(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+        let arguments = self.call_exprs(ast)?;
 
-        self.call_exprs(lexer, ast, &mut arguments)?;
-
-        let call_end = self
-            .consume_next_with_span(lexer, Token::CloseParenthesis, Error::UnclosedCall, span)?
-            .span();
-
-        Ok(ast.push_expr(Spanned::new(
-            Expr::CallNoCallee(arguments),
-            span.combine_with(call_end).unwrap_or(span),
-        )))
+        Ok(ast.push_expr(Spanned::new(Expr::CallNoCallee(arguments), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn as_unit(
-        &mut self,
-        _: &mut Lexer,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn as_unit(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::AsUnitNoValue, span)))
     }
 
     fn return_expr(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
         let value = self
-            .parse_expression(lexer, ast, precedence)
+            .parse_expression(ast, precedence)
             .map_err(|error| error.transmute(|_| Error::ReturnWithoutValue))?;
 
         let span = span
@@ -2775,50 +2736,50 @@ impl Parser {
 
     fn product_expr(
         &mut self,
-        lexer: &mut Lexer,
         ast: &mut Ast,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let mut fields = vec![];
+        let fields = if let TokenTree::Tree { tokens, .. } =
+            self.consume_next_token_tree(TreeKind::Brackets, Error::ProductWithoutFields)?
+            && !tokens.is_empty()
+        {
+            let mut fields = vec![];
 
-        while self.peek(lexer).is_some() && self.check_next(lexer, Token::CloseBracket).is_none() {
-            let name = self
-                .spanned_name(lexer)
-                .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
+            let current_tree = self.current_tree;
 
-            let less =
-                self.consume_next(lexer, Token::Less, Error::ProductFieldWithoutLeftArrow)?;
+            while self.in_token_tree(current_tree) {
+                let name = self
+                    .spanned_name()
+                    .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
 
-            let minus =
-                self.consume_next(lexer, Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+                let less = self.consume_next(Token::Less, Error::ProductFieldWithoutLeftArrow)?;
 
-            if minus.span().start() != less.span().end() {
-                return Err(Spanned::new(
-                    Error::ProductFieldWithoutLeftArrow,
-                    less.span()
-                        .combine_with(minus.span())
-                        .expect("these spans are from the same source"),
-                ));
+                let minus = self.consume_next(Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+
+                if minus.span().start() != less.span().end() {
+                    return Err(Spanned::new(
+                        Error::ProductFieldWithoutLeftArrow,
+                        less.span()
+                            .combine_with(minus.span())
+                            .expect("these spans are from the same source"),
+                    ));
+                }
+
+                let value = self.parse_expression(ast, 0)?;
+
+                fields.push((name, value));
+
+                if self.in_token_tree(current_tree) {
+                    self.consume_next(Token::Comma, Error::ProductFieldsWithoutComma)?;
+                }
             }
 
-            let value = self.parse_expression(lexer, ast, 0)?;
+            fields
+        } else {
+            vec![]
+        };
 
-            fields.push((name, value));
-
-            if self.check_next(lexer, Token::CloseBracket).is_none() {
-                self.consume_next(lexer, Token::Comma, Error::ProductFieldsWithoutComma)?;
-            }
-        }
-
-        let close_span = self
-            .consume_next_with_span(lexer, Token::CloseBracket, Error::UnclosedProduct, span)?
-            .span();
-
-        Ok(ast.push_expr(Spanned::new(
-            Expr::ProductNoName(fields),
-            span.combine_with(close_span)
-                .expect("these spans are from the same source"),
-        )))
+        Ok(ast.push_expr(Spanned::new(Expr::ProductNoName(fields), span)))
     }
 }
