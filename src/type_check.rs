@@ -1,7 +1,10 @@
 use crate::{
     Reportable, Span, Spanned,
     name_resolve::Names,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, TypeSignature, UnaryOp},
+    parse::{
+        Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, Pattern, TypeSignature,
+        UnaryOp,
+    },
 };
 
 use std::{collections::HashMap, error, fmt, iter, ops::Index};
@@ -9,13 +12,13 @@ use std::{collections::HashMap, error, fmt, iter, ops::Index};
 pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<Error>>> {
     let mut type_checker = TypeChecker::new();
 
-    type_checker.check_primitives(ast);
+    type_checker.initialize_primitives(ast);
 
-    type_checker.check_types(ast, names, ast.roots());
+    type_checker.check_type_signatures(ast, names, ast.roots());
 
-    type_checker.check_items(ast, names, ast.roots());
+    type_checker.associate_items(ast, names, ast.roots());
 
-    type_checker.type_check_functions(ast, names, ast.roots());
+    type_checker.type_check_functions(ast, names, ast.roots(), [].as_slice());
 
     type_checker.check_for_main(ast);
 
@@ -54,8 +57,8 @@ pub enum Primitive {
 #[derive(Debug, Clone)]
 pub enum Type {
     Primitive(Spanned<Primitive>),
-    Integer(u64),
-    NegativeInteger(i64),
+    Integer(Spanned<u64>),
+    NegativeInteger(Spanned<i64>),
     Unknown,
     Fn {
         parameters: Vec<TypeIndex>,
@@ -370,6 +373,7 @@ pub enum Error {
     TypeAsExpr,
     AmbiguousFunction,
     TypeMustBeKnown,
+    ProductPatternMissingField(String),
 }
 
 impl fmt::Display for Error {
@@ -446,6 +450,9 @@ impl fmt::Display for Error {
                 "there are multiple functions with this name and matching parameters"
             ),
             Self::TypeMustBeKnown => write!(f, "the type must be known by this point"),
+            Self::ProductPatternMissingField(name) => {
+                write!(f, "this pattern is missing its required field \"{name}\"")
+            }
         }
     }
 }
@@ -457,12 +464,9 @@ impl Reportable for Error {}
 impl Index<Span> for &TypeChecker {
     type Output = TypeIndex;
 
-    fn index(&self, index: Span) -> &Self::Output {
-        self.type_map.get(&index).unwrap_or_else(|| {
-            panic!(
-                "index out of bounds: the len is {} but the index is {index:?}",
-                self.types.len(),
-            );
+    fn index(&self, span: Span) -> &Self::Output {
+        self.type_map.get(&span).unwrap_or_else(|| {
+            panic!("tried to get the type of a span that was never inferred: {span:?}");
         })
     }
 }
@@ -470,12 +474,9 @@ impl Index<Span> for &TypeChecker {
 impl Index<Span> for &mut TypeChecker {
     type Output = TypeIndex;
 
-    fn index(&self, index: Span) -> &Self::Output {
-        self.type_map.get(&index).unwrap_or_else(|| {
-            panic!(
-                "index out of bounds: the len is {} but the index is {index:?}",
-                self.types.len(),
-            );
+    fn index(&self, span: Span) -> &Self::Output {
+        self.type_map.get(&span).unwrap_or_else(|| {
+            panic!("tried to get the type of a span that was never inferred: {span:?}");
         })
     }
 }
@@ -519,7 +520,9 @@ impl TypeChecker {
         };
 
         me.push_type(Type::Unknown);
-        me.push_type(Type::Integer(0));
+
+        // TODO: is it okay to use this span?
+        me.push_type(Type::Integer(Spanned::new(0, Span::new(0, 0, 0))));
 
         me
     }
@@ -687,7 +690,7 @@ impl TypeChecker {
 }
 
 impl TypeChecker {
-    fn check_primitives(&mut self, ast: &Ast) {
+    fn initialize_primitives(&mut self, ast: &Ast) {
         for root in ast.roots() {
             if let Item::Primitive(name) = ast[*root].kind() {
                 let type_index =
@@ -726,7 +729,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_types(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
+    fn check_type_signatures(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod {
@@ -738,7 +741,7 @@ impl TypeChecker {
                         self.type_map.insert(generic.span(), type_index);
                     }
 
-                    self.check_types(ast, names, contents.as_slice());
+                    self.check_type_signatures(ast, names, contents.as_slice());
                 }
                 Item::Teach {
                     student,
@@ -753,7 +756,7 @@ impl TypeChecker {
 
                     self.check_type_signature(names, student);
 
-                    self.check_types(ast, names, body.as_slice());
+                    self.check_type_signatures(ast, names, body.as_slice());
                 }
                 Item::Product {
                     name,
@@ -764,10 +767,7 @@ impl TypeChecker {
                     let mut generic_type_indices = vec![];
 
                     for generic in generics {
-                        let type_index = self.push_type(Type::Existential(Spanned::new(
-                            generic.kind().clone(),
-                            generic.span(),
-                        )));
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
 
                         self.type_map.insert(generic.span(), type_index);
 
@@ -807,17 +807,14 @@ impl TypeChecker {
                     let mut generic_type_indices = vec![];
 
                     for generic in generics {
-                        let type_index = self.push_type(Type::Existential(Spanned::new(
-                            generic.kind().clone(),
-                            generic.span(),
-                        )));
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
 
                         self.type_map.insert(generic.span(), type_index);
 
                         generic_type_indices.push(type_index);
                     }
 
-                    self.check_types(ast, names, variants.as_slice());
+                    self.check_type_signatures(ast, names, variants.as_slice());
 
                     let variants = variants
                         .iter()
@@ -849,14 +846,14 @@ impl TypeChecker {
         }
     }
 
-    fn check_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
+    fn associate_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
         for item in items {
             let name = match ast[*item].kind() {
                 Item::Primitive(name) | Item::Product { name, .. } | Item::Sum { name, .. } => {
                     Some(name)
                 }
                 Item::Mod { contents, .. } => {
-                    self.check_items(ast, names, contents.as_slice());
+                    self.associate_items(ast, names, contents.as_slice());
 
                     None
                 }
@@ -865,7 +862,7 @@ impl TypeChecker {
 
                     self.associated_with = Some(student.span());
 
-                    self.check_items(ast, names, body.as_slice());
+                    self.associate_items(ast, names, body.as_slice());
 
                     self.associated_with = associated_with;
 
@@ -965,7 +962,7 @@ impl TypeChecker {
         match &self[type_index] {
             Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Unknown | Type::Generic(_) => type_index,
             Type::Existential(name) => {
-                originals.iter().position(|type_index| {
+                originals.iter().rposition(|type_index| {
                     matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
                 }).map_or(type_index, |index| replacements[index])
             }
@@ -1066,155 +1063,8 @@ impl TypeChecker {
                     )],
                 );
             }
-            TypeSignature::Normal { name, generics }
-            | TypeSignature::Path { name, generics, .. } => {
-                let checked_generics = generics.iter().fold(vec![], |mut accum, generic| {
-                    self.check_type_signature(names, generic);
-
-                    accum.push(self[generic.span()]);
-
-                    accum
-                });
-
-                let type_index = self[names[name.span()]];
-
-                match &self[type_index] {
-                    Type::Integer(_) | Type::NegativeInteger(_) => {
-                        unreachable!("normal type signatures are never integer literals")
-                    }
-                    Type::Primitive(_) if !checked_generics.is_empty() => {
-                        self.errors
-                            .push(Spanned::new(Error::GenericsOnPrimitive, name.span()));
-
-                        self.type_map.insert(ty.span(), self.type_unknown());
-                    }
-                    Type::Generic(_) | Type::Existential(_) if !checked_generics.is_empty() => {
-                        self.errors
-                            .push(Spanned::new(Error::GenericsOnGeneric, name.span()));
-
-                        self.type_map.insert(ty.span(), self.type_unknown());
-                    }
-                    Type::Unknown => {}
-                    Type::Primitive(_) | Type::Generic(_) | Type::Existential(_) => {
-                        self.type_map.insert(ty.span(), type_index);
-                    }
-                    Type::Fn { .. } => unreachable!("normal type signatures are never functions"),
-                    Type::AnyOf(_) => unreachable!("normal type signatures are never Type::AnyOf"),
-                    Type::Product {
-                        fields,
-                        generics: generic_types,
-                        ..
-                    } => {
-                        let expected_generics = fields
-                            .iter()
-                            .filter(|(_, type_index)| {
-                                matches!(
-                                    &self[*type_index],
-                                    Type::Existential(name)
-                                        if !generic_types
-                                            .iter()
-                                            .any(|generic_type| {
-                                                matches!(
-                                                    &self[*generic_type],
-                                                    Type::Existential(generic_name)
-                                                        if generic_name.kind() == name.kind()
-                                                )
-                                            })
-                                )
-                            })
-                            .count()
-                            + generic_types.len();
-
-                        if expected_generics == 0 && !checked_generics.is_empty() {
-                            self.errors
-                                .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
-
-                            self.type_map.insert(ty.span(), self.type_unknown());
-                        } else if checked_generics.len() != expected_generics {
-                            self.errors.push(Spanned::new(
-                                Error::GenericCountMismatch {
-                                    expected: expected_generics,
-                                    got: checked_generics.len(),
-                                },
-                                ty.span(),
-                            ));
-
-                            self.type_map.insert(ty.span(), self.type_unknown());
-                        } else {
-                            let fields = fields.clone();
-                            let generic_types = generic_types.clone();
-
-                            let fields = fields.iter().fold(
-                                vec![],
-                                |mut accum, (field_name, field_type)| {
-                                    let type_index = self.substitute_type(
-                                        generic_types.as_slice(),
-                                        checked_generics.as_slice(),
-                                        *field_type,
-                                    );
-
-                                    accum.push((field_name.clone(), type_index));
-
-                                    accum
-                                },
-                            );
-
-                            let type_index = self.push_type(Type::Product {
-                                name: Spanned::new(name.kind().clone(), name.span()),
-                                fields,
-                                generics: checked_generics,
-                            });
-
-                            self.type_map.insert(ty.span(), type_index);
-                        }
-                    }
-                    Type::Sum {
-                        variants,
-                        generics: generic_types,
-                        ..
-                    } => {
-                        if generic_types.is_empty() && !checked_generics.is_empty() {
-                            self.errors
-                                .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
-
-                            self.type_map.insert(ty.span(), self.type_unknown());
-                        } else if checked_generics.len() != checked_generics.len() {
-                            self.errors.push(Spanned::new(
-                                Error::GenericCountMismatch {
-                                    expected: generic_types.len(),
-                                    got: checked_generics.len(),
-                                },
-                                ty.span(),
-                            ));
-
-                            self.type_map.insert(ty.span(), self.type_unknown());
-                        } else {
-                            let variants = variants.clone();
-                            let generic_types = generic_types.clone();
-
-                            let variants =
-                                variants.iter().fold(vec![], |mut accum, variant_type| {
-                                    let type_index = self.substitute_type(
-                                        generic_types.as_slice(),
-                                        checked_generics.as_slice(),
-                                        *variant_type,
-                                    );
-
-                                    accum.push(type_index);
-
-                                    accum
-                                });
-
-                            let type_index = self.push_type(Type::Sum {
-                                name: name.clone(),
-                                variants,
-                                generics: checked_generics,
-                            });
-
-                            self.type_map.insert(ty.span(), type_index);
-                        }
-                    }
-                }
+            TypeSignature::Path { path, generics } => {
+                self.check_type_signature_path(names, ty, path, generics);
             }
             TypeSignature::Fn {
                 parameters,
@@ -1238,6 +1088,173 @@ impl TypeChecker {
                 let type_index = self.push_type(function_ty);
 
                 self.type_map.insert(ty.span(), type_index);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn check_type_signature_path(
+        &mut self,
+        names: &Names,
+        ty: &Spanned<TypeSignature>,
+        path: &[Spanned<PathElement>],
+        generics: &[Spanned<TypeSignature>],
+    ) {
+        let checked_generics = generics.iter().fold(vec![], |mut accum, generic| {
+            self.check_type_signature(names, generic);
+
+            accum.push(self[generic.span()]);
+
+            accum
+        });
+
+        let name_span = path
+            .last()
+            .map(Spanned::span)
+            .expect("paths are never empty");
+
+        let type_index = self[names[name_span]];
+
+        match &self[type_index] {
+            Type::Integer(_) | Type::NegativeInteger(_) => {
+                unreachable!("normal type signatures are never integer literals")
+            }
+            Type::Primitive(_) if !checked_generics.is_empty() => {
+                self.errors
+                    .push(Spanned::new(Error::GenericsOnPrimitive, name_span));
+
+                self.type_map.insert(ty.span(), self.type_unknown());
+            }
+            Type::Generic(_) | Type::Existential(_) if !checked_generics.is_empty() => {
+                self.errors
+                    .push(Spanned::new(Error::GenericsOnGeneric, name_span));
+
+                self.type_map.insert(ty.span(), self.type_unknown());
+            }
+            Type::Unknown => {}
+            Type::Primitive(_) | Type::Generic(_) | Type::Existential(_) => {
+                self.type_map.insert(ty.span(), type_index);
+            }
+            Type::Fn { .. } => unreachable!("normal type signatures are never functions"),
+            Type::AnyOf(_) => unreachable!("normal type signatures are never Type::AnyOf"),
+            Type::Product {
+                name,
+                fields,
+                generics: generic_types,
+                ..
+            } => {
+                let expected_generics = fields
+                    .iter()
+                    .filter(|(_, type_index)| {
+                        matches!(
+                            &self[*type_index],
+                            Type::Existential(name)
+                                if !generic_types
+                                    .iter()
+                                    .any(|generic_type| {
+                                        matches!(
+                                            &self[*generic_type],
+                                            Type::Existential(generic_name)
+                                                if generic_name.kind() == name.kind()
+                                        )
+                                    })
+                        )
+                    })
+                    .count()
+                    + generic_types.len();
+
+                if expected_generics == 0 && !checked_generics.is_empty() {
+                    self.errors
+                        .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
+
+                    self.type_map.insert(ty.span(), self.type_unknown());
+                } else if checked_generics.len() != expected_generics {
+                    self.errors.push(Spanned::new(
+                        Error::GenericCountMismatch {
+                            expected: expected_generics,
+                            got: checked_generics.len(),
+                        },
+                        ty.span(),
+                    ));
+
+                    self.type_map.insert(ty.span(), self.type_unknown());
+                } else {
+                    let name = name.clone();
+
+                    let fields = fields.clone();
+                    let generic_types = generic_types.clone();
+
+                    let fields =
+                        fields
+                            .iter()
+                            .fold(vec![], |mut accum, (field_name, field_type)| {
+                                let type_index = self.substitute_type(
+                                    generic_types.as_slice(),
+                                    checked_generics.as_slice(),
+                                    *field_type,
+                                );
+
+                                accum.push((field_name.clone(), type_index));
+
+                                accum
+                            });
+
+                    let type_index = self.push_type(Type::Product {
+                        name,
+                        fields,
+                        generics: checked_generics,
+                    });
+
+                    self.type_map.insert(ty.span(), type_index);
+                }
+            }
+            Type::Sum {
+                name,
+                variants,
+                generics: generic_types,
+                ..
+            } => {
+                if generic_types.is_empty() && !checked_generics.is_empty() {
+                    self.errors
+                        .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
+
+                    self.type_map.insert(ty.span(), self.type_unknown());
+                } else if checked_generics.len() != checked_generics.len() {
+                    self.errors.push(Spanned::new(
+                        Error::GenericCountMismatch {
+                            expected: generic_types.len(),
+                            got: checked_generics.len(),
+                        },
+                        ty.span(),
+                    ));
+
+                    self.type_map.insert(ty.span(), self.type_unknown());
+                } else {
+                    let name = name.clone();
+
+                    let variants = variants.clone();
+                    let generic_types = generic_types.clone();
+
+                    let variants = variants.iter().fold(vec![], |mut accum, variant_type| {
+                        let type_index = self.substitute_type(
+                            generic_types.as_slice(),
+                            checked_generics.as_slice(),
+                            *variant_type,
+                        );
+
+                        accum.push(type_index);
+
+                        accum
+                    });
+
+                    let type_index = self.push_type(Type::Sum {
+                        name,
+                        variants,
+                        generics: checked_generics,
+                    });
+
+                    self.type_map.insert(ty.span(), type_index);
+                }
             }
         }
     }
@@ -1313,18 +1330,52 @@ impl TypeChecker {
 }
 
 impl TypeChecker {
-    fn type_check_functions(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
+    fn type_check_functions(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        items: &[ItemIndex],
+        context: &[(String, TypeIndex)],
+    ) {
         for item in items {
             match ast[*item].kind() {
                 Item::Primitive(_)
                 | Item::NativeFn { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. } => {}
-                Item::Mod { contents, .. } => {
-                    self.type_check_functions(ast, names, contents.as_slice());
+                Item::Mod {
+                    contents, generics, ..
+                } => {
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
+
+                    for (generic_name, generic) in generics.iter().map(|generic| {
+                        (
+                            generic.kind().clone(),
+                            self.push_type(Type::Generic(generic.clone())),
+                        )
+                    }) {
+                        context.push((generic_name, generic));
+                    }
+
+                    self.type_check_functions(ast, names, contents.as_slice(), context);
                 }
-                Item::Teach { body, .. } => {
-                    self.type_check_functions(ast, names, body.as_slice());
+                Item::Teach { body, generics, .. } => {
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
+
+                    for (generic_name, generic) in generics.iter().map(|generic| {
+                        (
+                            generic.kind().clone(),
+                            self.push_type(Type::Generic(generic.clone())),
+                        )
+                    }) {
+                        context.push((generic_name, generic));
+                    }
+
+                    self.type_check_functions(ast, names, body.as_slice(), context);
                 }
                 Item::Fn {
                     name,
@@ -1332,10 +1383,18 @@ impl TypeChecker {
                     generics,
                     ..
                 } => {
-                    let mut generics = generics
-                        .iter()
-                        .map(|generic| (generic.kind().clone(), self[generic.span()]))
-                        .collect::<Vec<_>>();
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
+
+                    for (generic_name, generic) in generics.iter().map(|generic| {
+                        (
+                            generic.kind().clone(),
+                            self.push_type(Type::Generic(generic.clone())),
+                        )
+                    }) {
+                        context.push((generic_name, generic));
+                    }
 
                     let expected_return_type =
                         if let Type::Fn { return_type, .. } = &self[self[name.span()]] {
@@ -1343,7 +1402,7 @@ impl TypeChecker {
                         } else {
                             None
                         }
-                        .map(|return_type| self.apply(return_type, &mut generics))
+                        .map(|return_type| self.apply(return_type, context))
                         .expect("all functions have a return type");
 
                     let fn_return_type = self.fn_return_type;
@@ -1352,8 +1411,7 @@ impl TypeChecker {
 
                     let type_count = self.types.len();
 
-                    if let Err(error) =
-                        self.check(ast, names, *body, expected_return_type, &mut generics)
+                    if let Err(error) = self.check(ast, names, *body, expected_return_type, context)
                     {
                         self.errors.push(Spanned::new(error, ast[*body].span()));
                     }
@@ -1363,7 +1421,7 @@ impl TypeChecker {
 
                     for ty in &mut self.types[type_count..] {
                         match ty {
-                            Type::Integer(value) => match i64::try_from(*value) {
+                            Type::Integer(value) => match i64::try_from(*value.kind()) {
                                 Ok(_) => *ty = type_i64.clone(),
                                 Err(_) => *ty = default_integer.clone(),
                             },
@@ -1386,7 +1444,7 @@ impl TypeChecker {
         ast: &Ast,
         names: &Names,
         expr: ExprIndex,
-        context: &mut Vec<(String, TypeIndex)>,
+        context: &[(String, TypeIndex)],
     ) -> TypeIndex {
         let span = ast[expr].span();
 
@@ -1407,24 +1465,36 @@ impl TypeChecker {
 
                 self.type_unknown()
             }
-            Expr::Integer(value) => self.push_type(Type::Integer(*value)),
-            Expr::NegativeInteger(value) => self.push_type(Type::NegativeInteger(*value)),
+            Expr::Integer(value) => self.push_type(Type::Integer(Spanned::new(*value, span))),
+            Expr::NegativeInteger(value) => {
+                self.push_type(Type::NegativeInteger(Spanned::new(*value, span)))
+            }
             Expr::Float(_) => self.type_float(),
             Expr::Boolean(_) => self.type_boolean(),
             Expr::Unit => self.type_unit(),
             Expr::Name(_) => {
-                let type_index = self[names[span]];
+                let mut context = context.to_vec();
 
-                if let Type::Existential(name) = &self[type_index] {
-                    self.push_type(Type::Generic(name.clone()))
-                } else {
-                    type_index
-                }
+                let context = &mut context;
+
+                let type_index = self.apply(self[names[span]], context);
+
+                self.overwrite_with(ast, names, expr, type_index);
+
+                type_index
             }
             Expr::Unary { op, expr: operand } => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
                 self.infer_unary(ast, names, (*op, *operand), context)
             }
             Expr::Binary { op, lhs, rhs } => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
                 self.infer_binary(ast, names, (*op, *lhs, *rhs), context)
             }
             Expr::Group(expr) => self.infer(ast, names, *expr, context),
@@ -1449,6 +1519,10 @@ impl TypeChecker {
                 when_true,
                 otherwise,
             } => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
                 if self
                     .check(ast, names, *condition, self.type_boolean(), context)
                     .is_err()
@@ -1475,6 +1549,10 @@ impl TypeChecker {
                 condition,
                 when_true,
             } => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
                 if self
                     .check(ast, names, *condition, self.type_boolean(), context)
                     .is_err()
@@ -1496,6 +1574,10 @@ impl TypeChecker {
             } => {
                 let type_index = if let Some(annotation) = type_signature {
                     self.check_type_signature(names, annotation);
+
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
 
                     let annotation_ty = self[annotation.span()];
 
@@ -1565,6 +1647,10 @@ impl TypeChecker {
                 if let Some(type_span) = type_span
                     && let Expr::Name(name) = ast[*method].kind()
                 {
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
+
                     if names.get_association(type_span, name).is_some()
                         && let Some(associations) = self
                             .associations
@@ -1650,6 +1736,10 @@ impl TypeChecker {
                 }
             }
             Expr::Return(expr) => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
                 if let Err(error) = self.check(
                     ast,
                     names,
@@ -1677,7 +1767,9 @@ impl TypeChecker {
                 {
                     let error_count = self.errors.len();
 
-                    let mut context = context.clone();
+                    let mut context = context.to_vec();
+
+                    let context = &mut context;
 
                     let mut checked_fields = vec![];
 
@@ -1699,7 +1791,7 @@ impl TypeChecker {
                                 .nth(1)
                                 .is_none()
                             {
-                                match self.check(ast, names, *field, *field_type, &mut context) {
+                                match self.check(ast, names, *field, *field_type, context) {
                                     Ok(ty) => {
                                         checked_fields.push((field_name.kind().clone(), ty));
                                     }
@@ -1713,7 +1805,7 @@ impl TypeChecker {
                             }
                         } else {
                             self.errors
-                                .push(Spanned::new(Error::NonExistentField, name.span()));
+                                .push(Spanned::new(Error::NonExistentField, field_name.span()));
                         }
                     }
 
@@ -1734,7 +1826,7 @@ impl TypeChecker {
                     if self.errors.len() == error_count {
                         let generics = generics
                             .into_iter()
-                            .map(|generic| self.apply(generic, &mut context))
+                            .map(|generic| self.apply(generic, context))
                             .collect::<Vec<_>>();
 
                         self.push_type(Type::Product {
@@ -1753,6 +1845,80 @@ impl TypeChecker {
 
                     self.type_unknown()
                 }
+            }
+            Expr::Match {
+                cases,
+                expr,
+                fallback,
+            } => {
+                let expr_type_index = self.infer(ast, names, *expr, context);
+
+                let mut match_type_index = None;
+
+                for case in cases {
+                    {
+                        let mut context = context.to_vec();
+
+                        let context = &mut context;
+
+                        if let Err(type_index) =
+                            self.check_pattern(names, case.pattern(), expr_type_index, context)
+                        {
+                            let error = self.type_mismatch_error(type_index, expr_type_index);
+
+                            self.errors.push(Spanned::new(error, case.pattern().span()));
+                        }
+                    }
+
+                    {
+                        let mut context = context.to_vec();
+
+                        let context = &mut context;
+
+                        let case_type_index = self.infer(ast, names, case.case(), context);
+
+                        if match_type_index.is_none()
+                            && !matches!(self[case_type_index], Type::Unknown)
+                        {
+                            match_type_index = Some(case_type_index);
+                        } else if let Some(match_type_index) = match_type_index
+                            && let Err(type_index) =
+                                self.check_inferred(case_type_index, match_type_index, context)
+                            && !matches!(self[type_index], Type::Unknown)
+                        {
+                            let error = Spanned::new(
+                                self.type_mismatch_error(type_index, match_type_index),
+                                ast[case.case()].span(),
+                            );
+
+                            self.errors.push(error);
+                        }
+                    }
+                }
+
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
+                let fallback_type_index = self.infer(ast, names, *fallback, context);
+
+                if match_type_index.is_none() && !matches!(self[fallback_type_index], Type::Unknown)
+                {
+                    match_type_index = Some(fallback_type_index);
+                } else if let Some(match_type_index) = match_type_index
+                    && let Err(type_index) =
+                        self.check_inferred(fallback_type_index, match_type_index, context)
+                    && !matches!(self[type_index], Type::Unknown)
+                {
+                    let error = Spanned::new(
+                        self.type_mismatch_error(type_index, match_type_index),
+                        ast[*fallback].span(),
+                    );
+
+                    self.errors.push(error);
+                }
+
+                match_type_index.unwrap_or_else(|| self.type_unknown())
             }
         };
 
@@ -1796,17 +1962,19 @@ impl TypeChecker {
                 } = function
                 {
                     if arguments.len() == parameters.len() {
-                        let mut context = context.to_owned();
+                        let mut context = context.to_vec();
+
+                        let context = &mut context;
 
                         for (argument, parameter) in arguments.iter().zip(&parameters) {
                             if let Err(error) =
-                                self.check(ast, names, *argument, *parameter, &mut context)
+                                self.check(ast, names, *argument, *parameter, context)
                             {
                                 return Err(Spanned::new(error, ast[*argument].span()));
                             }
                         }
 
-                        Ok((index, self.apply(return_type, &mut context)))
+                        Ok((index, self.apply(return_type, context)))
                     } else {
                         Err(Spanned::new(
                             Error::CallArgumentCountMismatch {
@@ -1970,7 +2138,9 @@ impl TypeChecker {
                         {
                             let mut context = context.clone();
 
-                            match self.check(ast, names, rhs, variant_type, &mut context) {
+                            let context = &mut context;
+
+                            match self.check(ast, names, rhs, variant_type, context) {
                                 Ok(type_index) => {
                                     let Type::Sum {
                                         name,
@@ -1998,7 +2168,7 @@ impl TypeChecker {
                                             .collect::<Vec<_>>(),
                                         generics: generics
                                             .into_iter()
-                                            .map(|generic| self.apply(generic, &mut context))
+                                            .map(|generic| self.apply(generic, context))
                                             .collect::<Vec<_>>(),
                                     };
 
@@ -2212,6 +2382,8 @@ impl TypeChecker {
 
                                 let mut context = context.clone();
 
+                                let context = &mut context;
+
                                 let Type::Product {
                                     fields, generics, ..
                                 } = &self[self[names[lhs_span]]]
@@ -2226,11 +2398,8 @@ impl TypeChecker {
                                     .position(|(field_name, _)| field_name == accessor)
                                     .expect("the field is guaranteed to exist");
 
-                                match self.check_inferred(
-                                    fields[field_index].1,
-                                    rhs_type,
-                                    &mut context,
-                                ) {
+                                match self.check_inferred(fields[field_index].1, rhs_type, context)
+                                {
                                     Err(type_index) => {
                                         let error = Spanned::new(
                                             self.type_mismatch_error(type_index, rhs_type),
@@ -2243,7 +2412,7 @@ impl TypeChecker {
                                     }
                                     Ok(type_index) => {
                                         for generic in &mut applied_generics {
-                                            *generic = self.apply(*generic, &mut context);
+                                            *generic = self.apply(*generic, context);
                                         }
 
                                         let product_type_index = self[names[lhs_span]];
@@ -2331,42 +2500,70 @@ impl TypeChecker {
                 Type::Integer(_) | Type::NegativeInteger(_),
                 Type::Integer(_) | Type::NegativeInteger(_),
             ) => Ok(inferred),
-            (Type::Integer(value), Type::Primitive(b)) => match b.kind() {
-                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U64 => Ok(should_be),
-                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(should_be),
-                _ => Err(inferred),
-            },
-            (Type::Primitive(a), Type::Integer(value)) => match a.kind() {
-                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::U64 => Ok(inferred),
-                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(inferred),
-                _ => Err(inferred),
-            },
-            (Type::NegativeInteger(value), Type::Primitive(b)) => match b.kind() {
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I64 => Ok(should_be),
-                _ => Err(inferred),
-            },
-            (Type::Primitive(a), Type::NegativeInteger(value)) => match a.kind() {
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(inferred),
-                Primitive::I64 => Ok(inferred),
-                _ => Err(inferred),
-            },
+            (Type::Integer(value), Type::Primitive(b)) => {
+                let value_span = value.span();
+
+                match b.kind() {
+                    Primitive::U8 if u8::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::U16 if u16::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::U32 if u32::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::U64 => Ok(should_be),
+                    Primitive::I64 if i64::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    _ => Err(inferred),
+                }
+                .inspect(|type_index| {
+                    self.type_map.insert(value_span, *type_index);
+                })
+            }
+            (Type::Primitive(a), Type::Integer(value)) => {
+                let value_span = value.span();
+
+                match a.kind() {
+                    Primitive::U8 if u8::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::U16 if u16::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::U32 if u32::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::U64 => Ok(inferred),
+                    Primitive::I64 if i64::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    _ => Err(inferred),
+                }
+                .inspect(|type_index| {
+                    self.type_map.insert(value_span, *type_index);
+                })
+            }
+            (Type::NegativeInteger(value), Type::Primitive(b)) => {
+                let value_span = value.span();
+
+                match b.kind() {
+                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::I64 => Ok(should_be),
+                    _ => Err(inferred),
+                }
+                .inspect(|type_index| {
+                    self.type_map.insert(value_span, *type_index);
+                })
+            }
+            (Type::Primitive(a), Type::NegativeInteger(value)) => {
+                let value_span = value.span();
+
+                match a.kind() {
+                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(inferred),
+                    Primitive::I64 => Ok(inferred),
+                    _ => Err(inferred),
+                }
+                .inspect(|type_index| {
+                    self.type_map.insert(value_span, *type_index);
+                })
+            }
             (Type::Primitive(a), Type::Primitive(b)) => {
                 if a.kind() == b.kind() {
                     Ok(should_be)
@@ -2580,11 +2777,7 @@ impl TypeChecker {
         }
     }
 
-    fn apply(
-        &mut self,
-        type_index: TypeIndex,
-        context: &mut Vec<(String, TypeIndex)>,
-    ) -> TypeIndex {
+    fn apply(&mut self, type_index: TypeIndex, context: &[(String, TypeIndex)]) -> TypeIndex {
         match &self[type_index] {
             Type::Integer(_)
             | Type::NegativeInteger(_)
@@ -2674,5 +2867,281 @@ impl TypeChecker {
                 })
             }
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn check_pattern(
+        &mut self,
+        names: &Names,
+        pattern: &Spanned<Pattern>,
+        should_be: TypeIndex,
+        context: &[(String, TypeIndex)],
+    ) -> Result<TypeIndex, TypeIndex> {
+        match (pattern.kind(), &self[should_be]) {
+            (Pattern::Integer(value), Type::Integer(_) | Type::NegativeInteger(_)) => {
+                Ok(self.push_type(Type::Integer(Spanned::new(*value, pattern.span()))))
+            }
+            (Pattern::NegativeInteger(value), Type::Integer(_) | Type::NegativeInteger(_)) => {
+                Ok(self.push_type(Type::NegativeInteger(Spanned::new(*value, pattern.span()))))
+            }
+            (Pattern::Integer(value), Type::Primitive(b)) => match b.kind() {
+                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::U64 => Ok(should_be),
+                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(should_be),
+                _ => Err(self.push_type(Type::Integer(Spanned::new(*value, pattern.span())))),
+            }
+            .inspect(|type_index| {
+                self.type_map.insert(pattern.span(), *type_index);
+            }),
+            (Pattern::NegativeInteger(value), Type::Primitive(b)) => match b.kind() {
+                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
+                Primitive::I64 => Ok(should_be),
+                _ => {
+                    Err(self.push_type(Type::NegativeInteger(Spanned::new(*value, pattern.span()))))
+                }
+            }
+            .inspect(|type_index| {
+                self.type_map.insert(pattern.span(), *type_index);
+            }),
+            (Pattern::Boolean(_), Type::Primitive(primitive))
+                if matches!(primitive.kind(), Primitive::Boolean) =>
+            {
+                Ok(self.type_boolean())
+            }
+            (Pattern::Unit, Type::Primitive(primitive))
+                if matches!(primitive.kind(), Primitive::Unit) =>
+            {
+                Ok(self.type_unit())
+            }
+            (
+                Pattern::Product { path, fields },
+                Type::Product {
+                    name: should_be_name,
+                    fields: should_be_fields,
+                    generics: should_be_generics,
+                },
+            ) => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
+                let name_span = path
+                    .last()
+                    .map(Spanned::span)
+                    .expect("paths are never empty");
+
+                let name = match path.last().map(Spanned::kind) {
+                    Some(PathElement::Name(name)) => name.clone(),
+                    Some(PathElement::SelfType) => match path
+                        .last()
+                        .map(Spanned::span)
+                        .and_then(|associated_with| self.get_type(names[associated_with]))
+                    {
+                        Some(Type::Product { name, .. })
+                            if name.kind() != should_be_name.kind() =>
+                        {
+                            return Err(self.apply(should_be, context));
+                        }
+                        Some(Type::Product { name, .. }) => name.kind().clone(),
+                        _ => return Err(self.apply(should_be, context)),
+                    },
+                    _ => return Err(self.apply(should_be, context)),
+                };
+
+                let should_be_fields = should_be_fields.clone();
+                let should_be_generics = should_be_generics.clone();
+
+                let error_count = self.errors.len();
+
+                let mut checked_fields = vec![];
+
+                for (should_be_field_name, should_be_field) in &should_be_fields {
+                    if let Some((field_name, field)) =
+                        fields.iter().find_map(|(field_name, field)| {
+                            if should_be_field_name.as_str() == field_name.kind() {
+                                Some((field_name, field))
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        if fields
+                            .iter()
+                            .filter(|(field_name, _)| {
+                                should_be_field_name.as_str() == field_name.kind()
+                            })
+                            .nth(1)
+                            .is_none()
+                        {
+                            if let Some(field) = field {
+                                match self.check_pattern(names, field, *should_be_field, context) {
+                                    Ok(type_index) => {
+                                        checked_fields
+                                            .push((field_name.kind().clone(), type_index));
+
+                                        self.type_map.insert(field_name.span(), type_index);
+                                    }
+                                    Err(type_index) => {
+                                        let should_be = self.apply(*should_be_field, context);
+
+                                        self.errors.push(Spanned::new(
+                                            self.type_mismatch_error(type_index, should_be),
+                                            field_name.span(),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                let type_index = self.apply(*should_be_field, context);
+
+                                checked_fields.push((field_name.kind().clone(), type_index));
+
+                                self.type_map.insert(field_name.span(), type_index);
+                            }
+                        } else {
+                            self.errors
+                                .push(Spanned::new(Error::DuplicateField, field_name.span()));
+                        }
+                    }
+                }
+
+                checked_fields.sort_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
+
+                for (field_name, _) in fields {
+                    if !should_be_fields.iter().any(|(should_be_field_name, _)| {
+                        should_be_field_name.as_str() == field_name.kind()
+                    }) {
+                        self.errors
+                            .push(Spanned::new(Error::NonExistentField, field_name.span()));
+                    }
+                }
+
+                if self.errors.len() == error_count {
+                    Ok(self.push_type(Type::Product {
+                        name: Spanned::new(name, name_span),
+                        fields: checked_fields,
+                        generics: should_be_generics,
+                    }))
+                } else {
+                    Err(self.type_unknown())
+                }
+            }
+            (
+                Pattern::Product { path, .. },
+                Type::Sum {
+                    name: should_be_name,
+                    variants: should_be_variants,
+                    ..
+                },
+            ) => {
+                let mut context = context.to_vec();
+
+                let context = &mut context;
+
+                let name_span = path
+                    .last()
+                    .map(Spanned::span)
+                    .expect("paths are never empty");
+
+                let name = match path.last().map(Spanned::kind) {
+                    Some(PathElement::Name(name)) => name.clone(),
+                    _ => return Err(self.apply(should_be, context)),
+                };
+
+                let (variant_index, variant_type) = if matches!(
+                    path.iter()
+                        .nth_back(1)
+                        .map(Spanned::kind),
+                    Some(PathElement::Name(sum_name))
+                        if sum_name == should_be_name.kind()
+                ) || matches!(
+                        path.iter()
+                            .nth_back(1)
+                            .map(Spanned::kind),
+                        Some(PathElement::SelfType)
+                            if matches!(
+                                path
+                                    .iter()
+                                    .nth_back(1)
+                                    .map(Spanned::span)
+                                    .and_then(|associated_with| self.get_type(names[associated_with])),
+                                Some(Type::Sum { name: sum_name, .. })
+                                    if sum_name.kind() == should_be_name.kind())
+                ) {
+                    if let Some((variant_index, variant_type)) = should_be_variants
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, variant)| {
+                            if let Type::Product {
+                                name: variant_name, ..
+                            } = &self[*variant]
+                                && name.as_str() == variant_name.kind()
+                            {
+                                Some((i, *variant))
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        (variant_index, variant_type)
+                    } else {
+                        if !matches!(self.get_type(names[name_span]), Some(Type::Unknown)) {
+                            self.errors
+                                .push(Spanned::new(Error::NonExistentSumVariant, name_span));
+                        }
+
+                        return Err(self.type_unknown());
+                    }
+                } else {
+                    if !matches!(self.get_type(names[name_span]), Some(Type::Unknown)) {
+                        self.errors.push(Spanned::new(Error::NotASum, name_span));
+                    }
+
+                    return Err(self.type_unknown());
+                };
+
+                let type_index = self.check_pattern(names, pattern, variant_type, context)?;
+
+                let Type::Sum {
+                    name,
+                    variants,
+                    generics,
+                } = self[should_be].clone()
+                else {
+                    unreachable!("the outer if condition guarantees this is true");
+                };
+
+                let ty = Type::Sum {
+                    name,
+                    variants: variants
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, variant)| {
+                            if i == variant_index {
+                                type_index
+                            } else {
+                                variant
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                    generics: generics
+                        .into_iter()
+                        .map(|generic| self.apply(generic, context))
+                        .collect::<Vec<_>>(),
+                };
+
+                Ok(self.push_type(ty))
+            }
+            (_, _) => Err(self.type_unknown()),
+        }
+        .inspect(|type_index| {
+            self.type_map.insert(pattern.span(), *type_index);
+        })
     }
 }

@@ -3,27 +3,7 @@ macro_rules! output_tests {
         $module_name:ident, $test_macro:ident ;
     ) => {
         mod $module_name {
-            apart::$test_macro!(
-                iterative_fibonacci,
-                "iterative_fibonacci.txt",
-                "7540113804746346429\n"
-            );
-
-            apart::$test_macro!(recursive_fibonacci, "recursive_fibonacci.txt", "6765\n");
-
-            apart::$test_macro!(you_stupid, "you_stupid.txt", "true\nfalse\n");
-
-            apart::$test_macro!(zoo, "zoo.txt", "100002\n");
-
-            apart::$test_macro!(identity, "identity.txt", "21\n");
-
-            apart::$test_macro!(nested_generics, "nested_generics.txt", "3.14\n");
-
             apart::$test_macro!(access_lhs_is_call, "access_lhs_is_call.txt", "true\n");
-
-            apart::$test_macro!(callee_is_access, "callee_is_access.txt", "true\n");
-
-            apart::$test_macro!(callee_is_call, "callee_is_call.txt", "true\n");
 
             apart::$test_macro!(and, "and.txt", "true\nfalse\n");
 
@@ -31,33 +11,59 @@ macro_rules! output_tests {
 
             apart::$test_macro!(and_and_or, "and_and_or.txt", "true\n");
 
+            apart::$test_macro!(callee_is_access, "callee_is_access.txt", "true\n");
+
+            apart::$test_macro!(callee_is_call, "callee_is_call.txt", "true\n");
+
             apart::$test_macro!(empty, "empty.txt", "");
+
+            apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
 
             apart::$test_macro!(fn_parameter, "fn_parameter.txt", "21\n");
 
-            apart::$test_macro!(r#if, "if.txt", "21.0\n");
+            apart::$test_macro!(identity, "identity.txt", "21\n");
+
+            apart::$test_macro!(if_condition_is_access, "if_condition_is_access.txt", "1\n",);
 
             apart::$test_macro!(if_else_if_else, "if_else_if_else.txt", "3\n2\n1\n1\n");
+
+            apart::$test_macro!(is_some, "is_some.txt", "true\nfalse\n",);
+
+            apart::$test_macro!(
+                iterative_fibonacci,
+                "iterative_fibonacci.txt",
+                "7540113804746346429\n"
+            );
+
+            apart::$test_macro!(
+                method_specialization,
+                "method_specialization.txt",
+                "1\n0\n2\n3\n4\n",
+            );
+
+            apart::$test_macro!(module_generics, "module_generics.txt", "3.0\n");
+
+            apart::$test_macro!(nested_generics, "nested_generics.txt", "3.14\n");
+
+            apart::$test_macro!(nested_options, "nested_options.txt", "",);
+
+            apart::$test_macro!(no_ranges, "no_ranges.txt", "true\ntrue\ntrue\nfalse\n",);
+
+            apart::$test_macro!(noppers, "noppers.txt", "80\n");
 
             apart::$test_macro!(or, "or.txt", "true\nfalse\n");
 
             apart::$test_macro!(or_and_or_and_or, "or_and_or_and_or.txt", "true\n");
 
-            apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
-
-            apart::$test_macro!(r#while, "while.txt", "{}\n{}\n{}\n");
-
-            apart::$test_macro!(noppers, "noppers.txt", "80\n");
-
-            apart::$test_macro!(r#mod, "mod.txt", "97\n");
-
-            apart::$test_macro!(module_generics, "module_generics.txt", "3.0\n");
-
-            apart::$test_macro!(root_path, "root_path.txt", "97\n");
-
             apart::$test_macro!(path_super, "path_super.txt", "97\n");
 
+            apart::$test_macro!(pattern_field_elision, "pattern_field_elision.txt", "true\n",);
+
             apart::$test_macro!(product, "product.txt", "");
+
+            apart::$test_macro!(product_equality, "product_equality.txt", "true\nfalse\n");
+
+            apart::$test_macro!(product_fn_parameter, "product_fn_parameter.txt", "{}\n");
 
             apart::$test_macro!(product_identity, "product_identity.txt", "3.14\n");
 
@@ -67,6 +73,8 @@ macro_rules! output_tests {
                 "1.0\n2.0\n3.0\n"
             );
 
+            apart::$test_macro!(product_return_type, "product_return_type.txt", "{}\n");
+
             apart::$test_macro!(product_self, "product_self.txt", "38\n");
 
             apart::$test_macro!(product_ssa_if_0, "product_ssa_if_0.txt", "21\n");
@@ -75,21 +83,27 @@ macro_rules! output_tests {
 
             apart::$test_macro!(product_ssa_if_2, "product_ssa_if_2.txt", "38\n");
 
-            apart::$test_macro!(product_return_type, "product_return_type.txt", "{}\n");
-
-            apart::$test_macro!(product_fn_parameter, "product_fn_parameter.txt", "{}\n");
-
             apart::$test_macro!(product_three_or_four, "product_three_or_four.txt", "3\n");
 
-            apart::$test_macro!(product_equality, "product_equality.txt", "true\nfalse\n");
+            apart::$test_macro!(r#if, "if.txt", "21.0\n");
+
+            apart::$test_macro!(r#mod, "mod.txt", "97\n");
+
+            apart::$test_macro!(r#while, "while.txt", "{}\n{}\n{}\n");
+
+            apart::$test_macro!(recursive_fibonacci, "recursive_fibonacci.txt", "6765\n");
+
+            apart::$test_macro!(root_path, "root_path.txt", "97\n");
+
+            apart::$test_macro!(signed_min, "signed_min.txt", "-128\n",);
+
+            apart::$test_macro!(some_some_none, "some_some_none.txt", "true\n21\n",);
 
             apart::$test_macro!(ssa_if_0, "ssa_if_0.txt", "21\n");
 
             apart::$test_macro!(ssa_if_1, "ssa_if_1.txt", "19\n");
 
             apart::$test_macro!(ssa_if_2, "ssa_if_2.txt", "38\n");
-
-            apart::$test_macro!(three_or_four, "three_or_four.txt", "3\n");
 
             apart::$test_macro!(sum, "sum.txt", "false\ntrue\n");
 
@@ -98,8 +112,6 @@ macro_rules! output_tests {
             apart::$test_macro!(sum_equality_3, "sum_equality_3.txt", "false\n");
 
             apart::$test_macro!(teach, "teach.txt", "97\n",);
-
-            apart::$test_macro!(teach_method_access, "teach_method_access.txt", "97\n",);
 
             apart::$test_macro!(
                 teach_generic_clarity,
@@ -113,17 +125,21 @@ macro_rules! output_tests {
                 "97\n{}\n",
             );
 
-            apart::$test_macro!(if_condition_is_access, "if_condition_is_access.txt", "1\n",);
+            apart::$test_macro!(teach_method_access, "teach_method_access.txt", "97\n",);
 
-            apart::$test_macro!(
-                method_specialization,
-                "method_specialization.txt",
-                "1\n0\n2\n3\n4\n",
-            );
+            apart::$test_macro!(three_or_four, "three_or_four.txt", "3\n");
 
             apart::$test_macro!(type_annotation, "type_annotation.txt", "21\n",);
 
-            apart::$test_macro!(signed_min, "signed_min.txt", "-128\n",);
+            apart::$test_macro!(
+                we_have_if_at_home,
+                "we_have_if_at_home.txt",
+                "true\nfalse\n",
+            );
+
+            apart::$test_macro!(you_stupid, "you_stupid.txt", "true\nfalse\n");
+
+            apart::$test_macro!(zoo, "zoo.txt", "100002\n");
         }
     };
 }
@@ -134,43 +150,43 @@ output_tests!(
 
 mod compilation_error {
     apart::test_compilation_errors!(
+        callee_is_access_error,
+        "callee_is_access_error.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::FnFieldAsMethod
+        )]
+    );
+
+    apart::test_compilation_errors!(
+    callee_is_call_invalid,
+    "callee_is_call_invalid.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "unit" && got == "bool"
+    );
+
+    apart::test_compilation_errors!(
+    generic_equality,
+    "generic_equality.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "T" && got == "U"
+    );
+
+    apart::test_compilation_errors!(
+    if_without_else,
+    "if_without_else.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "unit" && got == "i64"
+    );
+
+    apart::test_compilation_errors!(
         invalid_assign_target,
         "invalid_assign_target.txt",
         [apart::Error::NameResolve(
             apart::NameResolveError::InvalidAssignTarget
         )]
-    );
-
-    apart::test_compilation_errors!(
-        generic_equality,
-        "generic_equality.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "T" && got == "U"
-    );
-
-    apart::test_compilation_errors!(
-        callee_is_call_invalid,
-        "callee_is_call_invalid.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "unit" && got == "bool"
-    );
-
-    apart::test_compilation_errors!(
-        sum_equality_0,
-        "sum_equality_0.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
-    );
-
-    apart::test_compilation_errors!(
-        sum_equality_1,
-        "sum_equality_1.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
@@ -182,11 +198,11 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
-        path_incorrect_argument,
-        "path_incorrect_argument.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "i64" && got == "funky(T) -> T"
+    path_incorrect_argument,
+    "path_incorrect_argument.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "i64" && got == "funky(T) -> T"
     );
 
     apart::test_compilation_errors!(
@@ -222,42 +238,42 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
-        teach_generic_confusion,
-        "teach_generic_confusion.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
+    signed_equals_unsigned,
+    "signed_equals_unsigned.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "i32" && got == "u32"
     );
 
     apart::test_compilation_errors!(
-        teach_generic_confusion_method_access,
-        "teach_generic_confusion_method_access.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
+    sum_equality_0,
+    "sum_equality_0.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
-        callee_is_access_error,
-        "callee_is_access_error.txt",
-        [apart::Error::TypeCheck(
-            apart::TypeCheckError::FnFieldAsMethod
-        )]
+    sum_equality_1,
+    "sum_equality_1.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
-        signed_equals_unsigned,
-        "signed_equals_unsigned.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "i32" && got == "u32"
+    teach_generic_confusion,
+    "teach_generic_confusion.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
     );
 
     apart::test_compilation_errors!(
-        if_without_else,
-        "if_without_else.txt",
-        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-            expected, got
-        })] if expected == "unit" && got == "i64"
+    teach_generic_confusion_method_access,
+    "teach_generic_confusion_method_access.txt",
+    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+    expected, got
+    })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
     );
 }

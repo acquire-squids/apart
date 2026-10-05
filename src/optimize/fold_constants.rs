@@ -7,24 +7,27 @@ use crate::{
 pub fn optimize(ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
-    for (b, block) in ssa.blocks_mut().iter_mut().enumerate() {
-        for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
-            match instruction {
-                Instruction::NoOp
-                | Instruction::Assign { .. }
-                | Instruction::Push(_)
-                | Instruction::Call { .. }
-                | Instruction::Access { .. }
-                | Instruction::AccessAssign { .. } => {}
-                Instruction::Unary { .. } => {
-                    fold_unary(b, i, instruction, &mut changed);
-                }
-                Instruction::Binary { .. } => {
-                    fold_binary(b, i, instruction, &mut changed);
+    ssa.for_live_blocks(|ssa, block_index| {
+        if let Some(block) = ssa.get_block_mut(block_index) {
+            for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
+                match instruction {
+                    Instruction::NoOp
+                    | Instruction::Assign { .. }
+                    | Instruction::Push(_)
+                    | Instruction::Call { .. }
+                    | Instruction::Access { .. }
+                    | Instruction::AccessAssign { .. }
+                    | Instruction::GetTag { .. } => {}
+                    Instruction::Unary { .. } => {
+                        fold_unary(usize::from(block_index), i, instruction, &mut changed);
+                    }
+                    Instruction::Binary { .. } => {
+                        fold_binary(usize::from(block_index), i, instruction, &mut changed);
+                    }
                 }
             }
         }
-    }
+    });
 
     changed
 }

@@ -213,6 +213,10 @@ pub fn compile<'a>(
 
     let low_ir = low_ir::lower(&compiled);
 
+    if cfg!(feature = "print_lowir") {
+        print!("{low_ir}");
+    }
+
     Ok(Compiled {
         sources_with_core: compiled.sources().to_vec(),
         result: low_ir,

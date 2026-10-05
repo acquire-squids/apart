@@ -1,0 +1,50 @@
+funky main() {
+	let
+		x = Option~Some {
+			value <- Option~Some {
+				value <- Option~None {},
+			},
+		},
+	in {
+		print_bool(is_some_some_none(x));
+
+		match x {
+			Option~Some {
+				value <- Option~Some {
+					value,
+				},
+			} => {
+				value = Option~Some {
+					value <- 21,
+				};
+			}
+			else => {}
+		}
+
+		print_u8(some_some_some_or_255(x));
+	};
+}
+
+funky is_some_some_none(option <- Option[Option[Option[u8]]]) -> bool {
+	match option {
+		Option~Some {
+			value <- Option~Some {
+				value <- Option~None {},
+			},
+		} => true,
+		else => false,
+	}
+}
+
+funky some_some_some_or_255(option <- Option[Option[Option[u8]]]) -> u8 {
+	match option {
+		Option~Some {
+			value <- Option~Some {
+				value <- Option~Some {
+					value,
+				},
+			},
+		} => value,
+		else => 255,
+	}
+}

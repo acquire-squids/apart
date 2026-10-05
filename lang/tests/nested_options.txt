@@ -1,0 +1,22 @@
+funky main() {
+	let
+		x = Option~Some {
+			value <- Option~Some {
+				value <- Option~None {},
+			},
+		},
+	in {
+		match x {
+			Option~Some {
+				value <- Option~Some {
+					value,
+				},
+			} => {
+				value = Option~Some {
+					value <- 21,
+				};
+			}
+			else => {}
+		}
+	};
+}

@@ -1,7 +1,8 @@
 use crate::{
     Reportable, Span, Spanned,
     parse::{
-        Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, TypeSignature, Visibility,
+        Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, Pattern, TypeSignature,
+        Visibility,
     },
 };
 
@@ -389,77 +390,11 @@ impl NameResolver {
     #[allow(clippy::too_many_lines)]
     fn resolve_type_signature(&mut self, ty: &Spanned<TypeSignature>) {
         match ty.kind() {
-            TypeSignature::Path {
-                path,
-                name,
-                generics,
-            } => {
-                let associated_with = mem::take(&mut self.associated_with);
-
-                let mut resolved_path = self.current_mod.clone();
-                let mut module_depth = resolved_path.len();
-
-                for element in path {
-                    let error_count = self.errors.len();
-
-                    self.resolve_path_element(
-                        element.kind(),
-                        element.span(),
-                        &mut module_depth,
-                        &mut resolved_path,
-                    );
-
-                    if self.errors.len() > error_count {
-                        break;
-                    } else if !matches!(element.kind(), PathElement::Name(_)) {
-                        continue;
-                    }
-
-                    if let Some(span) = self.names.get(&element.span()).copied() {
-                        resolved_path.push(span);
-
-                        self.associated_with.pop();
-                        self.associated_with.push(span);
-                    } else {
-                        break;
-                    }
-                }
-
-                match self.resolve_and_insert_name(name.kind(), name.span()) {
-                    Err(error) => {
-                        self.errors.push(error);
-                    }
-                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
-                        self.errors
-                            .push(Spanned::new(Error::ExpectedType, ty.span()));
-                    }
-                    Ok(definition) => {
-                        self.names.insert(ty.span(), definition.span);
-                    }
-                }
-
-                self.associated_with = associated_with;
+            TypeSignature::Path { path, generics } => {
+                self.resolve_path_type(path, ty.span());
 
                 for generic in generics {
                     self.resolve_type_signature(generic);
-                }
-            }
-            TypeSignature::Normal { name, generics } => {
-                for generic in generics {
-                    self.resolve_type_signature(generic);
-                }
-
-                match self.resolve_and_insert_name(name.kind(), name.span()) {
-                    Err(error) => {
-                        self.errors.push(error);
-                    }
-                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
-                        self.errors
-                            .push(Spanned::new(Error::ExpectedType, ty.span()));
-                    }
-                    Ok(definition) => {
-                        self.names.insert(ty.span(), definition.span);
-                    }
                 }
             }
             TypeSignature::SelfTy => match self.resolve_and_insert_name("Self", ty.span()) {
@@ -938,19 +873,35 @@ impl NameResolver {
             Expr::Block(_) => {
                 self.variable_scopes.push(HashMap::new());
             }
+            Expr::Match { expr, .. } => {
+                self.resolve_expr(ast, *expr, false);
+            }
             _ => {}
         }
 
-        if let Expr::Binary {
-            op: BinaryOp::PathAccess,
-            ..
-        } = ast[expr].kind()
-        {
-            self.resolve_path(ast, expr);
-        } else {
-            ast.for_children_exprs(expr, |ast, expr| {
-                self.resolve_expr(ast, expr, false);
-            });
+        match ast[expr].kind() {
+            Expr::Binary {
+                op: BinaryOp::PathAccess,
+                ..
+            } => {
+                self.resolve_path_expr(ast, expr);
+            }
+            Expr::Match { cases, .. } => {
+                for case in cases {
+                    self.variable_scopes.push(HashMap::new());
+
+                    self.resolve_pattern(case.pattern().kind());
+
+                    self.resolve_expr(ast, case.case(), false);
+
+                    self.variable_scopes.pop();
+                }
+            }
+            _ => {
+                ast.for_children_exprs(expr, |ast, expr| {
+                    self.resolve_expr(ast, expr, false);
+                });
+            }
         }
 
         match ast[expr].kind() {
@@ -1045,7 +996,7 @@ impl NameResolver {
         }
     }
 
-    fn resolve_path(&mut self, ast: &Ast, expr: ExprIndex) {
+    fn resolve_path_expr(&mut self, ast: &Ast, expr: ExprIndex) {
         let mut path = vec![];
 
         let mut lhs = expr;
@@ -1205,6 +1156,11 @@ impl NameResolver {
                     self.errors.push(Spanned::new(Error::SuperAtRoot, span));
                 }
             }
+            PathElement::SelfType => {
+                if self.resolve_and_insert_name("Self", span).is_err() {
+                    self.errors.push(Spanned::new(Error::UnknownSelf, span));
+                }
+            }
             PathElement::Name(name) => match self.resolve_and_insert_name(name, span) {
                 Err(_) => {
                     self.errors
@@ -1229,6 +1185,116 @@ impl NameResolver {
                     }
                 }
             },
+        }
+    }
+
+    fn resolve_path_type(&mut self, path: &[Spanned<PathElement>], ty_span: Span) {
+        if path.len() == 1
+            && let Some(name) = path.last()
+        {
+            self.resolve_path_element_type(name, ty_span);
+        } else {
+            let associated_with = mem::take(&mut self.associated_with);
+
+            let mut resolved_path = self.current_mod.clone();
+            let mut module_depth = resolved_path.len();
+
+            for element in path.iter().rev().skip(1).rev() {
+                let error_count = self.errors.len();
+
+                self.resolve_path_element(
+                    element.kind(),
+                    element.span(),
+                    &mut module_depth,
+                    &mut resolved_path,
+                );
+
+                if self.errors.len() > error_count {
+                    break;
+                } else if !matches!(element.kind(), PathElement::Name(_) | PathElement::SelfType) {
+                    continue;
+                }
+
+                if let Some(span) = self.names.get(&element.span()).copied() {
+                    resolved_path.push(span);
+
+                    self.associated_with.pop();
+                    self.associated_with.push(span);
+                } else {
+                    break;
+                }
+            }
+
+            if let Some(name) = path.last() {
+                self.resolve_path_element_type(name, ty_span);
+            }
+
+            self.associated_with = associated_with;
+        }
+    }
+
+    fn resolve_path_element_type(&mut self, element: &Spanned<PathElement>, ty_span: Span) {
+        match element.kind() {
+            PathElement::SelfType => match self.resolve_and_insert_name("Self", element.span()) {
+                Err(error) => {
+                    self.errors.push(error);
+                }
+                Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                    self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
+                }
+                Ok(definition) => {
+                    self.names.insert(ty_span, definition.span);
+                }
+            },
+            PathElement::Name(name_text) => {
+                match self.resolve_and_insert_name(name_text, element.span()) {
+                    Err(error) => {
+                        self.errors.push(error);
+                    }
+                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                        self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
+                    }
+                    Ok(definition) => {
+                        self.names.insert(ty_span, definition.span);
+                    }
+                }
+            }
+            PathElement::Root | PathElement::Super => {
+                self.errors
+                    .push(Spanned::new(Error::ExpectedType, element.span()));
+            }
+        }
+    }
+
+    fn resolve_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Integer(_)
+            | Pattern::NegativeInteger(_)
+            | Pattern::Boolean(_)
+            | Pattern::Unit => {}
+            Pattern::Product { path, fields } => {
+                let path_span = path
+                    .first()
+                    .and_then(|first_path_element| {
+                        path.last().and_then(|last_path_element| {
+                            first_path_element
+                                .span()
+                                .combine_with(last_path_element.span())
+                        })
+                    })
+                    .expect("paths are never empty");
+
+                self.resolve_path_type(path, path_span);
+
+                for (field_name, field_pattern) in fields {
+                    self.declare_name(field_name.kind().clone(), field_name.span());
+                    self.define_name(field_name.kind());
+
+                    if let Some(field_pattern) = field_pattern {
+                        self.resolve_pattern(field_pattern.kind());
+                    }
+                }
+            }
         }
     }
 }

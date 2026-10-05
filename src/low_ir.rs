@@ -29,23 +29,20 @@ pub fn lower(compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
     Ir {
         blocks,
         max_registers: compiled.result().max_registers(),
-        function_count: compiled.result().function_count(),
     }
 }
 
 pub struct Ir<T> {
     blocks: Vec<Block<T>>,
     max_registers: usize,
-    function_count: usize,
 }
 
 impl<T> Ir<T> {
     #[must_use]
-    pub const fn new(blocks: Vec<Block<T>>, max_registers: usize, function_count: usize) -> Self {
+    pub const fn new(blocks: Vec<Block<T>>, max_registers: usize) -> Self {
         Self {
             blocks,
             max_registers,
-            function_count,
         }
     }
 
@@ -65,12 +62,6 @@ impl<T> Ir<T> {
     #[must_use]
     pub const fn max_registers(&self) -> usize {
         self.max_registers
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn function_count(&self) -> usize {
-        self.function_count
     }
 }
 
@@ -243,6 +234,10 @@ pub enum Instruction<T> {
         arity: usize,
         to: Location,
     },
+    GetTag {
+        of: ValueOrLocation<T>,
+        to: Location,
+    },
     Jump(BlockIndex, Vec<(Location, ValueOrLocation<T>)>),
     Branch {
         condition: ValueOrLocation<T>,
@@ -377,6 +372,10 @@ fn lower_instruction(
             of: lower_value(compiled, of),
             value: lower_value(compiled, value),
         },
+        IrInstruction::GetTag { of, temporary } => Instruction::GetTag {
+            of: lower_value(compiled, of),
+            to: lower_value_to_location(temporary),
+        },
     }
 }
 
@@ -384,7 +383,7 @@ fn lower_instruction(
 fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation<Value> {
     match value {
         IrValue::BlockArgument(_) | IrValue::CallArgument(_) | IrValue::Address(_) => {
-            unreachable!("these are eliminated by register allocation")
+            unreachable!("these are eliminated by register allocation {value:?}")
         }
         IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
         IrValue::I8(value) => ValueOrLocation::Value(Value::I8(*value)),

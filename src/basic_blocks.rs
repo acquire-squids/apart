@@ -1,7 +1,9 @@
 use crate::{
     Span, Spanned,
     name_resolve::Names,
-    parse::{Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, UnaryOp},
+    parse::{
+        Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, MatchCase, PathElement, Pattern, UnaryOp,
+    },
     type_check::{Primitive, Type, TypeChecker},
 };
 
@@ -22,11 +24,23 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
         translator.label_function(ast, *root);
     }
 
-    translator.label_items(ast, ast.roots());
+    translator.label_items(ast, ast.roots(), false);
 
     let function_count = translator.blocks.len();
 
-    translator.translate_items(ast, names, types, ast.roots());
+    if let Some(root) = ast.roots().iter().find(|root| {
+        if let Item::Fn { name, .. } = ast[**root].kind()
+            && name.kind() == "main"
+        {
+            true
+        } else {
+            false
+        }
+    }) {
+        translator.translate_function(ast, names, types, *root);
+    }
+
+    translator.translate_items(ast, names, types, ast.roots(), false);
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -40,13 +54,11 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
 
     BasicBlocks {
         blocks: translator.blocks,
-        function_count,
     }
 }
 
 pub struct BasicBlocks {
     blocks: Vec<Block>,
-    function_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -122,12 +134,6 @@ impl Block {
 }
 
 impl BasicBlocks {
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn function_count(&self) -> usize {
-        self.function_count
-    }
-
     #[allow(dead_code)]
     #[must_use]
     pub const fn blocks(&self) -> &[Block] {
@@ -210,6 +216,7 @@ enum Addresslike {
     Block(BlockIndex),
     CallArgument(usize),
     NativeFn(Span),
+    CompoundField { index: usize, of: Address },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,7 +246,6 @@ pub enum Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
-    #[allow(dead_code)]
     NoOp,
     Unary {
         op: UnaryOp,
@@ -271,6 +277,10 @@ pub enum Instruction {
         index: usize,
         of: Value,
         value: Value,
+    },
+    GetTag {
+        of: Value,
+        temporary: Value,
     },
 }
 
@@ -339,6 +349,16 @@ impl Translator {
         block_index
     }
 
+    fn next_address(&self) -> Address {
+        Address {
+            block_index: self
+                .current_block
+                .expect("match expressions only exist in blocks"),
+            offset: self.instructions_len(),
+            version: 0,
+        }
+    }
+
     fn push_instruction(&mut self, instruction: Instruction) {
         let block = self
             .current_block
@@ -356,16 +376,18 @@ impl Translator {
             .len()
     }
 
-    fn label_items(&mut self, ast: &Ast, items: &[ItemIndex]) {
+    fn label_items(&mut self, ast: &Ast, items: &[ItemIndex], allow_main: bool) {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod { contents, .. } => {
-                    self.label_items(ast, contents);
+                    self.label_items(ast, contents, true);
                 }
                 Item::Teach { body, .. } => {
-                    self.label_items(ast, body);
+                    self.label_items(ast, body, true);
                 }
-                Item::Fn { name, .. } | Item::NativeFn { name, .. } if name.kind() != "main" => {
+                Item::Fn { name, .. } | Item::NativeFn { name, .. }
+                    if name.kind() != "main" || allow_main =>
+                {
                     self.label_function(ast, *item);
                 }
                 Item::Primitive(_)
@@ -383,6 +405,7 @@ impl Translator {
         names: &Names,
         types: &TypeChecker,
         items: &[ItemIndex],
+        allow_main: bool,
     ) {
         for item in items {
             match ast[*item].kind() {
@@ -391,72 +414,81 @@ impl Translator {
                 | Item::Product { .. }
                 | Item::Sum { .. } => {}
                 Item::Mod { contents, .. } => {
-                    self.translate_items(ast, names, types, contents.as_slice());
+                    self.translate_items(ast, names, types, contents.as_slice(), true);
                 }
                 Item::Teach { body, .. } => {
-                    self.translate_items(ast, names, types, body.as_slice());
+                    self.translate_items(ast, names, types, body.as_slice(), true);
                 }
-                Item::Fn {
-                    name,
-                    parameters,
-                    body,
-                    ..
-                } => {
-                    if let Some(block_index) = self
-                        .addresses
-                        .get(&name.span())
-                        .and_then(|address| {
-                            if let Addresslike::Block(block_index) = address {
-                                Some(block_index)
-                            } else {
-                                None
-                            }
-                        })
-                        .copied()
-                    {
-                        let call_argument_count = self.call_argument_count;
-
-                        self.call_argument_count = parameters.len();
-
-                        let block_index = if parameters.is_empty() {
-                            block_index
-                        } else {
-                            self.switch_to_block(block_index);
-
-                            for (p, parameter) in parameters.iter().enumerate() {
-                                self.addresses
-                                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
-                            }
-
-                            let after_arguments = self.next_block();
-
-                            let Some(block) = self.blocks.get_mut(usize::from(block_index)) else {
-                                unreachable!("we're guaranteed to have a block by now");
-                            };
-
-                            if block.terminator.is_none() {
-                                block.terminator = Some(BlockTerminator::Jump(after_arguments));
-                            }
-
-                            after_arguments
-                        };
-
-                        self.switch_to_block(block_index);
-
-                        let last_in_fn = self.last_in_fn;
-
-                        self.last_in_fn = true;
-
-                        self.translate_expr(ast, names, types, *body);
-
-                        self.last_in_fn = last_in_fn;
-
-                        self.call_argument_count = call_argument_count;
-
-                        assert_eq!(self.values.as_slice(), &[]);
+                Item::Fn { name, .. } => {
+                    if name.kind() != "main" || allow_main {
+                        self.translate_function(ast, names, types, *item);
                     }
                 }
             }
+        }
+    }
+
+    fn translate_function(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        types: &TypeChecker,
+        item: ItemIndex,
+    ) {
+        if let Item::Fn {
+            name,
+            parameters,
+            body,
+            ..
+        } = ast[item].kind()
+            && let Some(block_index) = self
+                .addresses
+                .get(&name.span())
+                .and_then(|address| {
+                    if let Addresslike::Block(block_index) = address {
+                        Some(block_index)
+                    } else {
+                        None
+                    }
+                })
+                .copied()
+        {
+            let call_argument_count = self.call_argument_count;
+
+            self.call_argument_count = parameters.len();
+
+            self.switch_to_block(block_index);
+
+            for (p, parameter) in parameters.iter().enumerate() {
+                self.addresses
+                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
+            }
+
+            let after_arguments = self.next_block();
+
+            let Some(block) = self.blocks.get_mut(usize::from(block_index)) else {
+                unreachable!("we're guaranteed to have a block by now");
+            };
+
+            if block.terminator.is_none() {
+                block.terminator = Some(BlockTerminator::Jump(after_arguments));
+            }
+
+            let block_index = after_arguments;
+
+            self.switch_to_block(block_index);
+
+            let last_in_fn = self.last_in_fn;
+
+            self.last_in_fn = true;
+
+            self.translate_expr(ast, names, types, *body);
+
+            self.last_in_fn = last_in_fn;
+
+            self.call_argument_count = call_argument_count;
+
+            assert_eq!(self.values.as_slice(), &[]);
         }
     }
 }
@@ -695,6 +727,13 @@ impl Translator {
             Expr::Product { fields, .. } => {
                 self.translate_product(ast, names, types, expr, fields.as_slice());
             }
+            Expr::Match {
+                expr,
+                cases,
+                fallback,
+            } => {
+                self.translate_match(ast, names, types, (*expr, cases.as_slice(), *fallback));
+            }
         }
     }
 
@@ -733,6 +772,19 @@ impl Translator {
             }
             Addresslike::NativeFn(span) => {
                 self.values.push(Value::NativeFn(*span));
+            }
+            Addresslike::CompoundField { index, of } => {
+                let (index, of) = (*index, *of);
+
+                let address = self.next_address();
+
+                self.push_instruction(Instruction::Access {
+                    index,
+                    of: Value::Address(of),
+                    temporary: Value::Address(address),
+                });
+
+                self.values.push(Value::Address(address));
             }
         }
 
@@ -793,13 +845,7 @@ impl Translator {
             .pop()
             .expect("all unary operands should produce a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("unary expressions only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Unary {
             op,
@@ -842,13 +888,7 @@ impl Translator {
             .pop()
             .expect("all binary left operands should produce a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("binary expressions only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Binary {
             op,
@@ -908,36 +948,53 @@ impl Translator {
             .pop()
             .expect("assignments can only occur with a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("assignments only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
-
-        let address = names
+        match names
             .get(span)
             .and_then(|span| self.addresses.get_mut(&span))
-            .and_then(|address| {
-                if let Addresslike::Address(address) = address {
-                    address.version += 1;
+        {
+            Some(
+                Addresslike::Block(_) | Addresslike::CallArgument(_) | Addresslike::NativeFn(_),
+            ) => {
+                unreachable!(
+                    "we shouldn't allow assigning to these, but I think I messed up and it's legal for now"
+                );
+            }
+            Some(Addresslike::CompoundField { index, of }) => {
+                let (index, of) = (*index, *of);
 
-                    Some(*address)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(address);
+                self.push_instruction(Instruction::AccessAssign {
+                    index,
+                    of: Value::Address(of),
+                    value,
+                });
+            }
+            Some(Addresslike::Address(address)) => {
+                address.version += 1;
 
-        self.push_instruction(Instruction::Assign {
-            value,
-            to: Value::Address(address),
-        });
+                let address = *address;
 
-        self.addresses.insert(span, Addresslike::Address(address));
+                self.push_instruction(Instruction::Assign {
+                    value,
+                    to: Value::Address(address),
+                });
 
-        self.values.push(Value::Address(address));
+                self.addresses.insert(span, Addresslike::Address(address));
+
+                self.values.push(Value::Address(address));
+            }
+            None => {
+                let address = self.next_address();
+
+                self.push_instruction(Instruction::Assign {
+                    value,
+                    to: Value::Address(address),
+                });
+
+                self.addresses.insert(span, Addresslike::Address(address));
+
+                self.values.push(Value::Address(address));
+            }
+        }
     }
 
     fn translate_and(
@@ -958,13 +1015,7 @@ impl Translator {
             .pop()
             .expect("every expression produces a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("binary expressions only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
@@ -1053,13 +1104,7 @@ impl Translator {
             .pop()
             .expect("every expression produces a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("binary expressions only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
             value: lhs,
@@ -1148,13 +1193,7 @@ impl Translator {
             .pop()
             .expect("every expression produces a value");
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("binary expressions only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
             value: Value::Runtime,
@@ -1279,11 +1318,7 @@ impl Translator {
             self.push_instruction(Instruction::Push(argument));
         }
 
-        let address = Address {
-            block_index: self.current_block.expect("calls only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Call {
             callee,
@@ -1338,7 +1373,7 @@ impl Translator {
 
         let when_true_block = self
             .current_block
-            .expect("if expressions can only exist in a block");
+            .expect("while loops can only exist in a block");
 
         let otherwise_block = self.next_block();
 
@@ -1431,11 +1466,7 @@ impl Translator {
             .pop()
             .expect("every expression produces a value");
 
-        let address = Address {
-            block_index: self.current_block.expect("calls only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Access {
             index: field_index,
@@ -1507,11 +1538,7 @@ impl Translator {
             .pop()
             .expect("every expression produces a value");
 
-        let address = Address {
-            block_index: self.current_block.expect("calls only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::AccessAssign {
             index: field_index,
@@ -1593,7 +1620,9 @@ impl Translator {
                     {
                         Addresslike::Block(block_index) => Value::Fn(*block_index),
                         Addresslike::NativeFn(span) => Value::NativeFn(*span),
-                        Addresslike::CallArgument(_) | Addresslike::Address(_) => {
+                        Addresslike::CallArgument(_)
+                        | Addresslike::Address(_)
+                        | Addresslike::CompoundField { .. } => {
                             unreachable!("methods are only ever functions or native functions");
                         }
                     };
@@ -1698,7 +1727,9 @@ impl Translator {
         {
             Addresslike::Block(block_index) => Value::Fn(*block_index),
             Addresslike::NativeFn(span) => Value::NativeFn(*span),
-            Addresslike::CallArgument(_) | Addresslike::Address(_) => {
+            Addresslike::CallArgument(_)
+            | Addresslike::Address(_)
+            | Addresslike::CompoundField { .. } => {
                 unreachable!("methods are only ever functions or native functions");
             }
         };
@@ -1720,13 +1751,7 @@ impl Translator {
             self.push_instruction(Instruction::Push(argument));
         }
 
-        let address = Address {
-            block_index: self
-                .current_block
-                .expect("method calls only exist in blocks"),
-            offset: self.instructions_len(),
-            version: 0,
-        };
+        let address = self.next_address();
 
         self.push_instruction(Instruction::Call {
             callee,
@@ -1740,6 +1765,367 @@ impl Translator {
 
         if self.last_in_fn {
             self.emit_return();
+        }
+    }
+
+    fn translate_match(
+        &mut self,
+        ast: &Ast,
+        names: &Names,
+        types: &TypeChecker,
+        (expr, cases, fallback): (ExprIndex, &[MatchCase], ExprIndex),
+    ) {
+        let last_in_fn = self.last_in_fn;
+
+        self.last_in_fn = false;
+
+        self.translate_expr(ast, names, types, expr);
+
+        let expr = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let expr_address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value: expr,
+            to: Value::Address(expr_address),
+        });
+
+        let address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value: Value::Runtime,
+            to: Value::Address(address),
+        });
+
+        let mut backpatch_successes = vec![];
+
+        let mut address_version = address.version;
+
+        for case in cases {
+            let backpatch_these = self.translate_pattern(types, expr_address, case.pattern());
+
+            self.translate_expr(ast, names, types, case.case());
+
+            let case_value = self
+                .values
+                .pop()
+                .expect("every expression produces a value");
+
+            address_version += 1;
+
+            self.push_instruction(Instruction::Assign {
+                value: case_value,
+                to: Value::Address(Address {
+                    block_index: address.block_index,
+                    offset: address.offset,
+                    version: address_version,
+                }),
+            });
+
+            backpatch_successes.push(
+                self.current_block
+                    .expect("match expressions can only exist in blocks"),
+            );
+
+            let next_block = self.next_block();
+
+            for backpatch in backpatch_these {
+                if let Some(BlockTerminator::Branch { otherwise, .. }) = self
+                    .blocks
+                    .get_mut(usize::from(backpatch))
+                    .map(Block::terminator_mut)
+                {
+                    *otherwise = next_block;
+                }
+            }
+        }
+
+        self.translate_expr(ast, names, types, fallback);
+
+        let fallback_value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        address_version += 1;
+
+        let address = Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: address_version,
+        };
+
+        self.push_instruction(Instruction::Assign {
+            value: fallback_value,
+            to: Value::Address(address),
+        });
+
+        self.next_block();
+
+        for backpatch in backpatch_successes {
+            if let Some(block) = self.blocks.get_mut(usize::from(backpatch))
+                && block.terminator.is_none()
+            {
+                block.terminator = Some(BlockTerminator::Jump(
+                    self.current_block
+                        .expect("match expressions can only exist in blocks"),
+                ));
+            }
+        }
+
+        self.last_in_fn = last_in_fn;
+
+        self.values.push(Value::Address(address));
+
+        if self.last_in_fn {
+            self.emit_return();
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn translate_pattern(
+        &mut self,
+        types: &TypeChecker,
+        match_against: Address,
+        pattern: &Spanned<Pattern>,
+    ) -> Vec<BlockIndex> {
+        match &types[types[pattern.span()]] {
+            Type::Integer(_)
+            | Type::NegativeInteger(_)
+            | Type::Unknown
+            | Type::Fn { .. }
+            | Type::Existential(_)
+            | Type::Generic(_)
+            | Type::AnyOf(_) => unreachable!(
+                "only integer primitives, booleans, unit, and products can be patterns"
+            ),
+            Type::Primitive(primitive) => {
+                let value = match (primitive.kind(), pattern.kind()) {
+                    (Primitive::U8, Pattern::Integer(value)) => Value::U8(
+                        u8::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I8, Pattern::Integer(value)) => Value::I8(
+                        i8::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::U16, Pattern::Integer(value)) => Value::U16(
+                        u16::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I16, Pattern::Integer(value)) => Value::I16(
+                        i16::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::U32, Pattern::Integer(value)) => Value::U32(
+                        u32::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I32, Pattern::Integer(value)) => Value::I32(
+                        i32::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::U64, Pattern::Integer(value)) => Value::U64(*value),
+                    (Primitive::I64, Pattern::Integer(value)) => Value::I64(
+                        i64::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I8, Pattern::NegativeInteger(value)) => Value::I8(
+                        i8::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I16, Pattern::NegativeInteger(value)) => Value::I16(
+                        i16::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I32, Pattern::NegativeInteger(value)) => Value::I32(
+                        i32::try_from(*value)
+                            .expect("type checking guarantees the conversion is valid"),
+                    ),
+                    (Primitive::I64, Pattern::NegativeInteger(value)) => Value::I64(*value),
+                    (Primitive::Boolean, Pattern::Boolean(value)) => Value::Boolean(*value),
+                    (Primitive::Unit, Pattern::Unit) => Value::Unit,
+                    _ => {
+                        unreachable!("type checking guarantees no other combinations make it here")
+                    }
+                };
+
+                let condition_address = self.next_address();
+
+                self.push_instruction(Instruction::Binary {
+                    op: BinaryOp::Equal,
+                    lhs: Value::Address(match_against),
+                    rhs: value,
+                    temporary: Value::Address(condition_address),
+                });
+
+                let current_block = self
+                    .current_block
+                    .expect("a block will exist if we're translating expressions");
+
+                let when_true_block = self.next_block();
+
+                if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+                    block.terminator = Some(BlockTerminator::Branch {
+                        condition: Value::Address(condition_address),
+                        when_true: when_true_block,
+                        otherwise: BlockIndex(usize::MAX),
+                    });
+                }
+
+                vec![current_block]
+            }
+            Type::Product {
+                fields: field_types,
+                ..
+            } => match pattern.kind() {
+                Pattern::Integer(_)
+                | Pattern::NegativeInteger(_)
+                | Pattern::Boolean(_)
+                | Pattern::Unit => unreachable!(
+                    "type checking guarantees only patterns that are products make it here"
+                ),
+                Pattern::Product { fields, .. } => {
+                    let mut to_backpatch = vec![];
+
+                    for (field_name, field) in fields {
+                        let field_address = self.next_address();
+
+                        let field_index = field_types.iter()
+                            .position(|(field_type_name, _)| field_type_name == field_name.kind())
+                            .expect("all fields in the pattern exist in the type since type checking succeeded");
+
+                        self.push_instruction(Instruction::Access {
+                            index: field_index,
+                            of: Value::Address(match_against),
+                            temporary: Value::Address(field_address),
+                        });
+
+                        if let Some(field) = field {
+                            to_backpatch.append(&mut self.translate_pattern(
+                                types,
+                                field_address,
+                                field,
+                            ));
+                        } else {
+                            self.addresses.insert(
+                                field_name.span(),
+                                Addresslike::CompoundField {
+                                    index: field_index,
+                                    of: match_against,
+                                },
+                            );
+                        }
+                    }
+
+                    to_backpatch
+                }
+            },
+            Type::Sum {
+                variants: type_variants,
+                ..
+            } => match pattern.kind() {
+                Pattern::Integer(_)
+                | Pattern::NegativeInteger(_)
+                | Pattern::Boolean(_)
+                | Pattern::Unit => unreachable!(
+                    "type checking guarantees only patterns that are sum variants make it here"
+                ),
+                Pattern::Product { path, fields } => {
+                    let Some(PathElement::Name(name)) = path.last().map(Spanned::kind) else {
+                        unreachable!("name resolution guarantees paths in patterns end in a name");
+                    };
+
+                    let Some(variant_index) = type_variants
+                        .iter()
+                        .position(|variant| {
+                            matches!(
+                                &types[*variant],
+                                Type::Product { name: variant_name, .. }
+                                    if variant_name.kind() == name
+                            )
+                        })
+                        .and_then(|index| u16::try_from(index).ok())
+                    else {
+                        unreachable!("type checking guarantees the variant exists on the type");
+                    };
+
+                    let Type::Product {
+                        fields: field_types,
+                        ..
+                    } = &types[type_variants[usize::from(variant_index)]]
+                    else {
+                        unreachable!("only products are variants of sums");
+                    };
+
+                    let tag_address = self.next_address();
+
+                    self.push_instruction(Instruction::GetTag {
+                        of: Value::Address(match_against),
+                        temporary: Value::Address(tag_address),
+                    });
+
+                    let condition_address = self.next_address();
+
+                    self.push_instruction(Instruction::Binary {
+                        op: BinaryOp::Equal,
+                        lhs: Value::Address(tag_address),
+                        rhs: Value::U16(variant_index),
+                        temporary: Value::Address(condition_address),
+                    });
+
+                    let current_block = self
+                        .current_block
+                        .expect("a block will exist if we're translating expressions");
+
+                    let when_true_block = self.next_block();
+
+                    if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+                        block.terminator = Some(BlockTerminator::Branch {
+                            condition: Value::Address(condition_address),
+                            when_true: when_true_block,
+                            otherwise: BlockIndex(usize::MAX),
+                        });
+                    }
+
+                    let mut to_backpatch = vec![current_block];
+
+                    for (field_name, field) in fields {
+                        let field_address = self.next_address();
+
+                        let field_index = field_types.iter()
+                            .position(|(field_type_name, _)| field_type_name == field_name.kind())
+                            .expect("all fields in the pattern exist in the type since type checking succeeded");
+
+                        self.push_instruction(Instruction::Access {
+                            index: field_index,
+                            of: Value::Address(match_against),
+                            temporary: Value::Address(field_address),
+                        });
+
+                        if let Some(field) = field {
+                            to_backpatch.append(&mut self.translate_pattern(
+                                types,
+                                field_address,
+                                field,
+                            ));
+                        } else {
+                            self.addresses.insert(
+                                field_name.span(),
+                                Addresslike::CompoundField {
+                                    index: field_index,
+                                    of: match_against,
+                                },
+                            );
+                        }
+                    }
+
+                    to_backpatch
+                }
+            },
         }
     }
 }

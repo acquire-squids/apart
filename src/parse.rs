@@ -87,6 +87,17 @@ pub enum Error {
     InvalidAssociatedItem,
     ExpectedBlock,
     ExpectedCallArguments,
+    MatchWithoutBody,
+    MatchCaseWithoutThickRightArrow,
+    ProductPatternWithoutFields,
+    ProductPatternFieldsWithoutComma,
+    MatchCasesWithoutComma,
+    PatternFieldElisionWasNotEnd,
+    ExpectedNegativeIntegerPattern,
+    ExpectedPattern,
+    MatchWithMultipleFallback,
+    MatchWithoutCases,
+    MatchWithoutFallback,
 }
 
 impl fmt::Display for Error {
@@ -307,6 +318,59 @@ impl fmt::Display for Error {
                 f,
                 "expected zero or more comma-separated expressions within parentheses"
             ),
+            Self::MatchWithoutBody => write!(f, "expected at least one match case within brackets"),
+            Self::MatchCaseWithoutThickRightArrow => write!(
+                f,
+                "there should be a \"=>\" separating the match case's pattern from its body"
+            ),
+            Self::ProductPatternWithoutFields => {
+                write!(
+                    f,
+                    "the product pattern's fields should be here, within curly brackets"
+                )
+            }
+            Self::ProductPatternFieldsWithoutComma => {
+                write!(
+                    f,
+                    "if there is another field here, a comma should be between it and the previous pattern"
+                )
+            }
+            Self::MatchCasesWithoutComma => {
+                write!(
+                    f,
+                    "if there is another match case here, a comma should be between it and the previous expression"
+                )
+            }
+            Self::PatternFieldElisionWasNotEnd => {
+                write!(
+                    f,
+                    "there should be no more fields after eliding the rest with \"..\""
+                )
+            }
+            Self::ExpectedNegativeIntegerPattern => {
+                write!(
+                    f,
+                    "expected a negative integer since this \"-\" was found at the start of the pattern"
+                )
+            }
+            Self::ExpectedPattern => {
+                write!(f, "expected a pattern")
+            }
+            Self::MatchWithMultipleFallback => {
+                write!(
+                    f,
+                    "only one \"else\" case may be specified per match expression"
+                )
+            }
+            Self::MatchWithoutCases => {
+                write!(
+                    f,
+                    "a match expression must have at least one case, even if it is an \"else\" case"
+                )
+            }
+            Self::MatchWithoutFallback => {
+                write!(f, "a match expression must have an \"else\" case")
+            }
         }
     }
 }
@@ -316,13 +380,15 @@ impl error::Error for Error {}
 impl Reportable for Error {
     fn notes(&self) -> Vec<String> {
         match self {
-            Self::InvalidName => vec!["a name can start with \"_\" or any ASCII letter, and be followed by zero or more of \"_\" or any ASCII letters or any ASCII digits".to_string()],
+            Self::InvalidName => vec!["a name can start with \"_\" or any ASCII letter, and may be followed by zero or more of \"_\" or any ASCII letters or any ASCII digits".to_string()],
             Self::InvalidInteger => vec!["only u8, i8, u16, i16, u32, i32, u64, and i64 are supported".to_string()],
             Self::ExpectedExpr => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
             ],
             Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", or \"teach\"".to_string()],
             Self::ExpectedType => vec!["type signatures can start with \"funky\" or a name".to_string()],
+            Self::ExpectedPattern => vec!["a pattern can start with \"{\", \"true\", \"false\", decimal digits, \"root\", \"super\", or a name".to_string()],
+            Self::MatchWithoutFallback => vec!["I'd like to check exhaustiveness, but I don't have that yet".to_string()],
             Self::InvalidFloat
             | Self::BlockWithoutSemicolon
             | Self::NameIsKeyword
@@ -373,7 +439,16 @@ impl Reportable for Error {
             | Self::TeachWithoutBody
             | Self::InvalidAssociatedItem
             | Self::ExpectedBlock
-            | Self::ExpectedCallArguments => vec![],
+            | Self::ExpectedCallArguments
+            | Self::MatchWithoutBody
+            | Self::MatchCaseWithoutThickRightArrow
+            | Self::ProductPatternWithoutFields
+            | Self::ProductPatternFieldsWithoutComma
+            | Self::MatchCasesWithoutComma
+            | Self::PatternFieldElisionWasNotEnd
+            | Self::ExpectedNegativeIntegerPattern
+            | Self::MatchWithMultipleFallback
+            | Self::MatchWithoutCases => vec![],
         }
     }
 }
@@ -533,6 +608,39 @@ pub enum Expr {
     PathElement(PathElement),
     SelfType,
     ProductNoName(Vec<(Spanned<String>, ExprIndex)>),
+    Match {
+        expr: ExprIndex,
+        cases: Vec<MatchCase>,
+        fallback: ExprIndex,
+    },
+}
+
+#[derive(Debug)]
+pub struct MatchCase {
+    pattern: Spanned<Pattern>,
+    case: ExprIndex,
+}
+
+impl MatchCase {
+    pub const fn pattern(&self) -> &Spanned<Pattern> {
+        &self.pattern
+    }
+
+    pub const fn case(&self) -> ExprIndex {
+        self.case
+    }
+}
+
+#[derive(Debug)]
+pub enum Pattern {
+    Integer(u64),
+    NegativeInteger(i64),
+    Boolean(bool),
+    Unit,
+    Product {
+        path: Vec<Spanned<PathElement>>,
+        fields: Vec<(Spanned<String>, Option<Spanned<Self>>)>,
+    },
 }
 
 #[derive(Debug)]
@@ -602,11 +710,6 @@ impl Parameter {
 pub enum TypeSignature {
     Path {
         path: Vec<Spanned<PathElement>>,
-        name: Spanned<String>,
-        generics: Vec<Spanned<Self>>,
-    },
-    Normal {
-        name: Spanned<String>,
         generics: Vec<Spanned<Self>>,
     },
     SelfTy,
@@ -620,6 +723,7 @@ pub enum TypeSignature {
 pub enum PathElement {
     Root,
     Super,
+    SelfType,
     Name(String),
 }
 
@@ -808,6 +912,19 @@ impl Ast {
                     f(self, *value);
                 }
             }
+            Expr::Match {
+                expr,
+                cases,
+                fallback,
+            } => {
+                f(self, *expr);
+
+                for case in cases {
+                    f(self, case.case);
+                }
+
+                f(self, *fallback);
+            }
         }
     }
 }
@@ -831,7 +948,7 @@ impl<'s, 'p> Parser<'s, 'p> {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" => {
+            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" | "match" => {
                 Some(lexeme)
             }
             _ => None,
@@ -891,6 +1008,8 @@ impl<'s, 'p> Parser<'s, 'p> {
                     }
                     None => unreachable!("all token trees should exist"),
                 }
+            } else if self.current_tree == self.forest.root() {
+                return None;
             } else {
                 None
             };
@@ -1242,8 +1361,11 @@ impl Parser<'_, '_> {
                 self.at = at;
 
                 Spanned::new(
-                    TypeSignature::Normal {
-                        name: Spanned::new("unit".to_string(), parameters_span),
+                    TypeSignature::Path {
+                        path: vec![Spanned::new(
+                            PathElement::Name("unit".to_string()),
+                            parameters_span,
+                        )],
                         generics: vec![],
                     },
                     parameters_span,
@@ -1251,8 +1373,11 @@ impl Parser<'_, '_> {
             }
         } else {
             Spanned::new(
-                TypeSignature::Normal {
-                    name: Spanned::new("unit".to_string(), parameters_span),
+                TypeSignature::Path {
+                    path: vec![Spanned::new(
+                        PathElement::Name("unit".to_string()),
+                        parameters_span,
+                    )],
                     generics: vec![],
                 },
                 parameters_span,
@@ -1575,12 +1700,31 @@ impl Parser<'_, '_> {
 
                 Ok(Spanned::new(PathElement::Super, span))
             }
+            Some("Self") => {
+                self.advance_token_tree();
+
+                Ok(Spanned::new(PathElement::SelfType, span))
+            }
             _ => {
                 let name = self.spanned_name()?;
 
                 Ok(name.transmute(PathElement::Name))
             }
         }
+    }
+
+    fn path(&mut self) -> Result<Vec<Spanned<PathElement>>, Spanned<Error>> {
+        let current_tree = self.current_tree;
+
+        let mut path = vec![self.path_element()?];
+
+        while self.in_token_tree(current_tree) && self.match_next(Token::Tilde).is_some() {
+            let path_element = self.path_element()?;
+
+            path.push(path_element);
+        }
+
+        Ok(path)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1635,8 +1779,11 @@ impl Parser<'_, '_> {
                             self.at = at;
 
                             Spanned::new(
-                                TypeSignature::Normal {
-                                    name: Spanned::new("unit".to_string(), parameters_span),
+                                TypeSignature::Path {
+                                    path: vec![Spanned::new(
+                                        PathElement::Name("unit".to_string()),
+                                        parameters_span,
+                                    )],
                                     generics: vec![],
                                 },
                                 parameters_span,
@@ -1644,8 +1791,11 @@ impl Parser<'_, '_> {
                         }
                     } else {
                         Spanned::new(
-                            TypeSignature::Normal {
-                                name: Spanned::new("unit".to_string(), parameters_span),
+                            TypeSignature::Path {
+                                path: vec![Spanned::new(
+                                    PathElement::Name("unit".to_string()),
+                                    parameters_span,
+                                )],
                                 generics: vec![],
                             },
                             parameters_span,
@@ -1669,15 +1819,7 @@ impl Parser<'_, '_> {
                     Ok(Spanned::new(TypeSignature::SelfTy, span))
                 }
                 None | Some("root" | "super") => {
-                    let mut path = vec![self.path_element()?];
-
-                    while self.peek_token_tree().is_some()
-                        && self.match_next(Token::Tilde).is_some()
-                    {
-                        let path_element = self.path_element()?;
-
-                        path.push(path_element);
-                    }
+                    let path = self.path()?;
 
                     let mut generics = vec![];
 
@@ -1700,33 +1842,12 @@ impl Parser<'_, '_> {
                         path[0].span()
                     };
 
-                    let name = path
-                        .pop()
-                        .expect("the path is guaranteed to have at least one name");
-
-                    let name = if let PathElement::Name(end_of_path) = name.kind() {
-                        Ok(Spanned::new(end_of_path.clone(), name.span()))
-                    } else {
-                        Err(Spanned::new(Error::InvalidName, name.span()))
-                    }?;
-
-                    let span = name
-                        .span()
-                        .combine_with(span)
+                    let span = path
+                        .first()
+                        .and_then(|first_path_element| first_path_element.span().combine_with(span))
                         .expect("these spans are from the same source");
 
-                    Ok(Spanned::new(
-                        if path.is_empty() {
-                            TypeSignature::Normal { name, generics }
-                        } else {
-                            TypeSignature::Path {
-                                path,
-                                name,
-                                generics,
-                            }
-                        },
-                        span,
-                    ))
+                    Ok(Spanned::new(TypeSignature::Path { path, generics }, span))
                 }
                 Some(_) => Err(Spanned::new(Error::NameIsKeyword, span)),
             }
@@ -2125,6 +2246,11 @@ impl<'s, 'p> Parser<'s, 'p> {
 
                             Some((precedence::PRIMARY, (Self::let_in, span)))
                         }
+                        Some("match") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::PRIMARY, (Self::match_expr, span)))
+                        }
                         Some("if") => {
                             self.advance_token_tree()?;
 
@@ -2478,7 +2604,11 @@ impl<'s, 'p> Parser<'s, 'p> {
 
                     if !matches!(
                         ast[expr].kind(),
-                        Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::AsUnit(_)
+                        Expr::Block(_)
+                            | Expr::If { .. }
+                            | Expr::While { .. }
+                            | Expr::AsUnit(_)
+                            | Expr::Match { .. }
                     ) && self.in_token_tree(current_tree)
                     {
                         self.consume_next(Token::Semicolon, Error::BlockWithoutSemicolon)?;
@@ -2534,18 +2664,15 @@ impl<'s, 'p> Parser<'s, 'p> {
             let current_tree = self.current_tree;
             let at = self.at;
 
-            let type_signature = if let Some(less) = self.match_next(Token::Less) {
-                if let Some(minus) = self.match_next(Token::Minus)
-                    && minus.span().start() == less.span().end()
-                {
-                    Some(self.parse_type_signature()?)
-                } else {
-                    self.current_tree = current_tree;
-                    self.at = at;
-
-                    None
-                }
+            let type_signature = if let Some(less) = self.match_next(Token::Less)
+                && let Some(minus) = self.match_next(Token::Minus)
+                && minus.span().start() == less.span().end()
+            {
+                Some(self.parse_type_signature()?)
             } else {
+                self.current_tree = current_tree;
+                self.at = at;
+
                 None
             };
 
@@ -2738,12 +2865,20 @@ impl<'s, 'p> Parser<'s, 'p> {
         &mut self,
         ast: &mut Ast,
         _: u16,
-        span: Span,
+        mut span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let fields = if let TokenTree::Tree { tokens, .. } =
+        let fields = if let TokenTree::Tree {
+            tokens,
+            span: tree_span,
+            ..
+        } =
             self.consume_next_token_tree(TreeKind::Brackets, Error::ProductWithoutFields)?
             && !tokens.is_empty()
         {
+            span = span
+                .combine_with(*tree_span)
+                .expect("these spans are from the same source");
+
             let mut fields = vec![];
 
             let current_tree = self.current_tree;
@@ -2781,5 +2916,271 @@ impl<'s, 'p> Parser<'s, 'p> {
         };
 
         Ok(ast.push_expr(Spanned::new(Expr::ProductNoName(fields), span)))
+    }
+
+    fn match_expr(
+        &mut self,
+        ast: &mut Ast,
+        _: u16,
+        mut span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        let expr = self.parse_expression(ast, 0)?;
+
+        let mut fallback = None;
+
+        let cases = if let TokenTree::Tree {
+            tokens,
+            span: tree_span,
+            ..
+        } =
+            self.consume_next_token_tree(TreeKind::Brackets, Error::MatchWithoutBody)?
+            && !tokens.is_empty()
+        {
+            span = span
+                .combine_with(*tree_span)
+                .expect("these spans are from the same source");
+
+            let mut cases = vec![];
+
+            let current_tree = self.current_tree;
+
+            while self.in_token_tree(current_tree) {
+                let pattern = if self.match_keyword_next("else").is_some() {
+                    None
+                } else {
+                    Some(self.parse_pattern()?)
+                };
+
+                let equal =
+                    self.consume_next(Token::Equal, Error::MatchCaseWithoutThickRightArrow)?;
+
+                let greater =
+                    self.consume_next(Token::Greater, Error::MatchCaseWithoutThickRightArrow)?;
+
+                if greater.span().start() != equal.span().end() {
+                    return Err(Spanned::new(
+                        Error::MatchCaseWithoutThickRightArrow,
+                        equal
+                            .span()
+                            .combine_with(greater.span())
+                            .expect("these spans are from the same source"),
+                    ));
+                }
+
+                let case = self.parse_expression(ast, 0)?;
+
+                if let Some(pattern) = pattern {
+                    cases.push(MatchCase { pattern, case });
+                } else if fallback.is_some() {
+                    return Err(Spanned::new(
+                        Error::MatchWithMultipleFallback,
+                        equal
+                            .span()
+                            .combine_with(greater.span())
+                            .expect("these spans are from the same source"),
+                    ));
+                } else {
+                    fallback = Some(case);
+                }
+
+                if !matches!(
+                    ast[case].kind(),
+                    Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::Match { .. }
+                ) && self.in_token_tree(current_tree)
+                {
+                    self.consume_next(Token::Comma, Error::MatchCasesWithoutComma)?;
+                }
+            }
+
+            cases
+        } else {
+            return Err(Spanned::new(Error::MatchWithoutCases, span));
+        };
+
+        if cases.is_empty() {
+            Err(Spanned::new(Error::MatchWithoutBody, span))
+        } else if let Some(fallback) = fallback {
+            Ok(ast.push_expr(Spanned::new(
+                Expr::Match {
+                    expr,
+                    cases,
+                    fallback,
+                },
+                span,
+            )))
+        } else {
+            Err(Spanned::new(Error::MatchWithoutFallback, span))
+        }
+    }
+}
+
+impl Parser<'_, '_> {
+    #[allow(clippy::too_many_lines)]
+    fn parse_pattern(&mut self) -> Result<Spanned<Pattern>, Spanned<Error>> {
+        match self.peek_token_tree() {
+            Some(TokenTree::Tree {
+                span,
+                kind: TreeKind::Brackets,
+                tokens,
+                ..
+            }) if tokens.is_empty() => {
+                self.advance_token_tree();
+
+                Ok(Spanned::new(Pattern::Unit, *span))
+            }
+            Some(TokenTree::Token(token)) if matches!(token.kind(), Token::Integer(_)) => {
+                self.advance_token_tree();
+
+                let Token::Integer(radix) = token.kind() else {
+                    unreachable!("the match arm guard ensures only integers make it here");
+                };
+
+                token
+                    .span()
+                    .lexeme(self.source)
+                    .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
+                    .map_or_else(
+                        || Err(Spanned::new(Error::InvalidInteger, token.span())),
+                        |num| Ok(Spanned::new(Pattern::Integer(num), token.span())),
+                    )
+            }
+            Some(TokenTree::Token(token)) if matches!(token.kind(), Token::Minus) => {
+                let current_tree = self.current_tree;
+                let at = self.at;
+
+                if self.match_next(Token::Minus).is_some()
+                    && let Some(TokenTree::Token(next_token)) = self.advance_token_tree()
+                    && let Token::Integer(radix) = next_token.kind()
+                    && self.in_token_tree(current_tree)
+                {
+                    let span = token
+                        .span()
+                        .combine_with(next_token.span())
+                        .expect("these spans are from the same source");
+
+                    let value = next_token
+                        .span()
+                        .lexeme(self.source)
+                        .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
+                        .ok_or_else(|| Spanned::new(Error::InvalidInteger, span))?;
+
+                    i64::try_from(value).map_or_else(
+                        |_| {
+                            if value
+                                == 1 + u64::try_from(i64::MAX)
+                                    .expect("unsigned can always fit signed max")
+                            {
+                                Ok(Spanned::new(Pattern::NegativeInteger(i64::MIN), span))
+                            } else {
+                                Err(Spanned::new(Error::InvalidInteger, span))
+                            }
+                        },
+                        |value| Ok(Spanned::new(Pattern::NegativeInteger(-value), span)),
+                    )
+                } else {
+                    self.current_tree = current_tree;
+                    self.at = at;
+
+                    Err(Spanned::new(
+                        Error::ExpectedNegativeIntegerPattern,
+                        self.span_or_end(),
+                    ))
+                }
+            }
+            Some(TokenTree::Token(token)) if matches!(token.kind(), Token::Identifier) => {
+                if self.keyword(token.span()) == Some("true") {
+                    self.advance_token_tree();
+
+                    Ok(Spanned::new(Pattern::Boolean(true), token.span()))
+                } else if self.keyword(token.span()) == Some("false") {
+                    self.advance_token_tree();
+
+                    Ok(Spanned::new(Pattern::Boolean(false), token.span()))
+                } else {
+                    let path = self.path()?;
+
+                    let mut span = path
+                        .first()
+                        .and_then(|first_path_element| {
+                            path.last().and_then(|last_path_element| {
+                                first_path_element
+                                    .span()
+                                    .combine_with(last_path_element.span())
+                            })
+                        })
+                        .expect("paths are never empty");
+
+                    let fields = if let TokenTree::Tree {
+                        tokens,
+                        span: tree_span,
+                        ..
+                    } = self.consume_next_token_tree(
+                        TreeKind::Brackets,
+                        Error::ProductPatternWithoutFields,
+                    )? && !tokens.is_empty()
+                    {
+                        span = span
+                            .combine_with(*tree_span)
+                            .expect("these spans are from the same source");
+
+                        let mut fields = vec![];
+
+                        let current_tree = self.current_tree;
+
+                        while self.in_token_tree(current_tree) {
+                            let at = self.at;
+
+                            if let Some(dot) = self.match_next(Token::Dot)
+                                && let Some(second_dot) = self.match_next(Token::Dot)
+                                && second_dot.span().start() == dot.span().end()
+                            {
+                                if self.in_token_tree(current_tree) {
+                                    return Err(Spanned::new(
+                                        Error::PatternFieldElisionWasNotEnd,
+                                        self.span_or_end(),
+                                    ));
+                                }
+
+                                break;
+                            }
+
+                            self.current_tree = current_tree;
+                            self.at = at;
+
+                            let field_name = self.spanned_name()?;
+
+                            let pattern = if self.match_next(Token::Less).is_some_and(|less| {
+                                self.match_next(Token::Minus)
+                                    .is_some_and(|minus| minus.span().start() == less.span().end())
+                            }) {
+                                Some(self.parse_pattern()?)
+                            } else {
+                                None
+                            };
+
+                            fields.push((field_name, pattern));
+
+                            if self.in_token_tree(current_tree) {
+                                self.consume_next(
+                                    Token::Comma,
+                                    Error::ProductPatternFieldsWithoutComma,
+                                )?;
+                            }
+                        }
+
+                        fields.sort_by(|(a_field_name, _), (b_field_name, _)| {
+                            a_field_name.kind().cmp(b_field_name.kind())
+                        });
+
+                        fields
+                    } else {
+                        vec![]
+                    };
+
+                    Ok(Spanned::new(Pattern::Product { path, fields }, span))
+                }
+            }
+            _ => Err(Spanned::new(Error::ExpectedPattern, self.span_or_end())),
+        }
     }
 }

@@ -7,7 +7,6 @@ use std::{collections::HashSet, fmt};
 pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
     let mut ssa = Ssa {
         blocks: vec![],
-        function_count: basic_blocks.function_count(),
         max_registers,
     };
 
@@ -48,7 +47,6 @@ pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
 
 pub struct Ssa {
     blocks: Vec<Block>,
-    function_count: usize,
     max_registers: usize,
 }
 
@@ -77,12 +75,6 @@ impl fmt::Display for Block {
 impl Ssa {
     #[allow(dead_code)]
     #[must_use]
-    pub const fn function_count(&self) -> usize {
-        self.function_count
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
     pub const fn max_registers(&self) -> usize {
         self.max_registers
     }
@@ -95,8 +87,8 @@ impl Ssa {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn blocks_mut(&mut self) -> &mut [Block] {
-        self.blocks.as_mut_slice()
+    pub const fn blocks_mut(&mut self) -> &mut Vec<Block> {
+        &mut self.blocks
     }
 
     #[allow(dead_code)]
@@ -242,46 +234,358 @@ impl Block {
 }
 
 impl Ssa {
+    /// # Attribution
+    /// Derived from `rustc_middle`'s `Postorder::visit`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L125-L134)
+    fn visit(
+        &self,
+        block_index: BlockIndex,
+        stack: &mut Vec<(BlockIndex, Vec<BlockIndex>)>,
+        seen: &mut HashSet<BlockIndex>,
+    ) {
+        if !seen.insert(block_index) {
+            return;
+        }
+
+        let mut children = vec![];
+
+        self.for_children(block_index, |_, child_block_index| {
+            children.push(child_block_index);
+        });
+
+        stack.push((block_index, children));
+    }
+
+    /// # Attribution
+    /// Derived from `rustc_middle`'s `Postorder::traverse_successor`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L185-L187)
+    fn visit_successors(
+        &self,
+        stack: &mut Vec<(BlockIndex, Vec<BlockIndex>)>,
+        seen: &mut HashSet<BlockIndex>,
+    ) {
+        while let Some(block_index) = stack
+            .last_mut()
+            .and_then(|(_, successors)| successors.pop())
+        {
+            self.visit(block_index, stack, seen);
+        }
+    }
+
+    /// # Attribution
+    /// Derived from `rustc_middle`'s `<Postorder as Iterator>::next`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L195-L198)
+    fn postorder(&self, block_index: BlockIndex) -> Vec<BlockIndex> {
+        let mut stack = vec![];
+        let mut seen = HashSet::new();
+
+        let mut ordered = vec![];
+
+        self.visit(block_index, &mut stack, &mut seen);
+        self.visit_successors(&mut stack, &mut seen);
+
+        while let Some((block_index, _)) = stack.pop() {
+            self.visit_successors(&mut stack, &mut seen);
+
+            ordered.push(block_index);
+        }
+
+        ordered
+    }
+
+    #[allow(dead_code)]
+    pub fn for_live_blocks<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut Self, BlockIndex),
+    {
+        let mut seen = HashSet::new();
+
+        let mut frontier = vec![BlockIndex(0)];
+
+        while let Some(block_to_explore) = frontier.pop() {
+            let ordered = self.postorder(block_to_explore);
+
+            for b in ordered {
+                if !seen.insert(b) {
+                    continue;
+                }
+
+                if let Some(block) = self.get_block(b) {
+                    for instruction in block.instructions() {
+                        match instruction {
+                            Instruction::NoOp => {}
+                            Instruction::Push(value) => {
+                                Self::value_uses_block(value, &mut frontier);
+                            }
+                            Instruction::Unary {
+                                operand: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::Assign { value, to, .. }
+                            | Instruction::Call {
+                                callee: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::Access {
+                                of: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::GetTag {
+                                of: value,
+                                temporary: to,
+                                ..
+                            } => {
+                                Self::value_uses_block(value, &mut frontier);
+
+                                Self::value_uses_block(to, &mut frontier);
+                            }
+                            Instruction::Binary {
+                                lhs,
+                                rhs,
+                                temporary: to,
+                                ..
+                            } => {
+                                Self::value_uses_block(lhs, &mut frontier);
+                                Self::value_uses_block(rhs, &mut frontier);
+
+                                Self::value_uses_block(to, &mut frontier);
+                            }
+                            Instruction::AccessAssign { of, value, .. } => {
+                                Self::value_uses_block(of, &mut frontier);
+                                Self::value_uses_block(value, &mut frontier);
+                            }
+                        }
+                    }
+
+                    match block.terminator() {
+                        BlockTerminator::Return(value) => {
+                            Self::value_uses_block(value, &mut frontier);
+                        }
+                        BlockTerminator::Branch {
+                            condition: value,
+                            when_true:
+                                JumpTo {
+                                    arguments: when_true_arguments,
+                                    ..
+                                },
+                            otherwise:
+                                JumpTo {
+                                    arguments: otherwise_arguments,
+                                    ..
+                                },
+                        } => {
+                            Self::value_uses_block(value, &mut frontier);
+
+                            for argument in when_true_arguments {
+                                Self::value_uses_block(argument, &mut frontier);
+                            }
+
+                            for argument in otherwise_arguments {
+                                Self::value_uses_block(argument, &mut frontier);
+                            }
+                        }
+                        BlockTerminator::Jump(JumpTo { arguments, .. }) => {
+                            for argument in arguments {
+                                Self::value_uses_block(argument, &mut frontier);
+                            }
+                        }
+                    }
+                }
+
+                f(self, b);
+            }
+        }
+    }
+
+    fn value_uses_block(value: &Value, frontier: &mut Vec<BlockIndex>) {
+        match value {
+            Value::Fn(block_index) | Value::Address(Address { block_index, .. }) => {
+                if !frontier.contains(block_index) {
+                    frontier.push(*block_index);
+                }
+            }
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                for value in values {
+                    Self::value_uses_block(value, frontier);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn nested_values<F>(value: &mut Value, f: &mut F)
+    where
+        F: FnMut(&mut Value),
+    {
+        match value {
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                for value in values {
+                    f(value);
+                }
+            }
+            _ => {
+                f(value);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn for_value<F>(&mut self, block_index: BlockIndex, mut f: F)
+    where
+        F: FnMut(&mut Value),
+    {
+        if let Some(block) = self.get_block_mut(block_index) {
+            for parameter in block.parameters_mut() {
+                Self::nested_values(parameter, &mut f);
+            }
+
+            for instruction in block.instructions_mut() {
+                match instruction {
+                    Instruction::NoOp => {}
+                    Instruction::Push(value) => {
+                        Self::nested_values(value, &mut f);
+                    }
+                    Instruction::Unary {
+                        operand: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::Assign { value, to, .. }
+                    | Instruction::Call {
+                        callee: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::Access {
+                        of: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::GetTag {
+                        of: value,
+                        temporary: to,
+                        ..
+                    } => {
+                        Self::nested_values(value, &mut f);
+
+                        Self::nested_values(to, &mut f);
+                    }
+                    Instruction::Binary {
+                        lhs,
+                        rhs,
+                        temporary: to,
+                        ..
+                    } => {
+                        Self::nested_values(lhs, &mut f);
+                        Self::nested_values(rhs, &mut f);
+
+                        Self::nested_values(to, &mut f);
+                    }
+                    Instruction::AccessAssign { of, value, .. } => {
+                        Self::nested_values(of, &mut f);
+                        Self::nested_values(value, &mut f);
+                    }
+                }
+            }
+
+            match block.terminator_mut() {
+                BlockTerminator::Return(value) => {
+                    Self::nested_values(value, &mut f);
+                }
+                BlockTerminator::Branch {
+                    condition: value,
+                    when_true:
+                        JumpTo {
+                            arguments: when_true_arguments,
+                            ..
+                        },
+                    otherwise:
+                        JumpTo {
+                            arguments: otherwise_arguments,
+                            ..
+                        },
+                } => {
+                    Self::nested_values(value, &mut f);
+
+                    for argument in when_true_arguments {
+                        Self::nested_values(argument, &mut f);
+                    }
+
+                    for argument in otherwise_arguments {
+                        Self::nested_values(argument, &mut f);
+                    }
+                }
+                BlockTerminator::Jump(JumpTo { arguments, .. }) => {
+                    for argument in arguments {
+                        Self::nested_values(argument, &mut f);
+                    }
+                }
+            }
+        }
+    }
+
     fn liveliness(&mut self) {
         let mut living = vec![];
 
         let mut addresses = vec![];
 
-        for b in (0..(self.blocks.len())).rev() {
-            addresses.append(&mut self.liveliness_recursive(BlockIndex(b), &mut living));
-        }
+        let mut blocks_used = HashSet::new();
 
-        for b in 0..(self.blocks.len()) {
-            if let Some(block) = self.blocks.get(b)
+        self.for_live_blocks(|ssa, b| {
+            blocks_used.insert(b);
+
+            addresses.append(&mut ssa.liveliness_recursive(b, &mut living));
+        });
+
+        self.collect_arguments(&blocks_used, addresses.as_slice());
+    }
+
+    fn collect_arguments(
+        &mut self,
+        blocks_used: &HashSet<BlockIndex>,
+        addresses: &[(Address, Address)],
+    ) {
+        for b in (0..(self.blocks.len())).map(BlockIndex) {
+            if !blocks_used.contains(&b)
+                && let Some(block) = self.get_block_mut(b)
+            {
+                block.instructions.clear();
+
+                block.terminator = BlockTerminator::Return(Value::Runtime);
+
+                continue;
+            }
+
+            if let Some(block) = self.get_block(b)
                 && let BlockTerminator::Jump(jump_to) = &block.terminator
             {
-                let arguments = self.collect_arguments(b, addresses.as_slice(), jump_to);
+                let arguments = self.collect_block_arguments(b, addresses, jump_to);
 
-                if let Some(block) = self.blocks.get_mut(b)
+                if let Some(block) = self.get_block_mut(b)
                     && let BlockTerminator::Jump(jump_to) = &mut block.terminator
                 {
                     jump_to.arguments = arguments;
                 }
             }
 
-            if let Some(block) = self.blocks.get(b)
+            if let Some(block) = self.get_block(b)
                 && let BlockTerminator::Branch { when_true, .. } = &block.terminator
             {
-                let arguments = self.collect_arguments(b, addresses.as_slice(), when_true);
+                let arguments = self.collect_block_arguments(b, addresses, when_true);
 
-                if let Some(block) = self.blocks.get_mut(b)
+                if let Some(block) = self.get_block_mut(b)
                     && let BlockTerminator::Branch { when_true, .. } = &mut block.terminator
                 {
                     when_true.arguments = arguments;
                 }
             }
 
-            if let Some(block) = self.blocks.get(b)
+            if let Some(block) = self.get_block(b)
                 && let BlockTerminator::Branch { otherwise, .. } = &block.terminator
             {
-                let arguments = self.collect_arguments(b, addresses.as_slice(), otherwise);
+                let arguments = self.collect_block_arguments(b, addresses, otherwise);
 
-                if let Some(block) = self.blocks.get_mut(b)
+                if let Some(block) = self.get_block_mut(b)
                     && let BlockTerminator::Branch { otherwise, .. } = &mut block.terminator
                 {
                     otherwise.arguments = arguments;
@@ -290,15 +594,15 @@ impl Ssa {
         }
     }
 
-    fn collect_arguments(
+    fn collect_block_arguments(
         &self,
-        b: usize,
+        b: BlockIndex,
         addresses: &[(Address, Address)],
         jump_to: &JumpTo,
     ) -> Vec<Value> {
         let mut arguments = vec![];
 
-        if let Some(block) = self.blocks.get(b)
+        if let Some(block) = self.get_block(b)
             && let Some(successor) = self.get_block(jump_to.block_index)
         {
             for successor_parameter in &successor.parameters {
@@ -307,7 +611,7 @@ impl Ssa {
                         addresses.iter().find_map(|(old_address, new_address)| {
                             if successor_parameter.block_index == old_address.block_index
                                 && successor_parameter.offset == old_address.offset
-                                && usize::from(new_address.block_index) == b
+                                && new_address.block_index == b
                             {
                                 Some(new_address)
                             } else {
@@ -390,7 +694,9 @@ impl Ssa {
                 Instruction::Unary { operand: value, .. }
                 | Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }
-                | Instruction::Access { of: value, .. } => {
+                | Instruction::Access { of: value, .. }
+                | Instruction::GetTag { of: value, .. }
+                | Instruction::Assign { value, .. } => {
                     Self::accumulate_live_value(block_index, living, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
@@ -401,9 +707,16 @@ impl Ssa {
                     Self::accumulate_live_value(block_index, living, of);
                     Self::accumulate_live_value(block_index, living, value);
                 }
-                Instruction::Assign { value, to } => {
-                    Self::accumulate_live_value(block_index, living, value);
+            }
 
+            match instruction {
+                Instruction::NoOp | Instruction::Push(_) | Instruction::AccessAssign { .. } => {}
+                Instruction::Unary { temporary: to, .. }
+                | Instruction::Call { temporary: to, .. }
+                | Instruction::Access { temporary: to, .. }
+                | Instruction::GetTag { temporary: to, .. }
+                | Instruction::Binary { temporary: to, .. }
+                | Instruction::Assign { to, .. } => {
                     let Value::Address(to) = to else {
                         unreachable!("assignments are only to addresses");
                     };
@@ -449,7 +762,7 @@ impl Ssa {
             {
                 living.push(*address);
             }
-            Value::Compound(values) => {
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for address in values {
                     Self::accumulate_live_value(block_index, living, address);
                 }
@@ -466,7 +779,7 @@ impl Ssa {
             {
                 true
             }
-            Value::Compound(values)
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. }
                 if values
                     .iter()
                     .any(|value| Self::value_uses_parameter(parameter, value)) =>
@@ -518,7 +831,8 @@ impl Ssa {
                     | Instruction::Assign { value, .. }
                     | Instruction::Push(value)
                     | Instruction::Call { callee: value, .. }
-                    | Instruction::Access { of: value, .. } => {
+                    | Instruction::Access { of: value, .. }
+                    | Instruction::GetTag { of: value, .. } => {
                         if Self::value_uses_parameter(parameter, value) {
                             return true;
                         }
@@ -570,7 +884,8 @@ impl Ssa {
                 | Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }
                 | Instruction::Assign { value, .. }
-                | Instruction::Access { of: value, .. } => {
+                | Instruction::Access { of: value, .. }
+                | Instruction::GetTag { of: value, .. } => {
                     Self::value_to_argument(living, addresses, value);
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
@@ -617,7 +932,7 @@ impl Ssa {
             {
                 *address = new_address;
             }
-            Value::Compound(values) => {
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
                     Self::value_to_argument(living, addresses, value);
                 }

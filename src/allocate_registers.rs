@@ -6,9 +6,7 @@ use crate::{
 use std::collections::HashMap;
 
 pub fn allocate(ssa: &mut Ssa) {
-    let mut seen = vec![false; ssa.blocks().len()];
-
-    for b in 0..(ssa.blocks().len()) {
+    ssa.for_live_blocks(|ssa, b| {
         let mut allocator = RegisterAllocator {
             index: 0,
             free: vec![],
@@ -16,14 +14,14 @@ pub fn allocate(ssa: &mut Ssa) {
             max_registers: ssa.max_registers(),
         };
 
-        allocator.allocate_block(ssa, BlockIndex(b), &mut seen);
-    }
+        allocator.allocate_block(ssa, b);
 
-    for block in ssa.blocks_mut() {
-        block
-            .instructions_mut()
-            .retain(|instruction| !matches!(instruction, Instruction::NoOp));
-    }
+        if let Some(block) = ssa.get_block_mut(b) {
+            block
+                .instructions_mut()
+                .retain(|instruction| !matches!(instruction, Instruction::NoOp));
+        }
+    });
 }
 
 struct RegisterAllocator {
@@ -61,12 +59,8 @@ impl RegisterAllocator {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn allocate_block(&mut self, ssa: &mut Ssa, block_index: BlockIndex, seen: &mut [bool]) {
-        if seen.get(usize::from(block_index)).is_some_and(|seen| !seen)
-            && let Some(block) = ssa.get_block_mut(block_index)
-        {
-            seen[usize::from(block_index)] = true;
-
+    fn allocate_block(&mut self, ssa: &mut Ssa, block_index: BlockIndex) {
+        if let Some(block) = ssa.get_block_mut(block_index) {
             let mut addresses = HashMap::new();
 
             let mut block_arguments = vec![];
@@ -112,6 +106,7 @@ impl RegisterAllocator {
                             block_arguments.as_slice(),
                             call_arguments.as_slice(),
                         );
+
                         Self::value_to_allocation(
                             &addresses,
                             of,
@@ -134,6 +129,10 @@ impl RegisterAllocator {
                         of: value,
                         temporary: to,
                         ..
+                    }
+                    | Instruction::GetTag {
+                        of: value,
+                        temporary: to,
                     } => {
                         Self::value_to_allocation(
                             &addresses,
@@ -303,23 +302,23 @@ impl RegisterAllocator {
         match value {
             Value::Address(address) => {
                 *value = addresses.get(address).map_or_else(
-                    || unreachable!("all addresses get allocated"),
+                    || unreachable!("all addresses get allocated: {value:?}"),
                     |allocation| Self::allocation_to_value(*allocation),
                 );
             }
             Value::BlockArgument(index) => {
                 *value = block_arguments.get(*index).map_or_else(
-                    || unreachable!("all addresses get allocated"),
+                    || unreachable!("all addresses get allocated: {value:?}"),
                     |allocation| Self::allocation_to_value(*allocation),
                 );
             }
             Value::CallArgument(index) => {
                 *value = call_arguments.get(*index).map_or_else(
-                    || unreachable!("all addresses get allocated"),
+                    || unreachable!("all addresses get allocated: {value:?}"),
                     |allocation| Self::allocation_to_value(*allocation),
                 );
             }
-            Value::Compound(values) => {
+            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
                     Self::value_to_allocation(addresses, value, block_arguments, call_arguments);
                 }

@@ -138,6 +138,9 @@ const DESCRIPTION: &str = concat!(
 Description:
     Compile a program written in the \"apart\" language
 
+    -?, --help
+        view this text
+
     -l, --list-targets
         list all valid targets
 

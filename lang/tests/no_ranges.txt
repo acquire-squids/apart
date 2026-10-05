@@ -1,0 +1,19 @@
+funky main() {
+	no_ranges(-1);
+	no_ranges(0);
+	no_ranges(1);
+	no_ranges(2);
+}
+
+funky no_ranges(value <- i8) {
+	if match value {
+		-1 => true,
+		0 => true,
+		1 => true,
+		else => false,
+	} {
+		print_bool(true);
+	} else {
+		print_bool(false);
+	};
+}

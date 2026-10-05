@@ -68,6 +68,7 @@ crate::int_enum! {
     Call => 0xA0,
     Access => 0xB0,
     AccessAssign => 0xB1,
+    GetTag => 0xB2,
     Jump => 0xC0,
     Branch => 0xC1,
     Return => 0xC2,
@@ -234,6 +235,15 @@ impl Assemble for IrInstruction<IrValue> {
                 bytes.append(&mut of.to_bytes(compiled));
 
                 bytes.append(&mut value.to_bytes(compiled));
+
+                bytes
+            }
+            Self::GetTag { of, to } => {
+                let mut bytes = vec![u8::from(OpCode::GetTag)];
+
+                bytes.append(&mut to.to_bytes(compiled));
+
+                bytes.append(&mut of.to_bytes(compiled));
 
                 bytes
             }
@@ -624,6 +634,14 @@ pub trait Instructive: Sized {
                     self.instructions_mut()
                         .push(IrInstruction::AccessAssign { index, of, value });
                 }
+                OpCode::GetTag => {
+                    let to = Location::from_bytes(bytes, self);
+
+                    let of = ValueOrLocation::from_bytes(bytes, self);
+
+                    self.instructions_mut()
+                        .push(IrInstruction::GetTag { of, to });
+                }
                 OpCode::Call => {
                     let callee = ValueOrLocation::from_bytes(bytes, self);
 
@@ -653,7 +671,7 @@ pub trait Instructive: Sized {
                         .as_array::<8>()
                         .map(|array| u64::from_le_bytes(*array))
                         .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("jump address is not a valid usize");
+                        .expect("argument count is not a valid usize");
 
                     *self.ip_mut() += 8;
 
@@ -693,7 +711,7 @@ pub trait Instructive: Sized {
                         .as_array::<8>()
                         .map(|array| u64::from_le_bytes(*array))
                         .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("jump address is not a valid usize");
+                        .expect("argument count is not a valid usize");
 
                     *self.ip_mut() += 8;
 
@@ -713,7 +731,7 @@ pub trait Instructive: Sized {
                         .as_array::<8>()
                         .map(|array| u64::from_le_bytes(*array))
                         .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("jump address is not a valid usize");
+                        .expect("argument count is not a valid usize");
 
                     *self.ip_mut() += 8;
 
@@ -750,6 +768,7 @@ pub trait Instructive: Sized {
                 | IrInstruction::Assign { value, .. }
                 | IrInstruction::Push(value)
                 | IrInstruction::Access { of: value, .. }
+                | IrInstruction::GetTag { of: value, .. }
                 | IrInstruction::Call { callee: value, .. }
                 | IrInstruction::Return(value) => {
                     if let ValueOrLocation::Value(CopyableValue::Fn(address)) = value {
@@ -927,7 +946,7 @@ where
             }]
                 .as_array::<8>()
                 .map(|array| u64::from_le_bytes(*array))
-                .and_then(|address| usize::try_from(address).ok())
+                .and_then(|offset| usize::try_from(offset).ok())
                 .expect("128-bit usize not allowed!  sorry!"),
         )
     }
@@ -945,7 +964,7 @@ where
             }]
                 .as_array::<8>()
                 .map(|array| u64::from_le_bytes(*array))
-                .and_then(|address| usize::try_from(address).ok())
+                .and_then(|index| usize::try_from(index).ok())
                 .expect("128-bit usize not allowed!  sorry!"),
         )
     }

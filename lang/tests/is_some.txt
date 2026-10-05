@@ -1,0 +1,11 @@
+funky main() {
+	print_bool(is_some(Option~Some { value <- {}, }));
+	print_bool(is_some(Option~None {}));
+}
+
+funky is_some[T](option <- Option[T]) -> bool {
+	match option {
+		Option~Some { .. } => true,
+		else => false,
+	}
+}

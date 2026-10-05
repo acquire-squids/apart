@@ -79,12 +79,10 @@ macro_rules! dereference_value {
                 $self.registers[usize::from(index)]
             }
             $crate::low_ir::ValueOrLocation::At($crate::low_ir::Location::StackOffset(offset)) => {
-                $self
-                    .call_frames
-                    .last()
-                    .map_or($self.stack[usize::from(offset)], |frame| {
-                        $self.stack[frame.fp + usize::from(offset)]
-                    })
+                $self.call_frames.last().map_or_else(
+                    || $self.stack[usize::from(offset)],
+                    |frame| $self.stack[frame.fp + usize::from(offset)],
+                )
             }
             $crate::low_ir::ValueOrLocation::Value(
                 $crate::targets::vm::CopyableValue::ValueIndex(value_index),
@@ -479,10 +477,13 @@ impl Vm {
 
                     let value = if let CopyableValue::ValueIndex(value_index) =
                         dereference_value!(self, of)
-                        && let Some(Value::Compound(fields)) =
-                            self.values.get(usize::from(value_index))
                     {
-                        fields[index]
+                        match self.values.get(usize::from(value_index)) {
+                            Some(
+                                Value::Compound(fields) | Value::TaggedCompound { fields, .. },
+                            ) => fields[index],
+                            _ => panic!("tried to access something other than a compound"),
+                        }
                     } else {
                         panic!("tried to access something other than a compound");
                     };
@@ -496,15 +497,38 @@ impl Vm {
 
                     let value = dereference_value!(self, value);
 
-                    if let CopyableValue::ValueIndex(value_index) = dereference_value!(self, of)
-                        && let Some(Value::Compound(fields)) =
-                            self.values.get_mut(usize::from(value_index))
-                        && let Some(field) = fields.get_mut(index)
-                    {
-                        *field = value;
+                    if let CopyableValue::ValueIndex(value_index) = dereference_value!(self, of) {
+                        match self.values.get_mut(usize::from(value_index)) {
+                            Some(
+                                Value::Compound(fields) | Value::TaggedCompound { fields, .. },
+                            ) => {
+                                if let Some(field) = fields.get_mut(index) {
+                                    *field = value;
+                                } else {
+                                    panic!("tried to assign to an invalid compound field")
+                                }
+                            }
+                            _ => panic!("tried to assign to an invalid compound field"),
+                        }
                     } else {
                         panic!("tried to assign to an invalid compound field");
                     }
+                }
+                Some(Instruction::GetTag { of, to }) => {
+                    let of = *of;
+                    let to = *to;
+
+                    let value = if let CopyableValue::ValueIndex(value_index) =
+                        dereference_value!(self, of)
+                        && let Some(Value::TaggedCompound { tag, .. }) =
+                            self.values.get(usize::from(value_index))
+                    {
+                        CopyableValue::U16(*tag)
+                    } else {
+                        panic!("tried to access something other than a compound");
+                    };
+
+                    self.assign(to, value);
                 }
                 Some(Instruction::Call { callee, arity, to }) => {
                     let callee = *callee;
@@ -730,6 +754,7 @@ impl Vm {
         let native_fn =
             NativeFn::try_from(native_fn).expect("tried to call an unknown native function");
 
+        #[allow(clippy::branches_sharing_code)]
         match native_fn {
             NativeFn::PrintU8 => {
                 let CopyableValue::U8(value) = &call_arguments[0] else {

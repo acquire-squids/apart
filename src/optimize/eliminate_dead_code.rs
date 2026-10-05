@@ -1,5 +1,5 @@
 use crate::{
-    basic_blocks::{BlockIndex, Instruction, Value},
+    basic_blocks::{Address, BlockIndex, Instruction, Value},
     ssa::{BlockTerminator, Ssa},
 };
 
@@ -10,16 +10,15 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
     let blocks_used = collect_used_blocks(ssa);
 
-    for (b, block) in ssa.blocks_mut().iter_mut().enumerate() {
-        if !block.instructions().is_empty() && blocks_used.get(b).copied().is_none_or(|used| !used)
-        {
-            block.instructions_mut().clear();
+    let mut block_remap = vec![const { None }; ssa.blocks().len()];
 
-            block.parameters_mut().clear();
+    let mut block_count = 0;
 
-            *block.terminator_mut() = BlockTerminator::Return(Value::Runtime);
+    for (b, remap) in block_remap.iter_mut().enumerate() {
+        if blocks_used.contains(&BlockIndex(b)) {
+            *remap = Some(BlockIndex(block_count));
 
-            changed = true;
+            block_count += 1;
         }
     }
 
@@ -35,83 +34,76 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         }
     }
 
+    ssa.for_live_blocks(|ssa, block_index| {
+        if let Some(block) = ssa.get_block_mut(block_index) {
+            match block.terminator_mut() {
+                BlockTerminator::Return(_) => {}
+                BlockTerminator::Jump(destination) => {
+                    if let Some(destination_block) = block_remap
+                        .get(usize::from(destination.block()))
+                        .and_then(|remap| *remap)
+                    {
+                        *destination.block_mut() = destination_block;
+                    }
+                }
+                BlockTerminator::Branch {
+                    when_true,
+                    otherwise,
+                    ..
+                } => {
+                    if let Some(when_true_block) = block_remap
+                        .get(usize::from(when_true.block()))
+                        .and_then(|remap| *remap)
+                    {
+                        *when_true.block_mut() = when_true_block;
+                    }
+
+                    if let Some(otherwise_block) = block_remap
+                        .get(usize::from(otherwise.block()))
+                        .and_then(|remap| *remap)
+                    {
+                        *otherwise.block_mut() = otherwise_block;
+                    }
+                }
+            }
+        }
+
+        ssa.for_value(block_index, |value| match value {
+            Value::Fn(block_index) => {
+                if let Some(fn_block) = block_remap
+                    .get(usize::from(*block_index))
+                    .and_then(|remap| *remap)
+                {
+                    *block_index = fn_block;
+                }
+            }
+            Value::Address(Address { block_index, .. }) => {
+                if let Some(address_block) = block_remap
+                    .get(usize::from(*block_index))
+                    .and_then(|remap| *remap)
+                {
+                    *block_index = address_block;
+                }
+            }
+            _ => {}
+        });
+    });
+
+    for b in (0..(ssa.blocks().len())).rev() {
+        if block_remap.get(b).is_none_or(Option::is_none) {
+            ssa.blocks_mut().remove(b);
+        }
+    }
+
     changed
 }
 
-fn value_uses_block(blocks_used: &mut [bool], value: &Value) {
-    match value {
-        Value::Fn(block_index) => {
-            blocks_used[usize::from(*block_index)] = true;
-        }
-        Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
-            for value in values {
-                value_uses_block(blocks_used, value);
-            }
-        }
-        _ => {}
-    }
-}
+fn collect_used_blocks(ssa: &mut Ssa) -> HashSet<BlockIndex> {
+    let mut blocks_used = HashSet::new();
 
-fn collect_used_blocks(ssa: &mut Ssa) -> Vec<bool> {
-    let mut blocks_used = vec![false; ssa.blocks().len() + 1];
-
-    blocks_used[0] = true;
-
-    for block in ssa.blocks() {
-        for instruction in block.instructions() {
-            match instruction {
-                Instruction::NoOp => {}
-                Instruction::Unary { operand: value, .. }
-                | Instruction::Assign { value, .. }
-                | Instruction::Push(value)
-                | Instruction::Call { callee: value, .. }
-                | Instruction::Access { of: value, .. } => {
-                    value_uses_block(blocks_used.as_mut_slice(), value);
-                }
-                Instruction::Binary { lhs, rhs, .. } => {
-                    value_uses_block(blocks_used.as_mut_slice(), lhs);
-                    value_uses_block(blocks_used.as_mut_slice(), rhs);
-                }
-                Instruction::AccessAssign { of, value, .. } => {
-                    value_uses_block(blocks_used.as_mut_slice(), of);
-                    value_uses_block(blocks_used.as_mut_slice(), value);
-                }
-            }
-        }
-    }
-
-    for block in ssa.blocks_mut() {
-        match block.terminator_mut() {
-            BlockTerminator::Return(value) => {
-                value_uses_block(blocks_used.as_mut_slice(), value);
-            }
-            BlockTerminator::Jump(jump_to) => {
-                blocks_used[usize::from(jump_to.block())] = true;
-            }
-            BlockTerminator::Branch {
-                condition,
-                when_true,
-                otherwise,
-            } => match condition {
-                Value::Boolean(true) => {
-                    blocks_used[usize::from(when_true.block())] = true;
-
-                    *block.terminator_mut() = BlockTerminator::Jump(when_true.clone());
-                }
-                Value::Boolean(false) => {
-                    blocks_used[usize::from(otherwise.block())] = true;
-
-                    *block.terminator_mut() = BlockTerminator::Jump(otherwise.clone());
-                }
-                _ => {
-                    value_uses_block(blocks_used.as_mut_slice(), condition);
-
-                    blocks_used[usize::from(when_true.block())] = true;
-                    blocks_used[usize::from(otherwise.block())] = true;
-                }
-            },
-        }
-    }
+    ssa.for_live_blocks(|_, block_index| {
+        blocks_used.insert(block_index);
+    });
 
     blocks_used
 }
@@ -144,7 +136,8 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 }
                 Instruction::Push(value)
                 | Instruction::Call { callee: value, .. }
-                | Instruction::Access { of: value, .. } => {
+                | Instruction::Access { of: value, .. }
+                | Instruction::GetTag { of: value, .. } => {
                     value_uses_address(&mut addresses_used, value);
 
                     addresses_used.insert((BlockIndex(b), i));

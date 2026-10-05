@@ -6,12 +6,11 @@ use crate::{
 pub fn optimize(ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
-    for b in 0..(ssa.blocks().len()) {
-        if let Some(block) = ssa.blocks().get(b) {
+    ssa.for_live_blocks(|ssa, block_index| {
+        if let Some(block) = ssa.get_block(block_index) {
             for i in 0..(block.instructions().len()) {
                 if let Some(instruction) = ssa
-                    .blocks()
-                    .get(b)
+                    .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
                 {
                     match instruction {
@@ -22,7 +21,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
                         | Instruction::Binary { lhs: value, .. }
-                        | Instruction::AccessAssign { of: value, .. } => {
+                        | Instruction::AccessAssign { of: value, .. }
+                        | Instruction::GetTag { of: value, .. } => {
                             if let Value::Address(_) = value
                                 && let Some(propagated_value) = clone_constant(ssa, value)
                                 && let Some(
@@ -32,10 +32,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                                     | Instruction::Call { callee: value, .. }
                                     | Instruction::Access { of: value, .. }
                                     | Instruction::Binary { lhs: value, .. }
-                                    | Instruction::AccessAssign { of: value, .. },
+                                    | Instruction::AccessAssign { of: value, .. }
+                                    | Instruction::GetTag { of: value, .. },
                                 ) = ssa
-                                    .blocks_mut()
-                                    .get_mut(b)
+                                    .get_block_mut(block_index)
                                     .and_then(|block| block.instructions_mut().get_mut(i))
                             {
                                 *value = propagated_value;
@@ -47,14 +47,12 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 }
 
                 if let Some(Instruction::Binary { rhs, .. }) = ssa
-                    .blocks()
-                    .get(b)
+                    .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
                     && let Value::Address(_) = rhs
                     && let Some(propagated_value) = clone_constant(ssa, rhs)
                     && let Some(Instruction::Binary { rhs, .. }) = ssa
-                        .blocks_mut()
-                        .get_mut(b)
+                        .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
                 {
                     *rhs = propagated_value;
@@ -63,31 +61,29 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 }
 
                 if let Some(Instruction::AccessAssign { value, .. }) = ssa
-                    .blocks()
-                    .get(b)
+                    .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
                     && let Value::Address(_) = value
                     && let Some(propagated_value) = clone_constant(ssa, value)
-                    && let Some(Instruction::Binary { rhs, .. }) = ssa
-                        .blocks_mut()
-                        .get_mut(b)
+                    && let Some(Instruction::AccessAssign { of, .. }) = ssa
+                        .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
                 {
-                    *rhs = propagated_value;
+                    *of = propagated_value;
 
                     changed = true;
                 }
             }
         }
 
-        if let Some(block) = ssa.blocks().get(b) {
+        if let Some(block) = ssa.get_block(block_index) {
             match block.terminator() {
                 BlockTerminator::Jump(_) => {}
                 BlockTerminator::Return(value) => {
                     if let Value::Address(_) = value
                         && let Some(propagated_value) = clone_constant(ssa, value)
                         && let Some(BlockTerminator::Return(value)) =
-                            ssa.blocks_mut().get_mut(b).map(Block::terminator_mut)
+                            ssa.get_block_mut(block_index).map(Block::terminator_mut)
                     {
                         *value = propagated_value;
 
@@ -98,7 +94,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     if let Value::Address(_) = condition
                         && let Some(propagated_value) = clone_constant(ssa, condition)
                         && let Some(BlockTerminator::Branch { condition, .. }) =
-                            ssa.blocks_mut().get_mut(b).map(Block::terminator_mut)
+                            ssa.get_block_mut(block_index).map(Block::terminator_mut)
                     {
                         *condition = propagated_value;
 
@@ -107,7 +103,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 }
             }
         }
-    }
+    });
 
     changed
 }

@@ -1,0 +1,15 @@
+funky main() {
+	if_at_home(true);
+	if_at_home(false);
+}
+
+funky if_at_home(value <- bool) {
+	if match value {
+		true => true,
+		else => false,
+	} {
+		print_bool(true);
+	} else {
+		print_bool(false);
+	};
+}

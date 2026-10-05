@@ -1,0 +1,10 @@
+funky main() {
+	let
+		x = Option~Some { value <- {}, },
+	in {
+		print_bool(match x {
+			Option~Some { .. } => true,
+			else => false,
+		});
+	};
+}

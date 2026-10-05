@@ -38,3 +38,34 @@ sum Result[T, E] {
 	},
 }
 
+teach[T] Option[T] {
+	funky is_some(self <- Self) -> bool {
+		match self {
+			Self~Some { .. } => true,
+			else => false,
+		}
+	}
+
+	funky is_none(self <- Self) -> bool {
+		match self {
+			Self~None {} => true,
+			else => false,
+		}
+	}
+}
+
+teach[T, E] Result[T, E] {
+	funky is_ok(self <- Self) -> bool {
+		match self {
+			Self~Ok { .. } => true,
+			else => false,
+		}
+	}
+
+	funky is_err(self <- Self) -> bool {
+		match self {
+			Self~Err { ..} => true,
+			else => false,
+		}
+	}
+}
