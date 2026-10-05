@@ -184,11 +184,43 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        generic_count_mismatch,
+        "generic_count_mismatch.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::GenericCountMismatch {
+                expected: 2,
+                got: 1
+            }
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        generic_count_mismatch_module,
+        "generic_count_mismatch_module.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::GenericCountMismatch {
+                expected: 2,
+                got: 1
+            }
+        )]
+    );
+
+    apart::test_compilation_errors!(
         generic_equality,
         "generic_equality.txt",
         [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
             expected, got
         })] if expected == "T" && got == "U"
+    );
+
+    apart::test_compilation_errors!(
+        generics_unchecked,
+        "generics_unchecked.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::TypeMismatch {
+                expected, got,
+            }
+        )] if expected == "Either[T, bool]" && got == "Either[T, i64]"
     );
 
     apart::test_compilation_errors!(

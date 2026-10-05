@@ -1,0 +1,23 @@
+funky main() {
+	print_bool(either~Either~Second { value <- 21 }.is_second());
+}
+
+mod either[U] {
+	pub sum Either[T] {
+		First {
+			value <- T,
+		},
+		Second {
+			value <- U,
+		},
+	}
+}
+
+teach[T] either~Either[T, bool] {
+	funky is_second(self <- Self) -> bool {
+		match self {
+			Self~First { .. } => true,
+			else => false,
+		}
+	}
+}

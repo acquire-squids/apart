@@ -37,6 +37,7 @@ pub struct TypeChecker {
     associations: HashMap<Span, HashMap<String, Vec<AssociatedName>>>,
     associated_with: Option<Span>,
     resolved_associations: HashMap<Span, usize>,
+    module_generics: Vec<Vec<TypeIndex>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -517,6 +518,7 @@ impl TypeChecker {
             associations: HashMap::new(),
             associated_with: None,
             resolved_associations: HashMap::new(),
+            module_generics: vec![],
         };
 
         me.push_type(Type::Unknown);
@@ -729,19 +731,28 @@ impl TypeChecker {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_type_signatures(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod {
                     contents, generics, ..
                 } => {
+                    let mut module_generics = vec![];
+
                     for generic in generics {
                         let type_index = self.push_type(Type::Existential(generic.clone()));
 
                         self.type_map.insert(generic.span(), type_index);
+
+                        module_generics.push(type_index);
                     }
 
+                    self.module_generics.push(module_generics);
+
                     self.check_type_signatures(ast, names, contents.as_slice());
+
+                    self.module_generics.pop();
                 }
                 Item::Teach {
                     student,
@@ -790,6 +801,22 @@ impl TypeChecker {
                         })
                         .collect::<Vec<_>>();
 
+                    for module_generic_type_index in self.module_generics.iter().flatten() {
+                        if let Type::Existential(module_generic) = &self[*module_generic_type_index]
+                            && fields.iter().any(|(_, type_index)| {
+                                if let Type::Existential(generic) = &self[*type_index]
+                                    && module_generic.span() == generic.span()
+                                {
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                        {
+                            generic_type_indices.push(*module_generic_type_index);
+                        }
+                    }
+
                     let type_index = self.push_type(Type::Product {
                         name: Spanned::new(name.kind().clone(), name.span()),
                         fields,
@@ -831,6 +858,14 @@ impl TypeChecker {
                     if variants.len() > usize::from(u16::MAX) {
                         self.errors
                             .push(Spanned::new(Error::TooManyVariants, ast[*item].span()));
+                    }
+
+                    for variant in &variants {
+                        let Type::Product { generics, .. } = &self[*variant] else {
+                            unreachable!("only products are sum variants");
+                        };
+
+                        generic_type_indices.extend(generics.iter().copied());
                     }
 
                     let type_index = self.push_type(Type::Sum {
@@ -1143,35 +1178,15 @@ impl TypeChecker {
                 generics: generic_types,
                 ..
             } => {
-                let expected_generics = fields
-                    .iter()
-                    .filter(|(_, type_index)| {
-                        matches!(
-                            &self[*type_index],
-                            Type::Existential(name)
-                                if !generic_types
-                                    .iter()
-                                    .any(|generic_type| {
-                                        matches!(
-                                            &self[*generic_type],
-                                            Type::Existential(generic_name)
-                                                if generic_name.kind() == name.kind()
-                                        )
-                                    })
-                        )
-                    })
-                    .count()
-                    + generic_types.len();
-
-                if expected_generics == 0 && !checked_generics.is_empty() {
+                if generic_types.is_empty() && !checked_generics.is_empty() {
                     self.errors
                         .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
 
                     self.type_map.insert(ty.span(), self.type_unknown());
-                } else if checked_generics.len() != expected_generics {
+                } else if checked_generics.len() != generic_types.len() {
                     self.errors.push(Spanned::new(
                         Error::GenericCountMismatch {
-                            expected: expected_generics,
+                            expected: generic_types.len(),
                             got: checked_generics.len(),
                         },
                         ty.span(),
@@ -1219,7 +1234,7 @@ impl TypeChecker {
                         .push(Spanned::new(Error::ExpectedZeroGenerics, ty.span()));
 
                     self.type_map.insert(ty.span(), self.type_unknown());
-                } else if checked_generics.len() != checked_generics.len() {
+                } else if checked_generics.len() != generic_types.len() {
                     self.errors.push(Spanned::new(
                         Error::GenericCountMismatch {
                             expected: generic_types.len(),
@@ -1863,6 +1878,7 @@ impl TypeChecker {
 
                         if let Err(type_index) =
                             self.check_pattern(names, case.pattern(), expr_type_index, context)
+                            && !matches!(self[type_index], Type::Unknown)
                         {
                             let error = self.type_mismatch_error(type_index, expr_type_index);
 

@@ -1,0 +1,21 @@
+funky main() {
+	
+}
+
+sum Either[T, U] {
+	First {
+		value <- T,
+	},
+	Second {
+		value <- U,
+	},
+}
+
+teach[T] Either[T] {
+	funky is_first(self <- Self) -> bool {
+		match self {
+			Self~First { .. } => true,
+			else => false,
+		}
+	}
+}
