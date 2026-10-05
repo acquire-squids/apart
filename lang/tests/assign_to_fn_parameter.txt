@@ -1,0 +1,9 @@
+funky main() {
+	test({});
+}
+
+funky test(value <- unit) {
+	value = {};
+
+	print_unit({});
+}

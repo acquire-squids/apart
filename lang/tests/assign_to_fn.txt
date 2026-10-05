@@ -1,0 +1,9 @@
+funky main() {
+	test = main;
+
+	test();
+}
+
+funky test() {
+	print_unit({});
+}

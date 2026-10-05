@@ -952,12 +952,8 @@ impl Translator {
             .get(span)
             .and_then(|span| self.addresses.get_mut(&span))
         {
-            Some(
-                Addresslike::Block(_) | Addresslike::CallArgument(_) | Addresslike::NativeFn(_),
-            ) => {
-                unreachable!(
-                    "we shouldn't allow assigning to these, but I think I messed up and it's legal for now"
-                );
+            Some(Addresslike::Block(_) | Addresslike::NativeFn(_)) => {
+                unreachable!("name resolution prevents assigning to these addresses");
             }
             Some(Addresslike::CompoundField { index, of }) => {
                 let (index, of) = (*index, *of);
@@ -982,7 +978,7 @@ impl Translator {
 
                 self.values.push(Value::Address(address));
             }
-            None => {
+            Some(Addresslike::CallArgument(_)) | None => {
                 let address = self.next_address();
 
                 self.push_instruction(Instruction::Assign {

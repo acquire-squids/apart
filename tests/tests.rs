@@ -11,6 +11,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(and_and_or, "and_and_or.txt", "true\n");
 
+            apart::$test_macro!(assign_to_fn_parameter, "assign_to_fn_parameter.txt", "{}\n");
+
             apart::$test_macro!(callee_is_access, "callee_is_access.txt", "true\n");
 
             apart::$test_macro!(callee_is_call, "callee_is_call.txt", "true\n");
@@ -150,6 +152,22 @@ output_tests!(
 
 mod compilation_error {
     apart::test_compilation_errors!(
+        assign_to_fn,
+        "assign_to_fn.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::AssignmentTargetIsFunction
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        assign_to_native_fn,
+        "assign_to_native_fn.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::AssignmentTargetIsFunction
+        )]
+    );
+
+    apart::test_compilation_errors!(
         callee_is_access_error,
         "callee_is_access_error.txt",
         [apart::Error::TypeCheck(
@@ -158,27 +176,27 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
-    callee_is_call_invalid,
-    "callee_is_call_invalid.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "unit" && got == "bool"
+        callee_is_call_invalid,
+        "callee_is_call_invalid.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "unit" && got == "bool"
     );
 
     apart::test_compilation_errors!(
-    generic_equality,
-    "generic_equality.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "T" && got == "U"
+        generic_equality,
+        "generic_equality.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "T" && got == "U"
     );
 
     apart::test_compilation_errors!(
-    if_without_else,
-    "if_without_else.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "unit" && got == "i64"
+        if_without_else,
+        "if_without_else.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "unit" && got == "i64"
     );
 
     apart::test_compilation_errors!(
@@ -198,11 +216,11 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
-    path_incorrect_argument,
-    "path_incorrect_argument.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "i64" && got == "funky(T) -> T"
+        path_incorrect_argument,
+        "path_incorrect_argument.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "i64" && got == "funky(T) -> T"
     );
 
     apart::test_compilation_errors!(
@@ -238,42 +256,42 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
-    signed_equals_unsigned,
-    "signed_equals_unsigned.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "i32" && got == "u32"
+        signed_equals_unsigned,
+        "signed_equals_unsigned.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "i32" && got == "u32"
     );
 
     apart::test_compilation_errors!(
-    sum_equality_0,
-    "sum_equality_0.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
+        sum_equality_0,
+        "sum_equality_0.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
-    sum_equality_1,
-    "sum_equality_1.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
+        sum_equality_1,
+        "sum_equality_1.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "Option[Result[bool, i64]]" && got == "Option[Result[unit, i64]]"
     );
 
     apart::test_compilation_errors!(
-    teach_generic_confusion,
-    "teach_generic_confusion.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
+        teach_generic_confusion,
+        "teach_generic_confusion.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
     );
 
     apart::test_compilation_errors!(
-    teach_generic_confusion_method_access,
-    "teach_generic_confusion_method_access.txt",
-    [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
-    expected, got
-    })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
+        teach_generic_confusion_method_access,
+        "teach_generic_confusion_method_access.txt",
+        [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+            expected, got
+        })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
     );
 }

@@ -1,0 +1,9 @@
+funky main() {
+	print_bool = print_unit_ignore_bool;
+
+	print_bool(true);
+}
+
+funky print_unit_ignore_bool(value <- bool) {
+	print_unit({});
+}

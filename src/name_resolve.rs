@@ -287,30 +287,15 @@ impl NameResolver {
         );
     }
 
-    fn define_name(&mut self, name: &str) {
+    fn define_name(&mut self, name: &str, definition_kind: DefinitionKind) {
         if let Some(definition) = self
             .variable_scopes
             .iter_mut()
             .filter_map(|scope| scope.get_mut(name))
             .next_back()
         {
-            definition.kind = DefinitionKind::DefinedName;
+            definition.kind = definition_kind;
         }
-    }
-
-    fn declare_type(&mut self, name: String, span: Span) {
-        let Some(scope) = self.variable_scopes.last_mut() else {
-            unreachable!("there will always be at least one scope");
-        };
-
-        scope.insert(
-            name,
-            Definition {
-                kind: DefinitionKind::Type,
-                visibility: Visibility::Public,
-                span,
-            },
-        );
     }
 
     fn undeclare(&mut self, name: &str) {
@@ -433,7 +418,8 @@ impl NameResolver {
                             .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
                     }
 
-                    self.declare_type(name.kind().clone(), name.span());
+                    self.declare_name(name.kind().clone(), name.span());
+                    self.define_name(name.kind(), DefinitionKind::Type);
                 }
                 Item::Fn { name, generics, .. } => {
                     self.associated_with.push(name.span());
@@ -648,7 +634,7 @@ impl NameResolver {
                     self.resolve_function_name(name, *visibility, Error::DuplicateNativeFnName);
 
                     self.declare_name(name.kind().clone(), name.span());
-                    self.define_name(name.kind());
+                    self.define_name(name.kind(), DefinitionKind::Function);
                 }
                 Item::Mod { name, contents, .. } => {
                     self.current_mod.push(name.span());
@@ -671,7 +657,8 @@ impl NameResolver {
                         .get(&student.span())
                         .map_or_else(|| student.span(), |span| *span);
 
-                    self.declare_type("Self".to_string(), span);
+                    self.declare_name("Self".to_string(), span);
+                    self.define_name("Self", DefinitionKind::Type);
 
                     self.associated_with.push(span);
 
@@ -705,7 +692,8 @@ impl NameResolver {
                 Item::Product { name, fields, .. } => {
                     self.associated_with.push(name.span());
 
-                    self.declare_type("Self".to_string(), name.span());
+                    self.declare_name("Self".to_string(), name.span());
+                    self.define_name("Self", DefinitionKind::Type);
 
                     for field in fields {
                         self.resolve_type_signature(field.ty());
@@ -718,7 +706,8 @@ impl NameResolver {
                 Item::Sum { name, variants, .. } => {
                     self.associated_with.push(name.span());
 
-                    self.declare_type("Self".to_string(), name.span());
+                    self.declare_name("Self".to_string(), name.span());
+                    self.define_name("Self", DefinitionKind::Type);
 
                     for variant in variants {
                         let Item::Product { fields, .. } = ast[*variant].kind() else {
@@ -803,7 +792,8 @@ impl NameResolver {
                     .get(&student.span())
                     .map_or_else(|| student.span(), |span| *span);
 
-                self.declare_type("Self".to_string(), span);
+                self.declare_name("Self".to_string(), span);
+                self.define_name("Self", DefinitionKind::Type);
 
                 self.associated_with.push(span);
 
@@ -836,7 +826,7 @@ impl NameResolver {
                     {
                         self.declare_name(parameter.name().kind().clone(), parameter.name().span());
 
-                        self.define_name(parameter.name().kind());
+                        self.define_name(parameter.name().kind(), DefinitionKind::DefinedName);
                     } else {
                         self.errors.push(Spanned::new(
                             Error::DuplicateFnParameterName,
@@ -906,7 +896,7 @@ impl NameResolver {
 
         match ast[expr].kind() {
             Expr::Let { name, .. } => {
-                self.define_name(name.kind());
+                self.define_name(name.kind(), DefinitionKind::DefinedName);
             }
             Expr::Block(_) => {
                 self.variable_scopes.pop();
@@ -1288,7 +1278,7 @@ impl NameResolver {
 
                 for (field_name, field_pattern) in fields {
                     self.declare_name(field_name.kind().clone(), field_name.span());
-                    self.define_name(field_name.kind());
+                    self.define_name(field_name.kind(), DefinitionKind::DefinedName);
 
                     if let Some(field_pattern) = field_pattern {
                         self.resolve_pattern(field_pattern.kind());
