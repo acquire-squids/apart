@@ -236,7 +236,6 @@ pub enum Value {
     NativeFn(Span),
     Runtime,
     CallArgument(usize),
-    StackOffset(usize),
     Register(usize),
     Compound(Vec<Self>),
     TaggedCompound { fields: Vec<Self>, tag: u16 },

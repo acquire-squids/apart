@@ -42,33 +42,30 @@ fn main() -> ExitCode {
                         let source_labels = source_labels.as_slice();
                         let sources = sources.as_slice();
 
-                        compile(
-                            source_labels,
-                            sources,
-                            options.max_registers,
-                            options.optimize,
+                        compile(source_labels, sources, options.optimize).map_or(
+                            ExitCode::FAILURE,
+                            |compiled| {
+                                let output_path = Path::new(options.output.as_str());
+
+                                if let Err(error) = fs::write(
+                                    output_path,
+                                    match options.target {
+                                        Target::Vm => apart::targets::vm::compile(&compiled),
+                                    },
+                                ) {
+                                    eprintln!(
+                                        "failed to write compiled output to \"{}\"; see next line",
+                                        options.output
+                                    );
+
+                                    eprintln!("{error}");
+
+                                    return ExitCode::FAILURE;
+                                }
+
+                                ExitCode::SUCCESS
+                            },
                         )
-                        .map_or(ExitCode::FAILURE, |compiled| {
-                            let output_path = Path::new(options.output.as_str());
-
-                            if let Err(error) = fs::write(
-                                output_path,
-                                match options.target {
-                                    Target::Vm => apart::targets::vm::compile(&compiled),
-                                },
-                            ) {
-                                eprintln!(
-                                    "failed to write compiled output to \"{}\"; see next line",
-                                    options.output
-                                );
-
-                                eprintln!("{error}");
-
-                                return ExitCode::FAILURE;
-                            }
-
-                            ExitCode::SUCCESS
-                        })
                     }
                 }
             }
@@ -79,10 +76,9 @@ fn main() -> ExitCode {
 fn compile<'a>(
     source_labels: &[&str],
     sources: &[(usize, &'a str)],
-    max_registers: usize,
     optimize: bool,
 ) -> Option<apart::Compiled<'a, Ir<IrValue>>> {
-    match apart::compile(sources, max_registers, optimize) {
+    match apart::compile(sources, optimize) {
         Ok(compiled) => Some(compiled),
         Err(compiled) => {
             let sources = compiled.sources();
@@ -150,11 +146,6 @@ Description:
     -O, --optimize
         perform optimizations during compilation
 
-    -R, --registers usize
-        specify the maximum number of registers to compile with, e.g. \"-r 0\" or \"--registers 32\"
-
-        zero registers effectively works as a stack machine
-
     -T, --target TARGET_NAME
         compile for only the target TARGET_NAME
 "
@@ -171,7 +162,6 @@ const TARGETS: &str = concat!(
 struct ApartOptions {
     output: String,
     optimize: bool,
-    max_registers: usize,
     target: Target,
 }
 
@@ -179,7 +169,6 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
     let mut options = ApartOptions {
         output: "main.apart".to_string(),
         optimize: false,
-        max_registers: 0,
         target: Target::Vm,
     };
 
@@ -212,31 +201,6 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                 arguments.next();
 
                 options.optimize = true;
-            }
-            "-R" | "--registers" => {
-                let argument = arguments
-                    .next()
-                    .expect("we just matched while peeking, it will exist");
-
-                if let Some(registers) = arguments.next() {
-                    match registers.parse::<usize>() {
-                        Ok(max_registers) => {
-                            options.max_registers = max_registers;
-                        }
-                        Err(error) => {
-                            eprintln!(
-                                "failed to parse the maximum registers as a usize; see next line"
-                            );
-                            eprintln!("{error}");
-
-                            return Err(ExitCode::FAILURE);
-                        }
-                    }
-                } else {
-                    eprintln!("expected the number of registers to compile with after {argument}");
-
-                    return Err(ExitCode::FAILURE);
-                }
             }
             "-T" | "--target" => {
                 arguments.next();

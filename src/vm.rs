@@ -11,21 +11,19 @@ use std::{
 struct CallFrame {
     fp: usize,
     from: usize,
-    stack_size: usize,
-    previous_registers: Vec<CopyableValue>,
+    register_count: usize,
 }
 
 struct Vm {
-    stack: Vec<CopyableValue>,
+    registers: Vec<CopyableValue>,
     values: Vec<Value>,
     allocated: usize,
     next_gc: usize,
-    max_registers: usize,
-    registers: Vec<CopyableValue>,
     call_frames: Vec<CallFrame>,
     instructions: Vec<Instruction<CopyableValue>>,
     ip: usize,
     sp: usize,
+    fp: usize,
 }
 
 impl Instructive for Vm {
@@ -48,15 +46,9 @@ pub fn run<O>(bytes: &[u8], out: &mut O)
 where
     O: Write,
 {
-    let max_registers = bytes[..8]
-        .as_array::<8>()
-        .map(|array| u64::from_le_bytes(*array))
-        .and_then(|max_registers| usize::try_from(max_registers).ok())
-        .expect("maximum registers is unknown");
-
-    let stack = vec![
+    let registers = vec![
         const { CopyableValue::Unit };
-        bytes[8..16]
+        bytes[..8]
             .as_array::<8>()
             .map(|array| u64::from_le_bytes(*array))
             .and_then(|max_registers| usize::try_from(max_registers).ok())
@@ -64,20 +56,18 @@ where
     ];
 
     let mut vm = Vm {
-        stack,
+        registers,
         values: vec![],
         allocated: 0,
         next_gc: 1_000_000,
-        max_registers,
-        registers: vec![const { CopyableValue::Unit }; max_registers],
         call_frames: vec![CallFrame {
             fp: 0,
             from: 0,
-            previous_registers: vec![],
-            stack_size: 0,
+            register_count: 0,
         }],
         ip: 0,
         sp: 0,
+        fp: 0,
         instructions: vec![],
     };
 
@@ -103,14 +93,11 @@ impl Vm {
 
                 println!();
 
-                println!("    {:?}", self.stack);
+                println!("    {:?}", self.registers);
 
                 println!();
 
-                println!(
-                    "    {:?}",
-                    (self.call_frames.last().map_or(0, |frame| frame.fp), self.sp)
-                );
+                println!("    {:?}", (self.fp, self.sp));
 
                 std::io::stdin().lock().lines().next();
             }
@@ -434,7 +421,7 @@ impl Vm {
 
                 let value = self.dereference_value(value);
 
-                self.stack[self.sp] = value;
+                self.registers[self.sp] = value;
 
                 self.sp += 1;
             }
@@ -503,7 +490,7 @@ impl Vm {
                 match self.dereference_value(callee) {
                     CopyableValue::Fn {
                         address,
-                        max_stack_size,
+                        max_register_count,
                     } => {
                         if self.should_gc() {
                             self.gc();
@@ -512,25 +499,26 @@ impl Vm {
                         let call_frame = CallFrame {
                             from: self.ip,
                             fp: self.sp - arity,
-                            stack_size: self.stack.len(),
-                            previous_registers: Vec::with_capacity(self.max_registers),
+                            register_count: self.registers.len(),
                         };
 
                         self.ip = address;
 
+                        self.fp = self.sp - arity;
+
                         self.call_frames.push(call_frame);
 
-                        for _ in 0..(usize::try_from(max_stack_size)
-                            .expect("a function's max stack size was not a valid u32")
-                            - arity)
-                        {
-                            self.stack.push(CopyableValue::Unit);
-                        }
+                        self.registers.resize_with(
+                            self.registers.len()
+                                + usize::try_from(max_register_count)
+                                    .expect("a function's max register count was not a valid u32"),
+                            || CopyableValue::Unit,
+                        );
 
                         return;
                     }
                     CopyableValue::NativeFn(index) => {
-                        let call_arguments = self.stack[(self.sp - arity)..(self.sp)].to_vec();
+                        let call_arguments = self.registers[(self.sp - arity)..(self.sp)].to_vec();
 
                         self.sp -= arity;
 
@@ -578,12 +566,11 @@ impl Vm {
                 if let Some(call_frame) = self.call_frames.pop() {
                     self.ip = call_frame.from;
 
+                    self.fp = self.call_frames.last().map_or(0, |frame| frame.fp);
+
                     self.sp = call_frame.fp;
 
-                    self.stack.truncate(call_frame.stack_size);
-
-                    self.registers[..(call_frame.previous_registers.len())]
-                        .copy_from_slice(call_frame.previous_registers.as_slice());
+                    self.registers.truncate(call_frame.register_count);
 
                     if !self.call_frames.is_empty()
                         && let Some(Instruction::Call { to, .. }) = self.instructions.get(self.ip)
@@ -605,24 +592,10 @@ impl Vm {
     #[inline(always)]
     fn assign(&mut self, to: Location, value: CopyableValue) {
         match to {
-            Location::Register(index) => {
-                if let Some(call_frame) = self.call_frames.last_mut()
-                    && usize::from(index) >= call_frame.previous_registers.len()
-                {
-                    let old_value = self.registers[usize::from(index)];
+            Location::Register(offset) => {
+                let offset = self.fp + usize::from(offset);
 
-                    call_frame.previous_registers.push(old_value);
-                }
-
-                self.registers[usize::from(index)] = value;
-            }
-            Location::StackOffset(offset) => {
-                let offset = self.call_frames.last().map_or_else(
-                    || usize::from(offset),
-                    |frame| frame.fp + usize::from(offset),
-                );
-
-                self.stack[offset] = value;
+                self.registers[offset] = value;
 
                 self.sp = self.sp.max(offset + 1);
             }
@@ -640,13 +613,10 @@ impl Vm {
     #[inline(always)]
     fn dereference_value(&mut self, value: ValueOrLocation<CopyableValue>) -> CopyableValue {
         match value {
-            ValueOrLocation::At(Location::Register(index)) => self.registers[usize::from(index)],
-            ValueOrLocation::At(Location::StackOffset(offset)) => {
-                self.call_frames.last().map_or_else(
-                    || self.stack[usize::from(offset)],
-                    |frame| self.stack[frame.fp + usize::from(offset)],
-                )
-            }
+            ValueOrLocation::At(Location::Register(offset)) => self.call_frames.last().map_or_else(
+                || self.registers[usize::from(offset)],
+                |frame| self.registers[frame.fp + usize::from(offset)],
+            ),
             ValueOrLocation::Value(CopyableValue::ValueIndex(value_index)) => {
                 match self.values.get(usize::from(value_index)) {
                     None => panic!("tried to find a value that doesn't exist"),
@@ -1146,18 +1116,8 @@ impl Vm {
             self.mark_value(&mut marked, value, &mut marked_count);
         }
 
-        for value in &self.stack {
-            self.mark_value(&mut marked, *value, &mut marked_count);
-        }
-
         for value in &self.registers {
             self.mark_value(&mut marked, *value, &mut marked_count);
-        }
-
-        for call_frame in &self.call_frames {
-            for previous_register in &call_frame.previous_registers {
-                self.mark_value(&mut marked, *previous_register, &mut marked_count);
-            }
         }
 
         (marked, marked_count)
@@ -1193,35 +1153,11 @@ impl Vm {
     fn sweep(&mut self, marked: &[Option<ValueIndex>], marked_count: usize) {
         let mut values = Vec::with_capacity(marked_count);
 
-        self.stack = self
-            .stack
-            .iter()
-            .map(|value| self.retain_value(&mut values, *value, marked))
-            .collect::<Vec<_>>();
-
         self.registers = self
             .registers
             .iter()
             .map(|value| self.retain_value(&mut values, *value, marked))
             .collect::<Vec<_>>();
-
-        for c in 0..(self.call_frames.len()) {
-            let Some(call_frame) = self.call_frames.get(c) else {
-                unreachable!("the call frame will exist");
-            };
-
-            let previous_registers = call_frame
-                .previous_registers
-                .iter()
-                .map(|previous_register| self.retain_value(&mut values, *previous_register, marked))
-                .collect::<Vec<_>>();
-
-            let Some(call_frame) = self.call_frames.get_mut(c) else {
-                unreachable!("the call frame will exist");
-            };
-
-            call_frame.previous_registers = previous_registers;
-        }
 
         values.sort_by_key(|(index, _)| *index);
         values.dedup_by_key(|(index, _)| *index);

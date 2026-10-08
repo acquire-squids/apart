@@ -13,8 +13,8 @@ pub mod vm;
 
 pub use {
     low_ir::{
-        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, StackOffset,
-        UnaryOp, Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, UnaryOp,
+        Value as IrValue, ValueOrLocation,
     },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
@@ -81,7 +81,6 @@ impl Reportable for Error {}
 #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 pub fn compile<'a>(
     sources: &[(usize, &'a str)],
-    max_registers: usize,
     optimized: bool,
 ) -> Result<Compiled<'a, Ir<IrValue>>, Compiled<'a, Vec<Spanned<Error>>>> {
     let mut source_ids = sources
@@ -186,7 +185,7 @@ pub fn compile<'a>(
         print!("{basic_blocks}");
     }
 
-    let mut ssa = ssa::convert(&basic_blocks, max_registers);
+    let mut ssa = ssa::convert(&basic_blocks);
 
     if cfg!(feature = "print_ssa") {
         print!("{ssa}");
@@ -233,7 +232,7 @@ macro_rules! __test_vm_output_single_function {
         fn $test_name() {
             let mut out = vec![];
 
-            let result = $crate::compile([(0, SOURCE)].as_slice(), $registers, $optimized)
+            let result = $crate::compile([(0, SOURCE)].as_slice(), $optimized)
                 .map(|compiled| $crate::targets::vm::compile(&compiled))
                 .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
                 .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
@@ -294,22 +293,12 @@ macro_rules! __test_vm_output {
 
             $crate::test_vm_output_single_function!(
                 SOURCE, $test_file_name, $expected_output ;
-                no_registers_unoptimized, 0, false
+                unoptimized, 32, false
             );
 
             $crate::test_vm_output_single_function!(
                 SOURCE, $test_file_name, $expected_output ;
-                no_registers_optimized, 0, true
-            );
-
-            $crate::test_vm_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                registers_unoptimized, 32, false
-            );
-
-            $crate::test_vm_output_single_function!(
-                SOURCE, $test_file_name, $expected_output ;
-                registers_optimized, 32, true
+                optimized, 32, true
             );
         }
     };
@@ -330,11 +319,9 @@ macro_rules! __test_compilation_errors {
                 $test_file_name
             ));
 
-            const NO_REGISTERS: usize = 0;
-
             #[test]
             fn compilation_error() {
-                let result = $crate::compile([(0, SOURCE)].as_slice(), NO_REGISTERS, false)
+                let result = $crate::compile([(0, SOURCE)].as_slice(), false)
                     .map(|_| "ERRONEOUS SUCCESSFUL COMPILATION");
 
                 let result = result.as_ref()

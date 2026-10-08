@@ -28,32 +28,25 @@ pub fn lower(compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
 
     Ir {
         blocks,
-        max_registers: compiled.result().max_registers(),
-        main_max_stack_size: compiled
+        main_max_register_count: compiled
             .result()
             .blocks()
             .first()
-            .map_or(0, IrBlock::max_stack_size),
+            .map_or(0, IrBlock::max_register_count),
     }
 }
 
 pub struct Ir<T> {
     blocks: Vec<Block<T>>,
-    max_registers: usize,
-    main_max_stack_size: usize,
+    main_max_register_count: usize,
 }
 
 impl<T> Ir<T> {
     #[must_use]
-    pub const fn new(
-        blocks: Vec<Block<T>>,
-        max_registers: usize,
-        main_max_stack_size: usize,
-    ) -> Self {
+    pub const fn new(blocks: Vec<Block<T>>, main_max_register_count: usize) -> Self {
         Self {
             blocks,
-            max_registers,
-            main_max_stack_size,
+            main_max_register_count,
         }
     }
 
@@ -71,14 +64,8 @@ impl<T> Ir<T> {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn max_registers(&self) -> usize {
-        self.max_registers
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn main_max_stack_size(&self) -> usize {
-        self.main_max_stack_size
+    pub const fn main_max_register_count(&self) -> usize {
+        self.main_max_register_count
     }
 }
 
@@ -189,7 +176,7 @@ pub enum Value {
     String(String),
     Fn {
         block_index: BlockIndex,
-        max_stack_size: usize,
+        max_register_count: usize,
     },
     NativeFn(NativeFn),
     Compound(Vec<ValueOrLocation<Self>>),
@@ -207,17 +194,7 @@ pub enum ValueOrLocation<T> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Location {
-    StackOffset(StackOffset),
     Register(Register),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StackOffset(pub usize);
-
-impl From<StackOffset> for usize {
-    fn from(value: StackOffset) -> Self {
-        value.0
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -400,10 +377,10 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::String(text) => ValueOrLocation::Value(Value::String(text.clone())),
         IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn {
             block_index: *block_index,
-            max_stack_size: compiled
+            max_register_count: compiled
                 .result()
                 .get_block(*block_index)
-                .map_or(0, IrBlock::max_stack_size),
+                .map_or(0, IrBlock::max_register_count),
         }),
         IrValue::NativeFn(span) => {
             let source_index = compiled
@@ -441,9 +418,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                 },
             ))
         }
-        IrValue::StackOffset(_) | IrValue::Register(_) => {
-            ValueOrLocation::At(lower_value_to_location(value))
-        }
+        IrValue::Register(_) => ValueOrLocation::At(lower_value_to_location(value)),
         IrValue::Compound(fields) => ValueOrLocation::Value(Value::Compound(
             fields
                 .iter()
@@ -463,8 +438,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
 #[must_use]
 fn lower_value_to_location(value: &IrValue) -> Location {
     match value {
-        IrValue::StackOffset(offset) => Location::StackOffset(StackOffset(*offset)),
-        IrValue::Register(index) => Location::Register(Register(*index)),
-        _ => unreachable!("only stack offsets and registers can be locations"),
+        IrValue::Register(offset) => Location::Register(Register(*offset)),
+        _ => unreachable!("only registers can be locations"),
     }
 }

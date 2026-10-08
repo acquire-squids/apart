@@ -157,7 +157,6 @@ fn clone_constant(
         Value::Address(address) => clone_constant_from_address(ssa, address, address_to_ip),
         Value::Runtime
         | Value::Register(_)
-        | Value::StackOffset(_)
         | Value::Compound(_)
         | Value::TaggedCompound { .. }
         | Value::String(_) => None,

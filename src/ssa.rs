@@ -4,16 +4,13 @@ use crate::basic_blocks::{
 
 use std::{collections::HashSet, fmt};
 
-pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
-    let mut ssa = Ssa {
-        blocks: vec![],
-        max_registers,
-    };
+pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
+    let mut ssa = Ssa { blocks: vec![] };
 
     for basic_block in basic_blocks.blocks() {
         ssa.blocks.push(Block {
             call_argument_count: basic_block.call_argument_count(),
-            max_stack_size: 0,
+            max_register_count: 0,
             instructions: basic_block.instructions().to_vec(),
             terminator: match basic_block.terminator() {
                 BasicBlockTerminator::Jump(block_index) => BlockTerminator::Jump(*block_index),
@@ -38,7 +35,6 @@ pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
 
 pub struct Ssa {
     blocks: Vec<Block>,
-    max_registers: usize,
 }
 
 impl fmt::Display for Ssa {
@@ -64,12 +60,6 @@ impl fmt::Display for Block {
 }
 
 impl Ssa {
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn max_registers(&self) -> usize {
-        self.max_registers
-    }
-
     #[allow(dead_code)]
     #[must_use]
     pub const fn blocks(&self) -> &[Block] {
@@ -124,7 +114,7 @@ impl Ssa {
 
 pub struct Block {
     call_argument_count: usize,
-    max_stack_size: usize,
+    max_register_count: usize,
     instructions: Vec<Instruction>,
     terminator: BlockTerminator,
 }
@@ -179,14 +169,14 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn max_stack_size(&self) -> usize {
-        self.max_stack_size
+    pub const fn max_register_count(&self) -> usize {
+        self.max_register_count
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn max_stack_size_mut(&mut self) -> &mut usize {
-        &mut self.max_stack_size
+    pub const fn max_register_count_mut(&mut self) -> &mut usize {
+        &mut self.max_register_count
     }
 }
 
