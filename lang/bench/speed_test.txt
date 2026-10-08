@@ -1,9 +1,17 @@
 funky main() {
 	let
+		start_time = clock(),
 		x = 1000000,
 	in {
 		while x > 0 {
 			x = x - 1;
 		}
+
+		let
+			end_time = clock() - start_time,
+		in {
+			"0.025 seconds";
+			print_f64(end_time / 1000.0);
+		};
 	};
 }

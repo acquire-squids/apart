@@ -1,5 +1,6 @@
 funky main() {
 	let
+		start_time = clock(),
 		zoo = Zoo~new(),
 		total = 0,
 	in {
@@ -13,6 +14,13 @@ funky main() {
 		}
 
 		print_i64(total);
+
+		let
+			end_time = clock() - start_time,
+		in {
+			"2.694 seconds";
+			print_f64(end_time / 1000.0);
+		};
 	};
 }
 

@@ -1,6 +1,16 @@
 funky main() {
-	let n = 40 in {
-		print_i64(fib(n))
+	let
+		start_time = clock(),
+		n = 35,
+	in {
+		print_i64(fib(n));
+
+		let
+			end_time = clock() - start_time,
+		in {
+			"1.091 seconds";
+			print_f64(end_time / 1000.0);
+		};
 	};
 }
 
