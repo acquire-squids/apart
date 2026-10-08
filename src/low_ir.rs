@@ -141,12 +141,13 @@ crate::int_enum! {
     PrintI32 => 0x00_09,
     PrintU64 => 0x00_0A,
     PrintString => 0x00_0B,
-    ExtendString => 0x00_20,
-    SliceString => 0x00_21,
-    LengthString => 0x00_22,
-    TruncateString => 0x0023,
-    FloorBoundaryString => 0x0024,
-    CeilBoundaryString => 0x0025,
+    ExtendString => 0x10_00,
+    SliceString => 0x10_01,
+    LengthString => 0x10_02,
+    TruncateString => 0x10_03,
+    FloorBoundaryString => 0x10_04,
+    CeilBoundaryString => 0x10_05,
+    Clock => 0x20_00,
 }
 
 crate::int_enum! {
@@ -435,6 +436,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     Some("truncate_string") => NativeFn::TruncateString,
                     Some("floor_boundary_string") => NativeFn::FloorBoundaryString,
                     Some("ceil_boundary_string") => NativeFn::CeilBoundaryString,
+                    Some("clock") => NativeFn::Clock,
                     _ => unreachable!("unknown native function"),
                 },
             ))

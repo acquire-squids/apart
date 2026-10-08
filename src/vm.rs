@@ -1054,6 +1054,13 @@ impl Vm {
 
                 CopyableValue::U64(boundary)
             }
+            NativeFn::Clock => CopyableValue::F64(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("time somehow went backwards")
+                    .as_secs_f64()
+                    * 1000.0,
+            ),
         }
     }
 
