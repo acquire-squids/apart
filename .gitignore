@@ -2,3 +2,7 @@
 **/*.apart
 **/*.apart.bak
 **/*.apart.old
+**/*.data
+**/*.data.old
+**/*.svg
+**/*.svg.old

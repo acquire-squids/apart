@@ -11,6 +11,7 @@ all         = { level = "deny", priority = -1 }
 unwrap_used = "deny"
 
 [profile.release]
+debug = true
 lto = true
 
 [dependencies]
