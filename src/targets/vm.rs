@@ -122,10 +122,7 @@ pub enum CopyableValue {
     F64(f64),
     Boolean(bool),
     Unit,
-    Fn {
-        address: usize,
-        max_stack_size: usize,
-    },
+    Fn { address: usize, max_stack_size: u32 },
     NativeFn(NativeFn),
     ValueIndex(ValueIndex),
 }
@@ -468,8 +465,8 @@ impl Assemble for IrValue {
                 );
 
                 bytes.extend_from_slice(
-                    u64::try_from(*max_stack_size)
-                        .expect("128-bit usize not allowed!  sorry!")
+                    u32::try_from(*max_stack_size)
+                        .expect("a function's max stack size was not a valid u32")
                         .to_le_bytes()
                         .as_slice(),
                 );
@@ -1051,13 +1048,12 @@ where
                     .expect("a function was not a valid usize");
 
                 let max_stack_size = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut() += 4;
                     *instructive.ip_mut()
                 }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|address| usize::try_from(address).ok())
-                    .expect("a function was not a valid usize");
+                    .as_array::<4>()
+                    .map(|array| u32::from_le_bytes(*array))
+                    .expect("a function's max stack size was not a valid u32");
 
                 Self::Fn {
                     address: block_index,

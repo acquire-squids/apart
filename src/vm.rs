@@ -520,7 +520,10 @@ impl Vm {
 
                         self.call_frames.push(call_frame);
 
-                        for _ in 0..(max_stack_size - arity) {
+                        for _ in 0..(usize::try_from(max_stack_size)
+                            .expect("a function's max stack size was not a valid u32")
+                            - arity)
+                        {
                             self.stack.push(CopyableValue::Unit);
                         }
 
