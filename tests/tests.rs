@@ -23,7 +23,19 @@ macro_rules! output_tests {
 
             apart::$test_macro!(fn_parameter, "fn_parameter.txt", "21\n");
 
+            apart::$test_macro!(hello_bingus, "hello_bingus.txt", "Hello, Bingus!\n");
+
+            apart::$test_macro!(hello_world, "hello_world.txt", "Hello, world!\n");
+
             apart::$test_macro!(identity, "identity.txt", "21\n");
+
+            apart::$test_macro!(if_as_call_argument, "if_as_call_argument.txt", "21\n",);
+
+            apart::$test_macro!(
+                if_as_method_access,
+                "if_as_method_access.txt",
+                "true\nfalse\n",
+            );
 
             apart::$test_macro!(if_condition_is_access, "if_condition_is_access.txt", "1\n",);
 

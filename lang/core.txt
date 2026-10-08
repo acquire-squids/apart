@@ -9,6 +9,7 @@ primitive i64;
 primitive f64;
 primitive bool;
 primitive unit;
+primitive String;
 
 native funky print_u8 = funky(u8) -> unit;
 native funky print_i8 = funky(i8) -> unit;
@@ -21,6 +22,21 @@ native funky print_i64 = funky(i64) -> unit;
 native funky print_f64 = funky(f64) -> unit;
 native funky print_bool = funky(bool) -> unit;
 native funky print_unit = funky(unit) -> unit;
+native funky print_string = funky(String) -> unit;
+
+teach String {
+	native funky extend_string = funky(Self, Self) -> unit;
+
+	native funky slice_string = funky(Self, u64, u64) -> Option[Self];
+
+	native funky length_string = funky(Self) -> u64;
+
+	native funky truncate_string = funky(Self, u64) -> unit;
+
+	native funky floor_boundary_string = funky(Self, u64) -> u64;
+
+	native funky ceil_boundary_string = funky(Self, u64) -> u64;
+}
 
 sum Option[T] {
 	Some {

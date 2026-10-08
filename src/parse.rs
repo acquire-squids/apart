@@ -613,6 +613,7 @@ pub enum Expr {
         cases: Vec<MatchCase>,
         fallback: ExprIndex,
     },
+    String(String),
 }
 
 #[derive(Debug)]
@@ -641,6 +642,7 @@ pub enum Pattern {
         path: Vec<Spanned<PathElement>>,
         fields: Vec<(Spanned<String>, Option<Spanned<Self>>)>,
     },
+    String(String),
 }
 
 #[derive(Debug)]
@@ -849,7 +851,8 @@ impl Ast {
             | Expr::PathElement(_)
             | Expr::SelfType
             | Expr::ProductNoName(_)
-            | Expr::CallNoCallee(_) => {}
+            | Expr::CallNoCallee(_)
+            | Expr::String(_) => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
@@ -2229,6 +2232,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                 }
                 Token::Integer(_) => Some((precedence::PRIMARY, (Self::integer, token.span()))),
                 Token::Float(_) => Some((precedence::PRIMARY, (Self::float, token.span()))),
+                Token::String => Some((precedence::PRIMARY, (Self::string_expr, token.span()))),
                 Token::Identifier => {
                     let span = token.span();
 
@@ -2469,6 +2473,32 @@ impl<'s, 'p> Parser<'s, 'p> {
                 || Err(Spanned::new(Error::InvalidInteger, token.span())),
                 |num| Ok(ast.push_expr(Spanned::new(Expr::Integer(num), token.span()))),
             )
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn string_expr(
+        &mut self,
+        ast: &mut Ast,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        self.advance_token_tree();
+
+        let text = span
+            .lexeme(self.source)
+            .map(|text| {
+                Expr::String(
+                    text.get(
+                        (text.char_indices().nth(1).map_or(0, |(i, _)| i))
+                            ..(text.char_indices().next_back().map_or(0, |(i, _)| i)),
+                    )
+                    .unwrap_or_default()
+                    .to_string(),
+                )
+            })
+            .expect("this string is from this source");
+
+        Ok(ast.push_expr(Spanned::new(text, span)))
     }
 
     fn float(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
@@ -2728,6 +2758,8 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let when_true_span = self.span_or_end();
 
+        let current_tree = self.current_tree;
+
         let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
             error.transmute(|error| match error {
                 Error::ExpectedBlock => Error::IfThenWithoutBlock,
@@ -2735,26 +2767,27 @@ impl<'s, 'p> Parser<'s, 'p> {
             })
         })?;
 
-        let otherwise = if self.match_keyword_next("else").is_some() {
-            if let Some(next_token) = self.match_keyword_next("if") {
-                self.if_expr(ast, 0, next_token.span())?
-            } else {
-                let otherwise_span = self.span_or_end();
+        let otherwise =
+            if self.in_token_tree(current_tree) && self.match_keyword_next("else").is_some() {
+                if let Some(next_token) = self.match_keyword_next("if") {
+                    self.if_expr(ast, 0, next_token.span())?
+                } else {
+                    let otherwise_span = self.span_or_end();
 
-                self.block(ast, 0, otherwise_span).map_err(|error| {
-                    error.transmute(|error| match error {
-                        Error::ExpectedBlock => Error::IfElseWithoutBlock,
-                        error => error,
-                    })
-                })?
-            }
-        } else {
-            ast.push_expr(Spanned::new(
-                Expr::Unit,
-                span.combine_with(ast[when_true].span())
-                    .expect("these spans are from the same source"),
-            ))
-        };
+                    self.block(ast, 0, otherwise_span).map_err(|error| {
+                        error.transmute(|error| match error {
+                            Error::ExpectedBlock => Error::IfElseWithoutBlock,
+                            error => error,
+                        })
+                    })?
+                }
+            } else {
+                ast.push_expr(Spanned::new(
+                    Expr::Unit,
+                    span.combine_with(ast[when_true].span())
+                        .expect("these spans are from the same source"),
+                ))
+            };
 
         let span = span
             .combine_with(ast[otherwise].span())
@@ -3027,6 +3060,17 @@ impl Parser<'_, '_> {
                 self.advance_token_tree();
 
                 Ok(Spanned::new(Pattern::Unit, *span))
+            }
+            Some(TokenTree::Token(token)) if matches!(token.kind(), Token::String) => {
+                self.advance_token_tree();
+
+                let text = token
+                    .span()
+                    .lexeme(self.source)
+                    .map(|text| Pattern::String(text.to_string()))
+                    .expect("this string is from this source");
+
+                Ok(Spanned::new(text, token.span()))
             }
             Some(TokenTree::Token(token)) if matches!(token.kind(), Token::Integer(_)) => {
                 self.advance_token_tree();

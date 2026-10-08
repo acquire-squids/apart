@@ -1,6 +1,6 @@
 use crate::{
     basic_blocks::{Address, BlockIndex, Value},
-    ssa::{BlockTerminator, Ssa},
+    ssa::{Block, BlockTerminator, Ssa},
 };
 
 pub fn optimize(ssa: &mut Ssa) -> bool {
@@ -11,10 +11,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     for (b, block) in ssa.blocks().iter().enumerate() {
         if let BlockTerminator::Jump(destination) = block.terminator()
             && block.instructions().is_empty()
-            && let Some(destination_block) = ssa.get_block(destination.block())
-            && destination_block.parameters() == block.parameters()
         {
-            block_swaps[usize::from(destination.block())] = Some(BlockIndex(b));
+            block_swaps[usize::from(*destination)] = Some((
+                BlockIndex(b),
+                ssa.get_block(BlockIndex(b))
+                    .map_or(0, Block::call_argument_count),
+            ));
+
             changed = true;
         }
     }
@@ -24,11 +27,11 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             match block.terminator_mut() {
                 BlockTerminator::Return(_) => {}
                 BlockTerminator::Jump(destination) => {
-                    if let Some(destination_block) = block_swaps
-                        .get(usize::from(destination.block()))
+                    if let Some((destination_block, _)) = block_swaps
+                        .get(usize::from(*destination))
                         .and_then(|swap| *swap)
                     {
-                        *destination.block_mut() = destination_block;
+                        *destination = destination_block;
                     }
                 }
                 BlockTerminator::Branch {
@@ -36,18 +39,18 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     otherwise,
                     ..
                 } => {
-                    if let Some(when_true_block) = block_swaps
-                        .get(usize::from(when_true.block()))
+                    if let Some((when_true_block, _)) = block_swaps
+                        .get(usize::from(*when_true))
                         .and_then(|swap| *swap)
                     {
-                        *when_true.block_mut() = when_true_block;
+                        *when_true = when_true_block;
                     }
 
-                    if let Some(otherwise_block) = block_swaps
-                        .get(usize::from(otherwise.block()))
+                    if let Some((otherwise_block, _)) = block_swaps
+                        .get(usize::from(*otherwise))
                         .and_then(|swap| *swap)
                     {
-                        *otherwise.block_mut() = otherwise_block;
+                        *otherwise = otherwise_block;
                     }
                 }
             }
@@ -55,7 +58,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
         ssa.for_value(block_index, |value| match value {
             Value::Fn(block_index) => {
-                if let Some(fn_block) = block_swaps
+                if let Some((fn_block, _)) = block_swaps
                     .get(usize::from(*block_index))
                     .and_then(|swap| *swap)
                 {
@@ -63,7 +66,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 }
             }
             Value::Address(Address { block_index, .. }) => {
-                if let Some(address_block) = block_swaps
+                if let Some((address_block, _)) = block_swaps
                     .get(usize::from(*block_index))
                     .and_then(|swap| *swap)
                 {
@@ -75,12 +78,18 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     });
 
     for b in (0..(ssa.blocks().len())).rev() {
-        if let Some(swap_to) = block_swaps
+        if let Some((swap_to, call_argument_count)) = block_swaps
             .get(b)
             .and_then(|swap_to| *swap_to)
-            .map(usize::from)
+            .map(|(block_index, call_argument_count)| {
+                (usize::from(block_index), call_argument_count)
+            })
         {
             ssa.blocks_mut().swap(b, swap_to);
+
+            if let Some(block) = ssa.get_block_mut(BlockIndex(swap_to)) {
+                *block.call_argument_count_mut() = call_argument_count;
+            }
         }
     }
 

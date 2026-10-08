@@ -1,4 +1,4 @@
-use crate::{Span, Spanned};
+use crate::{Reportable, Span, Spanned};
 
 use std::{error, fmt};
 
@@ -36,22 +36,36 @@ pub enum Token {
     Greater,
     Ampersand,
     Pipe,
+    String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
     UnexpectedCharacter,
+    UnclosedString,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnexpectedCharacter => write!(f, "unexpected character in input"),
+            Self::UnclosedString => write!(f, "this string was never closed"),
         }
     }
 }
 
 impl error::Error for Error {}
+
+impl Reportable for Error {
+    fn notes(&self) -> Vec<String> {
+        match self {
+            Self::UnexpectedCharacter => vec![],
+            Self::UnclosedString => {
+                vec!["you're probably missing a double quote `\"` somewhere".to_string()]
+            }
+        }
+    }
+}
 
 impl Lexer {
     #[must_use]
@@ -197,6 +211,29 @@ impl Iterator for Lexer {
                     self.start_byte_offset = self.at();
 
                     return Some(Ok(self.int_or_float(12)));
+                }
+                '"' => {
+                    while let Some(n) = self.ahead()
+                        && n != '"'
+                    {
+                        self.advance();
+                    }
+
+                    if let Some(n) = self.ahead()
+                        && n != ch
+                    {
+                        return Some(Err(Spanned::new(
+                            Error::UnclosedString,
+                            Span::new(self.source_id(), self.start(), self.at()),
+                        )));
+                    }
+
+                    self.advance();
+
+                    return Some(Ok(Spanned::new(
+                        Token::String,
+                        Span::new(self.source_id(), self.start(), self.at()),
+                    )));
                 }
                 _ if ch.is_ascii_digit() => {
                     return Some(Ok(self.int_or_float(10)));

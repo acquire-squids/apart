@@ -13,27 +13,18 @@ pub fn convert(basic_blocks: &BasicBlocks, max_registers: usize) -> Ssa {
     for basic_block in basic_blocks.blocks() {
         ssa.blocks.push(Block {
             call_argument_count: basic_block.call_argument_count(),
-            parameters: vec![],
+            max_stack_size: 0,
             instructions: basic_block.instructions().to_vec(),
             terminator: match basic_block.terminator() {
-                BasicBlockTerminator::Jump(block_index) => BlockTerminator::Jump(JumpTo {
-                    block_index: *block_index,
-                    arguments: vec![],
-                }),
+                BasicBlockTerminator::Jump(block_index) => BlockTerminator::Jump(*block_index),
                 BasicBlockTerminator::Branch {
                     condition,
                     when_true,
                     otherwise,
                 } => BlockTerminator::Branch {
                     condition: condition.clone(),
-                    when_true: JumpTo {
-                        block_index: *when_true,
-                        arguments: vec![],
-                    },
-                    otherwise: JumpTo {
-                        block_index: *otherwise,
-                        arguments: vec![],
-                    },
+                    when_true: *when_true,
+                    otherwise: *otherwise,
                 },
                 BasicBlockTerminator::Return(value) => BlockTerminator::Return(value.clone()),
             },
@@ -53,7 +44,7 @@ pub struct Ssa {
 impl fmt::Display for Ssa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (b, block) in self.blocks().iter().enumerate() {
-            writeln!(f, "{b} {:?}:", block.parameters())?;
+            writeln!(f, "{b}:")?;
 
             write!(f, "{block}")?;
         }
@@ -113,20 +104,12 @@ impl Ssa {
         };
 
         match block.terminator() {
-            BlockTerminator::Jump(JumpTo { block_index: b, .. }) => {
+            BlockTerminator::Jump(b) => {
                 f(self, *b);
             }
             BlockTerminator::Branch {
-                when_true:
-                    JumpTo {
-                        block_index: when_true,
-                        ..
-                    },
-                otherwise:
-                    JumpTo {
-                        block_index: otherwise,
-                        ..
-                    },
+                when_true,
+                otherwise,
                 ..
             } => {
                 let (when_true, otherwise) = (*when_true, *otherwise);
@@ -141,52 +124,20 @@ impl Ssa {
 
 pub struct Block {
     call_argument_count: usize,
-    parameters: Vec<Value>,
+    max_stack_size: usize,
     instructions: Vec<Instruction>,
     terminator: BlockTerminator,
 }
 
 #[derive(Debug)]
 pub enum BlockTerminator {
-    Jump(JumpTo),
+    Jump(BlockIndex),
     Branch {
         condition: Value,
-        when_true: JumpTo,
-        otherwise: JumpTo,
+        when_true: BlockIndex,
+        otherwise: BlockIndex,
     },
     Return(Value),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct JumpTo {
-    block_index: BlockIndex,
-    arguments: Vec<Value>,
-}
-
-impl JumpTo {
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn block(&self) -> BlockIndex {
-        self.block_index
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn block_mut(&mut self) -> &mut BlockIndex {
-        &mut self.block_index
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn arguments(&self) -> &[Value] {
-        self.arguments.as_slice()
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn arguments_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.arguments
-    }
 }
 
 impl Block {
@@ -210,14 +161,8 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn parameters(&self) -> &[Value] {
-        self.parameters.as_slice()
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn parameters_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.parameters
+    pub const fn call_argument_count_mut(&mut self) -> &mut usize {
+        &mut self.call_argument_count
     }
 
     #[allow(dead_code)]
@@ -230,6 +175,18 @@ impl Block {
     #[must_use]
     pub const fn terminator_mut(&mut self) -> &mut BlockTerminator {
         &mut self.terminator
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn max_stack_size(&self) -> usize {
+        self.max_stack_size
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn max_stack_size_mut(&mut self) -> &mut usize {
+        &mut self.max_stack_size
     }
 }
 
@@ -291,26 +248,32 @@ impl Ssa {
     }
 
     #[allow(dead_code)]
-    pub fn for_live_blocks<F>(&mut self, mut f: F)
+    pub fn for_functions<F>(&mut self, mut f: F)
     where
-        F: FnMut(&mut Self, BlockIndex),
+        F: FnMut(&mut Self, Vec<BlockIndex>),
     {
         let mut seen = HashSet::new();
+
+        let mut functions = vec![];
 
         let mut frontier = vec![BlockIndex(0)];
 
         while let Some(block_to_explore) = frontier.pop() {
             let ordered = self.postorder(block_to_explore);
 
-            for b in ordered {
-                if !seen.insert(b) {
+            let mut function = vec![];
+
+            for block_index in ordered {
+                if !seen.insert(block_index) {
                     continue;
                 }
 
-                if let Some(block) = self.get_block(b) {
+                function.push(block_index);
+
+                if let Some(block) = self.get_block(block_index) {
                     for instruction in block.instructions() {
                         match instruction {
-                            Instruction::NoOp => {}
+                            Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
                             Instruction::Push(value) => {
                                 Self::value_uses_block(value, &mut frontier);
                             }
@@ -358,37 +321,104 @@ impl Ssa {
                     }
 
                     match block.terminator() {
-                        BlockTerminator::Return(value) => {
-                            Self::value_uses_block(value, &mut frontier);
-                        }
                         BlockTerminator::Branch {
-                            condition: value,
-                            when_true:
-                                JumpTo {
-                                    arguments: when_true_arguments,
-                                    ..
-                                },
-                            otherwise:
-                                JumpTo {
-                                    arguments: otherwise_arguments,
-                                    ..
-                                },
-                        } => {
+                            condition: value, ..
+                        }
+                        | BlockTerminator::Return(value) => {
                             Self::value_uses_block(value, &mut frontier);
+                        }
+                        BlockTerminator::Jump(_) => {}
+                    }
+                }
+            }
 
-                            for argument in when_true_arguments {
-                                Self::value_uses_block(argument, &mut frontier);
+            if !function.is_empty() {
+                function.reverse();
+
+                functions.push(function);
+            }
+        }
+
+        for function in functions {
+            f(self, function);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn for_live_blocks<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut Self, BlockIndex),
+    {
+        let mut seen = HashSet::new();
+
+        let mut frontier = vec![BlockIndex(0)];
+
+        while let Some(block_to_explore) = frontier.pop() {
+            let ordered = self.postorder(block_to_explore);
+
+            for b in ordered {
+                if !seen.insert(b) {
+                    continue;
+                }
+
+                if let Some(block) = self.get_block(b) {
+                    for instruction in block.instructions() {
+                        match instruction {
+                            Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                            Instruction::Push(value) => {
+                                Self::value_uses_block(value, &mut frontier);
                             }
+                            Instruction::Unary {
+                                operand: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::Assign { value, to, .. }
+                            | Instruction::Call {
+                                callee: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::Access {
+                                of: value,
+                                temporary: to,
+                                ..
+                            }
+                            | Instruction::GetTag {
+                                of: value,
+                                temporary: to,
+                                ..
+                            } => {
+                                Self::value_uses_block(value, &mut frontier);
 
-                            for argument in otherwise_arguments {
-                                Self::value_uses_block(argument, &mut frontier);
+                                Self::value_uses_block(to, &mut frontier);
+                            }
+                            Instruction::Binary {
+                                lhs,
+                                rhs,
+                                temporary: to,
+                                ..
+                            } => {
+                                Self::value_uses_block(lhs, &mut frontier);
+                                Self::value_uses_block(rhs, &mut frontier);
+
+                                Self::value_uses_block(to, &mut frontier);
+                            }
+                            Instruction::AccessAssign { of, value, .. } => {
+                                Self::value_uses_block(of, &mut frontier);
+                                Self::value_uses_block(value, &mut frontier);
                             }
                         }
-                        BlockTerminator::Jump(JumpTo { arguments, .. }) => {
-                            for argument in arguments {
-                                Self::value_uses_block(argument, &mut frontier);
-                            }
+                    }
+
+                    match block.terminator() {
+                        BlockTerminator::Branch {
+                            condition: value, ..
                         }
+                        | BlockTerminator::Return(value) => {
+                            Self::value_uses_block(value, &mut frontier);
+                        }
+                        BlockTerminator::Jump(_) => {}
                     }
                 }
 
@@ -435,13 +465,9 @@ impl Ssa {
         F: FnMut(&mut Value),
     {
         if let Some(block) = self.get_block_mut(block_index) {
-            for parameter in block.parameters_mut() {
-                Self::nested_values(parameter, &mut f);
-            }
-
             for instruction in block.instructions_mut() {
                 match instruction {
-                    Instruction::NoOp => {}
+                    Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
                     Instruction::Push(value) => {
                         Self::nested_values(value, &mut f);
                     }
@@ -489,62 +515,32 @@ impl Ssa {
             }
 
             match block.terminator_mut() {
-                BlockTerminator::Return(value) => {
-                    Self::nested_values(value, &mut f);
-                }
                 BlockTerminator::Branch {
-                    condition: value,
-                    when_true:
-                        JumpTo {
-                            arguments: when_true_arguments,
-                            ..
-                        },
-                    otherwise:
-                        JumpTo {
-                            arguments: otherwise_arguments,
-                            ..
-                        },
-                } => {
+                    condition: value, ..
+                }
+                | BlockTerminator::Return(value) => {
                     Self::nested_values(value, &mut f);
-
-                    for argument in when_true_arguments {
-                        Self::nested_values(argument, &mut f);
-                    }
-
-                    for argument in otherwise_arguments {
-                        Self::nested_values(argument, &mut f);
-                    }
                 }
-                BlockTerminator::Jump(JumpTo { arguments, .. }) => {
-                    for argument in arguments {
-                        Self::nested_values(argument, &mut f);
-                    }
-                }
+                BlockTerminator::Jump(_) => {}
             }
         }
     }
 
     fn liveliness(&mut self) {
-        let mut living = vec![];
+        let addresses = self.find_addresses();
 
-        let mut addresses = vec![];
+        self.map_addresses(addresses.as_slice());
 
         let mut blocks_used = HashSet::new();
 
-        self.for_live_blocks(|ssa, b| {
+        self.for_live_blocks(|_, b| {
             blocks_used.insert(b);
-
-            addresses.append(&mut ssa.liveliness_recursive(b, &mut living));
         });
 
-        self.collect_arguments(&blocks_used, addresses.as_slice());
+        self.clean_dead_blocks(&blocks_used);
     }
 
-    fn collect_arguments(
-        &mut self,
-        blocks_used: &HashSet<BlockIndex>,
-        addresses: &[(Address, Address)],
-    ) {
+    fn clean_dead_blocks(&mut self, blocks_used: &HashSet<BlockIndex>) {
         for b in (0..(self.blocks.len())).map(BlockIndex) {
             if !blocks_used.contains(&b)
                 && let Some(block) = self.get_block_mut(b)
@@ -552,389 +548,108 @@ impl Ssa {
                 block.instructions.clear();
 
                 block.terminator = BlockTerminator::Return(Value::Runtime);
-
-                continue;
-            }
-
-            if let Some(block) = self.get_block(b)
-                && let BlockTerminator::Jump(jump_to) = &block.terminator
-            {
-                let arguments = self.collect_block_arguments(b, addresses, jump_to);
-
-                if let Some(block) = self.get_block_mut(b)
-                    && let BlockTerminator::Jump(jump_to) = &mut block.terminator
-                {
-                    jump_to.arguments = arguments;
-                }
-            }
-
-            if let Some(block) = self.get_block(b)
-                && let BlockTerminator::Branch { when_true, .. } = &block.terminator
-            {
-                let arguments = self.collect_block_arguments(b, addresses, when_true);
-
-                if let Some(block) = self.get_block_mut(b)
-                    && let BlockTerminator::Branch { when_true, .. } = &mut block.terminator
-                {
-                    when_true.arguments = arguments;
-                }
-            }
-
-            if let Some(block) = self.get_block(b)
-                && let BlockTerminator::Branch { otherwise, .. } = &block.terminator
-            {
-                let arguments = self.collect_block_arguments(b, addresses, otherwise);
-
-                if let Some(block) = self.get_block_mut(b)
-                    && let BlockTerminator::Branch { otherwise, .. } = &mut block.terminator
-                {
-                    otherwise.arguments = arguments;
-                }
             }
         }
     }
 
-    fn collect_block_arguments(
-        &self,
-        b: BlockIndex,
-        addresses: &[(Address, Address)],
-        jump_to: &JumpTo,
-    ) -> Vec<Value> {
-        let mut arguments = vec![];
-
-        if let Some(block) = self.get_block(b)
-            && let Some(successor) = self.get_block(jump_to.block_index)
-        {
-            for successor_parameter in &successor.parameters {
-                if let Value::Address(successor_parameter) = successor_parameter {
-                    if let Some(address) =
-                        addresses.iter().find_map(|(old_address, new_address)| {
-                            if successor_parameter.block_index == old_address.block_index
-                                && successor_parameter.offset == old_address.offset
-                                && new_address.block_index == b
-                            {
-                                Some(new_address)
-                            } else {
-                                None
-                            }
-                        })
-                    {
-                        arguments.push(Value::Address(*address));
-                    } else if let Some(passthrough) =
-                        block.parameters.iter().find_map(|parameter| {
-                            if let Value::Address(parameter) = parameter
-                                && parameter.block_index == successor_parameter.block_index
-                                && parameter.offset == successor_parameter.offset
-                            {
-                                Some(*parameter)
-                            } else {
-                                None
-                            }
-                        })
-                    {
-                        arguments.push(Value::Address(passthrough));
-                    }
-                }
-            }
-        }
-
-        arguments
-    }
-
-    fn liveliness_recursive(
-        &mut self,
-        block_index: BlockIndex,
-        living: &mut Vec<Address>,
-    ) -> Vec<(Address, Address)> {
+    fn find_addresses(&mut self) -> Vec<(Address, Address)> {
         let mut addresses = vec![];
 
-        if let Some(block) = self.get_block_mut(block_index) {
-            Self::accumulate_live_values(block_index, block, living, &mut addresses);
+        self.for_live_blocks(|ssa, block_index| {
+            if let Some(block) = ssa.get_block_mut(block_index) {
+                for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
+                    match instruction {
+                        Instruction::NoOp
+                        | Instruction::Push(_)
+                        | Instruction::AccessAssign { .. }
+                        | Instruction::ScopeStart
+                        | Instruction::PopN(_) => {}
+                        Instruction::Unary { temporary: to, .. }
+                        | Instruction::Call { temporary: to, .. }
+                        | Instruction::Access { temporary: to, .. }
+                        | Instruction::GetTag { temporary: to, .. }
+                        | Instruction::Binary { temporary: to, .. }
+                        | Instruction::Assign { to, .. } => {
+                            if let Value::Address(to) = to {
+                                let new_address = if to.block_index == block_index {
+                                    Address {
+                                        block_index,
+                                        offset: i,
+                                        version: 0,
+                                    }
+                                } else {
+                                    Address {
+                                        block_index: to.block_index,
+                                        offset: to.offset,
+                                        version: 0,
+                                    }
+                                };
 
-            let mut parameters: Vec<Value> = vec![];
+                                addresses.push((*to, new_address));
 
-            for live_from_elsewhere in &*living {
-                let live_from_elsewhere = *live_from_elsewhere;
-
-                if !parameters.iter().any(|parameter| {
-                    if let Value::Address(parameter) = parameter
-                        && parameter.block_index == live_from_elsewhere.block_index
-                        && parameter.offset == live_from_elsewhere.offset
-                    {
-                        true
-                    } else {
-                        false
+                                *to = new_address;
+                            }
+                        }
                     }
-                }) && live_from_elsewhere.block_index != block_index
-                    && self.parameter_in_use(block_index, &live_from_elsewhere, &mut HashSet::new())
-                {
-                    parameters.push(Value::Address(live_from_elsewhere));
                 }
             }
-
-            if let Some(block) = self.get_block_mut(block_index) {
-                block.parameters = parameters;
-
-                Self::values_to_arguments(block, living.as_slice(), addresses.as_slice());
-            }
-        }
+        });
 
         addresses
     }
 
-    fn accumulate_live_values(
-        block_index: BlockIndex,
-        block: &mut Block,
-        living: &mut Vec<Address>,
-        addresses: &mut Vec<(Address, Address)>,
-    ) {
-        for (i, instruction) in block.instructions_mut().iter_mut().enumerate().rev() {
-            match instruction {
-                Instruction::NoOp => {}
-                Instruction::Unary { operand: value, .. }
-                | Instruction::Push(value)
-                | Instruction::Call { callee: value, .. }
-                | Instruction::Access { of: value, .. }
-                | Instruction::GetTag { of: value, .. }
-                | Instruction::Assign { value, .. } => {
-                    Self::accumulate_live_value(block_index, living, value);
+    fn map_addresses(&mut self, addresses: &[(Address, Address)]) {
+        self.for_live_blocks(|ssa, block_index| {
+            if let Some(block) = ssa.get_block_mut(block_index) {
+                for instruction in block.instructions_mut() {
+                    match instruction {
+                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                        Instruction::Push(value)
+                        | Instruction::Unary { operand: value, .. }
+                        | Instruction::Call { callee: value, .. }
+                        | Instruction::Access { of: value, .. }
+                        | Instruction::GetTag { of: value, .. }
+                        | Instruction::Assign { value, .. } => {
+                            Self::map_address(value, addresses);
+                        }
+                        Instruction::Binary { lhs, rhs, .. } => {
+                            Self::map_address(lhs, addresses);
+                            Self::map_address(rhs, addresses);
+                        }
+                        Instruction::AccessAssign { of, value, .. } => {
+                            Self::map_address(of, addresses);
+                            Self::map_address(value, addresses);
+                        }
+                    }
                 }
-                Instruction::Binary { lhs, rhs, .. } => {
-                    Self::accumulate_live_value(block_index, living, lhs);
-                    Self::accumulate_live_value(block_index, living, rhs);
-                }
-                Instruction::AccessAssign { of, value, .. } => {
-                    Self::accumulate_live_value(block_index, living, of);
-                    Self::accumulate_live_value(block_index, living, value);
-                }
-            }
 
-            match instruction {
-                Instruction::NoOp | Instruction::Push(_) | Instruction::AccessAssign { .. } => {}
-                Instruction::Unary { temporary: to, .. }
-                | Instruction::Call { temporary: to, .. }
-                | Instruction::Access { temporary: to, .. }
-                | Instruction::GetTag { temporary: to, .. }
-                | Instruction::Binary { temporary: to, .. }
-                | Instruction::Assign { to, .. } => {
-                    let Value::Address(to) = to else {
-                        unreachable!("assignments are only to addresses");
-                    };
-
-                    let new_address = Address {
-                        block_index,
-                        offset: i,
-                        version: 0,
-                    };
-
-                    addresses.push((*to, new_address));
-
-                    *to = new_address;
-
-                    if to.block_index == block_index {
-                        living.retain(|address| {
-                            address.block_index != to.block_index || address.offset != to.offset
-                        });
+                match &mut block.terminator {
+                    BlockTerminator::Jump(_) => {}
+                    BlockTerminator::Branch {
+                        condition: value, ..
+                    }
+                    | BlockTerminator::Return(value) => {
+                        Self::map_address(value, addresses);
                     }
                 }
             }
-        }
-
-        match &mut block.terminator {
-            BlockTerminator::Jump(_) => {}
-            BlockTerminator::Branch {
-                condition: value, ..
-            }
-            | BlockTerminator::Return(value) => {
-                Self::accumulate_live_value(block_index, living, value);
-            }
-        }
+        });
     }
 
-    fn accumulate_live_value(block_index: BlockIndex, living: &mut Vec<Address>, value: &Value) {
+    fn map_address(value: &mut Value, addresses: &[(Address, Address)]) {
         match value {
-            Value::Address(address)
-                if address.block_index != block_index
-                    && !living.iter().any(|live_address| {
-                        live_address.block_index == address.block_index
-                            && live_address.offset == address.offset
-                    }) =>
-            {
-                living.push(*address);
-            }
-            Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
-                for address in values {
-                    Self::accumulate_live_value(block_index, living, address);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn value_uses_parameter(parameter: &Address, value: &Value) -> bool {
-        match value {
-            Value::Address(address)
-                if address.block_index == parameter.block_index
-                    && address.offset == parameter.offset =>
-            {
-                true
-            }
-            Value::Compound(values) | Value::TaggedCompound { fields: values, .. }
-                if values
+            Value::Address(address) => {
+                if let Some((_, new_address)) = addresses
                     .iter()
-                    .any(|value| Self::value_uses_parameter(parameter, value)) =>
-            {
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn parameter_in_use(
-        &self,
-        block_index: BlockIndex,
-        parameter: &Address,
-        seen: &mut HashSet<BlockIndex>,
-    ) -> bool {
-        if seen.insert(block_index)
-            && let Some(block) = self.get_block(block_index)
-        {
-            match &block.terminator {
-                BlockTerminator::Jump(_) => {}
-                BlockTerminator::Branch {
-                    condition: value, ..
-                }
-                | BlockTerminator::Return(value) => {
-                    if Self::value_uses_parameter(parameter, value) {
-                        return true;
-                    }
-                }
-            }
-
-            if block.parameters.iter().any(|block_parameter| {
-                if let Value::Address(block_parameter) = block_parameter
-                    && block_parameter.block_index == parameter.block_index
-                    && block_parameter.offset == parameter.offset
+                    .find(|(old_address, _)| old_address == address)
+                    .copied()
                 {
-                    true
-                } else {
-                    false
+                    *address = new_address;
                 }
-            }) {
-                return true;
-            }
-
-            for instruction in &block.instructions {
-                match instruction {
-                    Instruction::NoOp => {}
-                    Instruction::Unary { operand: value, .. }
-                    | Instruction::Assign { value, .. }
-                    | Instruction::Push(value)
-                    | Instruction::Call { callee: value, .. }
-                    | Instruction::Access { of: value, .. }
-                    | Instruction::GetTag { of: value, .. } => {
-                        if Self::value_uses_parameter(parameter, value) {
-                            return true;
-                        }
-                    }
-                    Instruction::Binary { lhs, rhs, .. } => {
-                        if Self::value_uses_parameter(parameter, lhs) {
-                            return true;
-                        }
-
-                        if Self::value_uses_parameter(parameter, rhs) {
-                            return true;
-                        }
-                    }
-                    Instruction::AccessAssign { of, value, .. } => {
-                        if Self::value_uses_parameter(parameter, of) {
-                            return true;
-                        }
-
-                        if Self::value_uses_parameter(parameter, value) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            let mut in_use = false;
-
-            self.for_children(block_index, |ssa, block_index| {
-                if !in_use {
-                    in_use = ssa.parameter_in_use(block_index, parameter, seen);
-                }
-            });
-
-            in_use
-        } else {
-            false
-        }
-    }
-
-    fn values_to_arguments(
-        block: &mut Block,
-        living: &[Address],
-        addresses: &[(Address, Address)],
-    ) {
-        for instruction in block.instructions_mut().iter_mut().rev() {
-            match instruction {
-                Instruction::NoOp => {}
-                Instruction::Unary { operand: value, .. }
-                | Instruction::Push(value)
-                | Instruction::Call { callee: value, .. }
-                | Instruction::Assign { value, .. }
-                | Instruction::Access { of: value, .. }
-                | Instruction::GetTag { of: value, .. } => {
-                    Self::value_to_argument(living, addresses, value);
-                }
-                Instruction::Binary { lhs, rhs, .. } => {
-                    Self::value_to_argument(living, addresses, lhs);
-                    Self::value_to_argument(living, addresses, rhs);
-                }
-                Instruction::AccessAssign { of, value, .. } => {
-                    Self::value_to_argument(living, addresses, of);
-                    Self::value_to_argument(living, addresses, value);
-                }
-            }
-        }
-
-        match &mut block.terminator {
-            BlockTerminator::Jump(_) => {}
-            BlockTerminator::Branch {
-                condition: value, ..
-            }
-            | BlockTerminator::Return(value) => {
-                Self::value_to_argument(living, addresses, value);
-            }
-        }
-    }
-
-    fn value_to_argument(living: &[Address], addresses: &[(Address, Address)], value: &mut Value) {
-        match value {
-            Value::Address(address)
-                if let Some(i) = living.iter().position(|live_from_elsewhere| {
-                    address.block_index == live_from_elsewhere.block_index
-                        && address.offset == live_from_elsewhere.offset
-                }) =>
-            {
-                *value = Value::BlockArgument(i);
-            }
-            Value::Address(address)
-                if let Some(new_address) =
-                    addresses.iter().find_map(|(old_address, new_address)| {
-                        if address == old_address {
-                            Some(*new_address)
-                        } else {
-                            None
-                        }
-                    }) =>
-            {
-                *address = new_address;
             }
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
-                    Self::value_to_argument(living, addresses, value);
+                    Self::map_address(value, addresses);
                 }
             }
             _ => {}

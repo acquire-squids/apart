@@ -53,6 +53,7 @@ pub enum Primitive {
     F64,
     Boolean,
     Unit,
+    String,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,11 @@ pub enum Type {
     Primitive(Spanned<Primitive>),
     Integer(Spanned<u64>),
     NegativeInteger(Spanned<i64>),
+    Any,
+    AnyOf {
+        alternatives: Vec<TypeIndex>,
+        span: Span,
+    },
     Unknown,
     Fn {
         parameters: Vec<TypeIndex>,
@@ -77,7 +83,7 @@ pub enum Type {
         variants: Vec<TypeIndex>,
         generics: Vec<TypeIndex>,
     },
-    AnyOf(Vec<(usize, TypeIndex)>),
+    Associations(Vec<(usize, TypeIndex)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -229,6 +235,7 @@ impl Type {
         !self.eq(types, other)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn to_string(&self, types: &[Self]) -> String {
         match self {
             Self::Primitive(p) => match p.kind() {
@@ -243,13 +250,38 @@ impl Type {
                 Primitive::F64 => "f64",
                 Primitive::Boolean => "bool",
                 Primitive::Unit => "unit",
+                Primitive::String => "String",
             }
             .to_string(),
             Self::Integer(_) | Self::NegativeInteger(_) => "i64".to_string(),
-            Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
+            Self::Any | Self::Unknown => "!!UNKNOWN TYPE!!".to_string(),
             Self::Generic(name) | Self::Existential(name) => name.kind().clone(),
-            Self::AnyOf(alternatives) => {
-                let mut buffer = "ALTERNATIVES!(".to_string();
+            Self::AnyOf { alternatives, .. } => {
+                let mut buffer = "ALTERNATIVE!(".to_string();
+
+                if let Some(first_alternative) = alternatives
+                    .first()
+                    .and_then(|type_index| types.get(usize::from(*type_index)))
+                {
+                    buffer.push_str(first_alternative.to_string(types).as_str());
+
+                    for alternative in alternatives
+                        .iter()
+                        .skip(1)
+                        .filter_map(|type_index| types.get(usize::from(*type_index)))
+                    {
+                        buffer.push_str(" | ");
+
+                        buffer.push_str(alternative.to_string(types).as_str());
+                    }
+                }
+
+                buffer.push(')');
+
+                buffer
+            }
+            Self::Associations(alternatives) => {
+                let mut buffer = "ASSOCIATIONS!(".to_string();
 
                 if let Some(first_alternative) = alternatives
                     .first()
@@ -523,6 +555,8 @@ impl TypeChecker {
 
         me.push_type(Type::Unknown);
 
+        me.push_type(Type::Any);
+
         // TODO: is it okay to use this span?
         me.push_type(Type::Integer(Spanned::new(0, Span::new(0, 0, 0))));
 
@@ -681,12 +715,30 @@ impl TypeChecker {
         )
     }
 
+    fn type_string(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::String)))
+                .expect("the string type should be initialized before all type checking"),
+        )
+    }
+
+    fn type_any(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Any))
+                .expect("the any type should be initialized before all type checking"),
+        )
+    }
+
     fn type_unknown(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
                 .position(|ty| matches!(ty, Type::Unknown))
-                .expect("The unknown type should be initialized before all type checking"),
+                .expect("the unknown type should be initialized before all type checking"),
         )
     }
 }
@@ -721,6 +773,10 @@ impl TypeChecker {
                         ))),
                         "unit" => self
                             .push_type(Type::Primitive(Spanned::new(Primitive::Unit, name.span()))),
+                        "String" => self.push_type(Type::Primitive(Spanned::new(
+                            Primitive::String,
+                            name.span(),
+                        ))),
                         _ => {
                             unreachable!("unknown primitive declared in core");
                         }
@@ -995,16 +1051,23 @@ impl TypeChecker {
         type_index: TypeIndex,
     ) -> TypeIndex {
         match &self[type_index] {
-            Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Unknown | Type::Generic(_) => type_index,
+            Type::Any | Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Unknown | Type::Generic(_) => type_index,
             Type::Existential(name) => {
                 originals.iter().rposition(|type_index| {
                     matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
                 }).map_or(type_index, |index| replacements[index])
             }
-            Type::AnyOf(alternatives) => {
+            Type::AnyOf { alternatives, span } => {
+                let span = *span;
+
+                let alternatives = alternatives.clone().into_iter().map(|type_index| self.substitute_type(originals, replacements, type_index)).collect::<Vec<_>>();
+
+                self.push_type(Type::AnyOf { alternatives, span })
+            }
+            Type::Associations(alternatives) => {
                 let alternatives = alternatives.clone().into_iter().map(|(index, type_index)| (index, self.substitute_type(originals, replacements, type_index))).collect::<Vec<_>>();
 
-                self.push_type(Type::AnyOf(alternatives))
+                self.push_type(Type::Associations(alternatives))
             }
             Type::Fn {
                 parameters,
@@ -1166,12 +1229,16 @@ impl TypeChecker {
 
                 self.type_map.insert(ty.span(), self.type_unknown());
             }
-            Type::Unknown => {}
+            Type::Any => unreachable!("normal type signatures are never Type::Any"),
+            Type::Unknown => unreachable!("normal type signatures are never Type::Unknown"),
             Type::Primitive(_) | Type::Generic(_) | Type::Existential(_) => {
                 self.type_map.insert(ty.span(), type_index);
             }
             Type::Fn { .. } => unreachable!("normal type signatures are never functions"),
-            Type::AnyOf(_) => unreachable!("normal type signatures are never Type::AnyOf"),
+            Type::AnyOf { .. } => unreachable!("normal type signatures are never Type::AnyOf"),
+            Type::Associations(_) => {
+                unreachable!("normal type signatures are never Type::Associations")
+            }
             Type::Product {
                 name,
                 fields,
@@ -1550,14 +1617,18 @@ impl TypeChecker {
 
                 let otherwise_type = self.infer(ast, names, *otherwise, context);
 
-                if let Err(error) = self.check(ast, names, *when_true, otherwise_type, context) {
-                    let otherwise_span = ast[*otherwise].span();
+                match self.check(ast, names, *when_true, otherwise_type, context) {
+                    Ok(when_true_type) => self.push_type(Type::AnyOf {
+                        alternatives: vec![when_true_type, otherwise_type],
+                        span,
+                    }),
+                    Err(error) => {
+                        let otherwise_span = ast[*otherwise].span();
 
-                    self.errors.push(Spanned::new(error, otherwise_span));
+                        self.errors.push(Spanned::new(error, otherwise_span));
 
-                    self.type_unknown()
-                } else {
-                    otherwise_type
+                        self.type_unknown()
+                    }
                 }
             }
             Expr::While {
@@ -1641,23 +1712,15 @@ impl TypeChecker {
             } => {
                 let target_type_index = self.infer(ast, names, *target, context);
 
-                let type_span = match self[target_type_index].clone() {
-                    Type::Integer(_) | Type::NegativeInteger(_) => {
-                        self.errors
-                            .push(Spanned::new(Error::TypeMustBeKnown, ast[*target].span()));
+                let type_span = self.get_type_span_or_error(target_type_index);
 
-                        return self.type_unknown();
-                    }
-                    Type::Unknown => return self.type_unknown(),
-                    Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } | Type::AnyOf(_) => {
-                        None
-                    }
-                    Type::Primitive(primitive) => Some(primitive.span()),
-                    Type::Product { name, .. } | Type::Sum { name, .. } => Some(name.span()),
-                };
+                if let Some(Err(error)) = type_span {
+                    return error;
+                }
 
-                let type_span =
-                    type_span.map(|type_span| names.get(type_span).unwrap_or(type_span));
+                let type_span = type_span
+                    .and_then(Result::ok)
+                    .map(|type_span| names.get(type_span).unwrap_or(type_span));
 
                 if let Some(type_span) = type_span
                     && let Expr::Name(name) = ast[*method].kind()
@@ -1687,7 +1750,7 @@ impl TypeChecker {
                             })
                             .collect::<Vec<_>>();
 
-                        let type_index = self.push_type(Type::AnyOf(valid_associations));
+                        let type_index = self.push_type(Type::Associations(valid_associations));
 
                         self.type_map.insert(ast[*method].span(), type_index);
                     } else if let Type::Product { fields, .. } = &self[target_type_index]
@@ -1766,12 +1829,16 @@ impl TypeChecker {
                     self.errors.push(Spanned::new(error, span));
                 }
 
-                self.type_unit()
+                self.type_any()
             }
             Expr::AsUnit(expr) => {
                 self.infer(ast, names, *expr, context);
 
-                self.type_unit()
+                if let Expr::Return(_) = ast[*expr].kind() {
+                    self.type_any()
+                } else {
+                    self.type_unit()
+                }
             }
             Expr::Product { name, fields } => {
                 if let Type::Product {
@@ -1868,7 +1935,7 @@ impl TypeChecker {
             } => {
                 let expr_type_index = self.infer(ast, names, *expr, context);
 
-                let mut match_type_index = None;
+                let mut match_type_index = vec![];
 
                 for case in cases {
                     {
@@ -1893,21 +1960,31 @@ impl TypeChecker {
 
                         let case_type_index = self.infer(ast, names, case.case(), context);
 
-                        if match_type_index.is_none()
-                            && !matches!(self[case_type_index], Type::Unknown)
-                        {
-                            match_type_index = Some(case_type_index);
-                        } else if let Some(match_type_index) = match_type_index
-                            && let Err(type_index) =
-                                self.check_inferred(case_type_index, match_type_index, context)
-                            && !matches!(self[type_index], Type::Unknown)
-                        {
-                            let error = Spanned::new(
-                                self.type_mismatch_error(type_index, match_type_index),
-                                ast[case.case()].span(),
-                            );
+                        for other_case_type_index in match_type_index.clone() {
+                            match self.check_inferred(
+                                case_type_index,
+                                other_case_type_index,
+                                context,
+                            ) {
+                                Ok(type_index) => {
+                                    match_type_index.push(type_index);
+                                }
+                                Err(type_index) => {
+                                    if !matches!(self[type_index], Type::Unknown) {
+                                        let error = Spanned::new(
+                                            self.type_mismatch_error(
+                                                type_index,
+                                                other_case_type_index,
+                                            ),
+                                            ast[case.case()].span(),
+                                        );
 
-                            self.errors.push(error);
+                                        self.errors.push(error);
+
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1918,29 +1995,62 @@ impl TypeChecker {
 
                 let fallback_type_index = self.infer(ast, names, *fallback, context);
 
-                if match_type_index.is_none() && !matches!(self[fallback_type_index], Type::Unknown)
-                {
-                    match_type_index = Some(fallback_type_index);
-                } else if let Some(match_type_index) = match_type_index
-                    && let Err(type_index) =
-                        self.check_inferred(fallback_type_index, match_type_index, context)
-                    && !matches!(self[type_index], Type::Unknown)
-                {
-                    let error = Spanned::new(
-                        self.type_mismatch_error(type_index, match_type_index),
-                        ast[*fallback].span(),
-                    );
+                for other_case_type_index in match_type_index.clone() {
+                    match self.check_inferred(fallback_type_index, other_case_type_index, context) {
+                        Ok(type_index) => {
+                            match_type_index.push(type_index);
+                        }
+                        Err(type_index) => {
+                            if !matches!(self[type_index], Type::Unknown) {
+                                let error = Spanned::new(
+                                    self.type_mismatch_error(type_index, other_case_type_index),
+                                    ast[*fallback].span(),
+                                );
 
-                    self.errors.push(error);
+                                self.errors.push(error);
+
+                                break;
+                            }
+                        }
+                    }
                 }
 
-                match_type_index.unwrap_or_else(|| self.type_unknown())
+                self.push_type(Type::AnyOf {
+                    alternatives: match_type_index,
+                    span,
+                })
             }
+            Expr::String(_) => self.type_string(),
         };
 
         self.type_map.insert(span, type_index);
 
         type_index
+    }
+
+    fn get_type_span_or_error(&mut self, type_index: TypeIndex) -> Option<Result<Span, TypeIndex>> {
+        match &self[type_index] {
+            Type::Integer(value) => {
+                self.errors
+                    .push(Spanned::new(Error::TypeMustBeKnown, value.span()));
+
+                Some(Err(self.type_unknown()))
+            }
+            Type::NegativeInteger(value) => {
+                self.errors
+                    .push(Spanned::new(Error::TypeMustBeKnown, value.span()));
+
+                Some(Err(self.type_unknown()))
+            }
+            Type::Unknown | Type::Any => Some(Err(self.type_unknown())),
+            Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } | Type::Associations(_) => {
+                None
+            }
+            Type::AnyOf { alternatives, .. } => self
+                .get_type_span_or_error(*alternatives.first().expect("Type::AnyOf is never empty")),
+            Type::Primitive(primitive) => Some(Ok(primitive.span())),
+            Type::Product { name, .. } | Type::Sum { name, .. } => Some(Ok(name.span())),
+        }
     }
 
     fn infer_call(
@@ -1954,11 +2064,11 @@ impl TypeChecker {
             function @ Type::Fn { .. } => {
                 vec![(0, function.clone())]
             }
-            Type::AnyOf(alternatives) => alternatives
+            Type::Associations(alternatives) => alternatives
                 .iter()
                 .filter_map(|(index, type_index)| match &self[*type_index] {
-                    Type::AnyOf(_) => {
-                        unreachable!("Type::AnyOf should never be nested");
+                    Type::Associations(_) => {
+                        unreachable!("Type::Associations should never be nested");
                     }
                     Type::Fn { .. } => Some((*index, self[*type_index].clone())),
                     _ => None,
@@ -2134,7 +2244,7 @@ impl TypeChecker {
                         })
                         .collect::<Vec<_>>();
 
-                    self.push_type(Type::AnyOf(valid_associations))
+                    self.push_type(Type::Associations(valid_associations))
                 } else if let Some(Type::Sum { variants, .. }) = self.get_type(names[lhs_span]) {
                     let rhs_span = ast[rhs].span();
 
@@ -2511,10 +2621,11 @@ impl TypeChecker {
         context: &mut Vec<(String, TypeIndex)>,
     ) -> Result<TypeIndex, TypeIndex> {
         match (&self[inferred], &self[should_be]) {
+            (Type::Any, _) => Ok(should_be),
             (Type::Unknown, _) | (_, Type::Unknown) => Ok(self.type_unknown()),
             (
                 Type::Integer(_) | Type::NegativeInteger(_),
-                Type::Integer(_) | Type::NegativeInteger(_),
+                Type::Any | Type::Integer(_) | Type::NegativeInteger(_),
             ) => Ok(inferred),
             (Type::Integer(value), Type::Primitive(b)) => {
                 let value_span = value.span();
@@ -2579,6 +2690,30 @@ impl TypeChecker {
                 .inspect(|type_index| {
                     self.type_map.insert(value_span, *type_index);
                 })
+            }
+            (_, Type::AnyOf { alternatives, span }) => {
+                let alternatives = alternatives.clone();
+                let span = *span;
+
+                for alternative in alternatives {
+                    self.check_inferred(inferred, alternative, context)?;
+                }
+
+                self.type_map.insert(span, inferred);
+
+                Ok(inferred)
+            }
+            (Type::AnyOf { alternatives, span }, _) => {
+                let alternatives = alternatives.clone();
+                let span = *span;
+
+                for alternative in alternatives {
+                    self.check_inferred(should_be, alternative, context)?;
+                }
+
+                self.type_map.insert(span, should_be);
+
+                Ok(should_be)
             }
             (Type::Primitive(a), Type::Primitive(b)) => {
                 if a.kind() == b.kind() {
@@ -2799,19 +2934,31 @@ impl TypeChecker {
             | Type::NegativeInteger(_)
             | Type::Primitive(_)
             | Type::Generic(_)
-            | Type::Unknown => type_index,
+            | Type::Unknown
+            | Type::Any => type_index,
             Type::Existential(name) => context
                 .iter()
                 .rfind(|(context_name, _)| context_name == name.kind())
                 .map_or(type_index, |(_, type_index)| *type_index),
-            Type::AnyOf(alternatives) => {
+            Type::AnyOf { alternatives, span } => {
+                let span = *span;
+
+                let alternatives = alternatives
+                    .clone()
+                    .into_iter()
+                    .map(|type_index| self.apply(type_index, context))
+                    .collect::<Vec<_>>();
+
+                self.push_type(Type::AnyOf { alternatives, span })
+            }
+            Type::Associations(alternatives) => {
                 let alternatives = alternatives
                     .clone()
                     .into_iter()
                     .map(|(index, type_index)| (index, self.apply(type_index, context)))
                     .collect::<Vec<_>>();
 
-                self.push_type(Type::AnyOf(alternatives))
+                self.push_type(Type::Associations(alternatives))
             }
             Type::Fn {
                 parameters,
@@ -2926,6 +3073,9 @@ impl TypeChecker {
             .inspect(|type_index| {
                 self.type_map.insert(pattern.span(), *type_index);
             }),
+            (Pattern::String(text), Type::Primitive(primitive)) if matches!(primitive.kind(), Primitive::String) => {
+                Ok(self.type_string())
+            }
             (Pattern::Boolean(_), Type::Primitive(primitive))
                 if matches!(primitive.kind(), Primitive::Boolean) =>
             {

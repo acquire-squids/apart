@@ -26,6 +26,13 @@ pub fn compile(compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
     );
 
     bytecode.extend_from_slice(
+        u64::try_from(compiled.result().main_max_stack_size())
+            .expect("128-bit usize not allowed!  sorry!")
+            .to_le_bytes()
+            .as_slice(),
+    );
+
+    bytecode.extend_from_slice(
         u64::try_from(compiled.result().blocks().len())
             .expect("128-bit usize not allowed!  sorry!")
             .to_le_bytes()
@@ -44,7 +51,7 @@ pub fn compile(compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
     for (b, block) in ssa.blocks().iter().enumerate() {
         let ip = bytecode.len();
 
-        bytecode[(16 + b * 8)..(16 + b * 8 + 8)].copy_from_slice(
+        bytecode[(24 + b * 8)..(24 + b * 8 + 8)].copy_from_slice(
             u64::try_from(ip)
                 .expect("128-bit usize not allowed!  sorry!")
                 .to_le_bytes()
@@ -65,6 +72,7 @@ crate::int_enum! {
     Binary => 0x40,
     Assign => 0x60,
     Push => 0x80,
+    PopN => 0x90,
     Call => 0xA0,
     Access => 0xB0,
     AccessAssign => 0xB1,
@@ -98,6 +106,7 @@ crate::int_enum! {
     U32 => 0x0E,
     I32 => 0x0F,
     U64 => 0x10,
+    String => 0x11,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,7 +122,10 @@ pub enum CopyableValue {
     F64(f64),
     Boolean(bool),
     Unit,
-    Fn(BlockIndex),
+    Fn {
+        address: usize,
+        max_stack_size: usize,
+    },
     NativeFn(NativeFn),
     ValueIndex(ValueIndex),
 }
@@ -130,6 +142,8 @@ pub enum Value {
         fields: Vec<CopyableValue>,
         tag: u16,
     },
+    MakeString(String),
+    String(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -247,27 +261,27 @@ impl Assemble for IrInstruction<IrValue> {
 
                 bytes
             }
-            Self::Jump(destination, arguments) => {
+            Self::PopN(count) => {
+                let mut bytes = vec![u8::from(OpCode::PopN)];
+
+                bytes.extend_from_slice(
+                    u64::try_from(*count)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes
+            }
+            Self::Jump(destination) => {
                 let mut bytes = vec![u8::from(OpCode::Jump)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(16 + usize::from(*destination) * 8)
+                    u64::try_from(24 + usize::from(*destination) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
                 );
-
-                bytes.extend_from_slice(
-                    u64::try_from(arguments.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (to, argument) in arguments {
-                    bytes.append(&mut to.to_bytes(compiled));
-                    bytes.append(&mut argument.to_bytes(compiled));
-                }
 
                 bytes
             }
@@ -281,42 +295,18 @@ impl Assemble for IrInstruction<IrValue> {
                 bytes.append(&mut condition.to_bytes(compiled));
 
                 bytes.extend_from_slice(
-                    u64::try_from(16 + usize::from(when_true.0) * 8)
+                    u64::try_from(24 + usize::from(*when_true) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
                 );
 
                 bytes.extend_from_slice(
-                    u64::try_from(16 + usize::from(otherwise.0) * 8)
+                    u64::try_from(24 + usize::from(*otherwise) * 8)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
                 );
-
-                bytes.extend_from_slice(
-                    u64::try_from(when_true.1.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (to, argument) in &when_true.1 {
-                    bytes.append(&mut to.to_bytes(compiled));
-                    bytes.append(&mut argument.to_bytes(compiled));
-                }
-
-                bytes.extend_from_slice(
-                    u64::try_from(otherwise.1.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
-
-                for (to, argument) in &otherwise.1 {
-                    bytes.append(&mut to.to_bytes(compiled));
-                    bytes.append(&mut argument.to_bytes(compiled));
-                }
 
                 bytes
             }
@@ -450,11 +440,35 @@ impl Assemble for IrValue {
             Self::Unit => {
                 vec![u8::from(TypeId::Unit)]
             }
-            Self::Fn(block_index) => {
+            Self::String(text) => {
+                let mut bytes = vec![u8::from(TypeId::String)];
+
+                bytes.extend_from_slice(
+                    u64::try_from(text.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes.extend_from_slice(text.as_bytes());
+
+                bytes
+            }
+            Self::Fn {
+                block_index,
+                max_stack_size,
+            } => {
                 let mut bytes = vec![u8::from(TypeId::Fn)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(16 + usize::from(*block_index) * 8)
+                    u64::try_from(24 + usize::from(*block_index) * 8)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes.extend_from_slice(
+                    u64::try_from(*max_stack_size)
                         .expect("128-bit usize not allowed!  sorry!")
                         .to_le_bytes()
                         .as_slice(),
@@ -523,9 +537,9 @@ pub trait Instructive: Sized {
 
     #[allow(clippy::too_many_lines)]
     fn read(&mut self, bytes: &[u8]) {
-        *self.ip_mut() = 16;
+        *self.ip_mut() = 24;
 
-        let block_count = bytes[8..16]
+        let block_count = bytes[16..24]
             .as_array::<8>()
             .map(|array| u64::from_le_bytes(*array))
             .and_then(|index| usize::try_from(index).ok())
@@ -642,6 +656,17 @@ pub trait Instructive: Sized {
                     self.instructions_mut()
                         .push(IrInstruction::GetTag { of, to });
                 }
+                OpCode::PopN => {
+                    let count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
+                        .as_array::<8>()
+                        .map(|array| u64::from_le_bytes(*array))
+                        .and_then(|arity| usize::try_from(arity).ok())
+                        .expect("call arity is not a valid usize");
+
+                    *self.ip_mut() += 8;
+
+                    self.instructions_mut().push(IrInstruction::PopN(count));
+                }
                 OpCode::Call => {
                     let callee = ValueOrLocation::from_bytes(bytes, self);
 
@@ -667,26 +692,8 @@ pub trait Instructive: Sized {
 
                     *self.ip_mut() += 8;
 
-                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("argument count is not a valid usize");
-
-                    *self.ip_mut() += 8;
-
-                    let mut arguments = vec![];
-
-                    for _ in 0..argument_count {
-                        let to = Location::from_bytes(bytes, self);
-
-                        let value = ValueOrLocation::from_bytes(bytes, self);
-
-                        arguments.push((to, value));
-                    }
-
                     self.instructions_mut()
-                        .push(IrInstruction::Jump(BlockIndex(to), arguments));
+                        .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::Branch => {
                     let condition = ValueOrLocation::from_bytes(bytes, self);
@@ -707,45 +714,9 @@ pub trait Instructive: Sized {
 
                     *self.ip_mut() += 8;
 
-                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("argument count is not a valid usize");
+                    let when_true = BlockIndex(when_true);
 
-                    *self.ip_mut() += 8;
-
-                    let mut arguments = vec![];
-
-                    for _ in 0..argument_count {
-                        let to = Location::from_bytes(bytes, self);
-
-                        let value = ValueOrLocation::from_bytes(bytes, self);
-
-                        arguments.push((to, value));
-                    }
-
-                    let when_true = (BlockIndex(when_true), arguments);
-
-                    let argument_count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|argument_count| usize::try_from(argument_count).ok())
-                        .expect("argument count is not a valid usize");
-
-                    *self.ip_mut() += 8;
-
-                    let mut arguments = vec![];
-
-                    for _ in 0..argument_count {
-                        let to = Location::from_bytes(bytes, self);
-
-                        let value = ValueOrLocation::from_bytes(bytes, self);
-
-                        arguments.push((to, value));
-                    }
-
-                    let otherwise = (BlockIndex(otherwise), arguments);
+                    let otherwise = BlockIndex(otherwise);
 
                     self.instructions_mut().push(IrInstruction::Branch {
                         condition,
@@ -763,7 +734,7 @@ pub trait Instructive: Sized {
 
         for instruction in self.instructions_mut() {
             match instruction {
-                IrInstruction::NoOp => {}
+                IrInstruction::NoOp | IrInstruction::PopN(_) => {}
                 IrInstruction::Unary { operand: value, .. }
                 | IrInstruction::Assign { value, .. }
                 | IrInstruction::Push(value)
@@ -771,8 +742,8 @@ pub trait Instructive: Sized {
                 | IrInstruction::GetTag { of: value, .. }
                 | IrInstruction::Call { callee: value, .. }
                 | IrInstruction::Return(value) => {
-                    if let ValueOrLocation::Value(CopyableValue::Fn(address)) = value {
-                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
+                    if let ValueOrLocation::Value(CopyableValue::Fn { address, .. }) = value {
+                        *address = block_addresses[(*address - 24) / 8];
                     }
                 }
                 IrInstruction::Binary { lhs, rhs, .. }
@@ -781,50 +752,29 @@ pub trait Instructive: Sized {
                     value: rhs,
                     ..
                 } => {
-                    if let ValueOrLocation::Value(CopyableValue::Fn(address)) = lhs {
-                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
+                    if let ValueOrLocation::Value(CopyableValue::Fn { address, .. }) = lhs {
+                        *address = block_addresses[(*address - 24) / 8];
                     }
 
-                    if let ValueOrLocation::Value(CopyableValue::Fn(address)) = rhs {
-                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
+                    if let ValueOrLocation::Value(CopyableValue::Fn { address, .. }) = rhs {
+                        *address = block_addresses[(*address - 24) / 8];
                     }
                 }
-                IrInstruction::Jump(address, arguments) => {
-                    *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
-
-                    for (_, argument) in arguments {
-                        if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address =
-                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
-                        }
-                    }
+                IrInstruction::Jump(address) => {
+                    *address = BlockIndex(block_addresses[(usize::from(*address) - 24) / 8]);
                 }
                 IrInstruction::Branch {
                     condition,
                     when_true,
                     otherwise,
                 } => {
-                    if let ValueOrLocation::Value(CopyableValue::Fn(address)) = condition {
-                        *address = BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
+                    if let ValueOrLocation::Value(CopyableValue::Fn { address, .. }) = condition {
+                        *address = block_addresses[(*address - 24) / 8];
                     }
 
-                    when_true.0 = BlockIndex(block_addresses[(usize::from(when_true.0) - 16) / 8]);
+                    *when_true = BlockIndex(block_addresses[(usize::from(*when_true) - 24) / 8]);
 
-                    otherwise.0 = BlockIndex(block_addresses[(usize::from(otherwise.0) - 16) / 8]);
-
-                    for (_, argument) in &mut when_true.1 {
-                        if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address =
-                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
-                        }
-                    }
-
-                    for (_, argument) in &mut otherwise.1 {
-                        if let ValueOrLocation::Value(CopyableValue::Fn(address)) = argument {
-                            *address =
-                                BlockIndex(block_addresses[(usize::from(*address) - 16) / 8]);
-                        }
-                    }
+                    *otherwise = BlockIndex(block_addresses[(usize::from(*otherwise) - 24) / 8]);
                 }
             }
         }
@@ -1066,16 +1016,54 @@ where
                 .expect("a boolean could not be created from its byte"),
             ),
             Ok(TypeId::Unit) => Self::Unit,
-            Ok(TypeId::Fn) => Self::Fn(BlockIndex(
-                bytes[(*instructive.ip_mut())..{
+            Ok(TypeId::String) => {
+                let text = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|length| usize::try_from(length).ok())
+                    .and_then(|length| {
+                        String::from_utf8(
+                            bytes[(*instructive.ip_mut())..{
+                                *instructive.ip_mut() += length;
+                                *instructive.ip_mut()
+                            }]
+                                .to_vec(),
+                        )
+                        .ok()
+                    })
+                    .expect("a string wasn't valid utf-8");
+
+                instructive.values_mut().push(Value::MakeString(text));
+
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
+            }
+            Ok(TypeId::Fn) => {
+                let block_index = bytes[(*instructive.ip_mut())..{
                     *instructive.ip_mut() += 8;
                     *instructive.ip_mut()
                 }]
                     .as_array::<8>()
                     .map(|array| u64::from_le_bytes(*array))
                     .and_then(|address| usize::try_from(address).ok())
-                    .expect("a function was not a valid usize"),
-            )),
+                    .expect("a function was not a valid usize");
+
+                let max_stack_size = bytes[(*instructive.ip_mut())..{
+                    *instructive.ip_mut() += 8;
+                    *instructive.ip_mut()
+                }]
+                    .as_array::<8>()
+                    .map(|array| u64::from_le_bytes(*array))
+                    .and_then(|address| usize::try_from(address).ok())
+                    .expect("a function was not a valid usize");
+
+                Self::Fn {
+                    address: block_index,
+                    max_stack_size,
+                }
+            }
             Ok(TypeId::NativeFn) => Self::NativeFn(
                 bytes[(*instructive.ip_mut())..{
                     *instructive.ip_mut() += 2;

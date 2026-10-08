@@ -1,0 +1,7 @@
+funky main() {
+	print_i8(if true {
+		21
+	} else {
+		38
+	});
+}

@@ -24,12 +24,28 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
     let addresses_used = collect_used_addresses(ssa);
 
-    for (b, block) in ssa.blocks_mut().iter_mut().enumerate() {
-        for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
-            if !addresses_used.contains(&(BlockIndex(b), i)) {
-                *instruction = Instruction::NoOp;
+    for block in ssa.blocks_mut() {
+        for instruction in block.instructions_mut() {
+            match instruction {
+                Instruction::NoOp
+                | Instruction::Push(_)
+                | Instruction::AccessAssign { .. }
+                | Instruction::Call { .. }
+                | Instruction::ScopeStart
+                | Instruction::PopN(_) => {}
+                Instruction::Unary { temporary: to, .. }
+                | Instruction::Assign { to, .. }
+                | Instruction::Access { temporary: to, .. }
+                | Instruction::GetTag { temporary: to, .. }
+                | Instruction::Binary { temporary: to, .. } => {
+                    if let Value::Address(to_address) = to
+                        && !addresses_used.contains(to_address)
+                    {
+                        *instruction = Instruction::NoOp;
 
-                changed = true;
+                        changed = true;
+                    }
+                }
             }
         }
     }
@@ -40,10 +56,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 BlockTerminator::Return(_) => {}
                 BlockTerminator::Jump(destination) => {
                     if let Some(destination_block) = block_remap
-                        .get(usize::from(destination.block()))
+                        .get(usize::from(*destination))
                         .and_then(|remap| *remap)
                     {
-                        *destination.block_mut() = destination_block;
+                        *destination = destination_block;
                     }
                 }
                 BlockTerminator::Branch {
@@ -52,17 +68,17 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     ..
                 } => {
                     if let Some(when_true_block) = block_remap
-                        .get(usize::from(when_true.block()))
+                        .get(usize::from(*when_true))
                         .and_then(|remap| *remap)
                     {
-                        *when_true.block_mut() = when_true_block;
+                        *when_true = when_true_block;
                     }
 
                     if let Some(otherwise_block) = block_remap
-                        .get(usize::from(otherwise.block()))
+                        .get(usize::from(*otherwise))
                         .and_then(|remap| *remap)
                     {
-                        *otherwise.block_mut() = otherwise_block;
+                        *otherwise = otherwise_block;
                     }
                 }
             }
@@ -108,10 +124,10 @@ fn collect_used_blocks(ssa: &mut Ssa) -> HashSet<BlockIndex> {
     blocks_used
 }
 
-fn value_uses_address(addresses_used: &mut HashSet<(BlockIndex, usize)>, value: &Value) {
+fn value_uses_address(addresses_used: &mut HashSet<Address>, value: &Value) {
     match value {
         Value::Address(address) => {
-            addresses_used.insert((address.block_index, address.offset));
+            addresses_used.insert(*address);
         }
         Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
             for value in values {
@@ -122,25 +138,20 @@ fn value_uses_address(addresses_used: &mut HashSet<(BlockIndex, usize)>, value: 
     }
 }
 
-fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
+fn collect_used_addresses(ssa: &Ssa) -> HashSet<Address> {
     let mut addresses_used = HashSet::new();
 
-    for (b, block) in ssa.blocks().iter().enumerate() {
-        for (i, instruction) in block.instructions().iter().enumerate() {
+    for block in ssa.blocks() {
+        for instruction in block.instructions() {
             match instruction {
-                Instruction::NoOp => {
-                    addresses_used.insert((BlockIndex(b), i));
-                }
-                Instruction::Unary { operand: value, .. } | Instruction::Assign { value, .. } => {
-                    value_uses_address(&mut addresses_used, value);
-                }
+                Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
                 Instruction::Push(value)
+                | Instruction::Unary { operand: value, .. }
+                | Instruction::Assign { value, .. }
                 | Instruction::Call { callee: value, .. }
                 | Instruction::Access { of: value, .. }
                 | Instruction::GetTag { of: value, .. } => {
                     value_uses_address(&mut addresses_used, value);
-
-                    addresses_used.insert((BlockIndex(b), i));
                 }
                 Instruction::Binary { lhs, rhs, .. } => {
                     value_uses_address(&mut addresses_used, lhs);
@@ -149,36 +160,18 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<(BlockIndex, usize)> {
                 Instruction::AccessAssign { of, value, .. } => {
                     value_uses_address(&mut addresses_used, of);
                     value_uses_address(&mut addresses_used, value);
-
-                    addresses_used.insert((BlockIndex(b), i));
                 }
             }
         }
 
         match block.terminator() {
-            BlockTerminator::Return(value) => {
+            BlockTerminator::Branch {
+                condition: value, ..
+            }
+            | BlockTerminator::Return(value) => {
                 value_uses_address(&mut addresses_used, value);
             }
-            BlockTerminator::Jump(jump_to) => {
-                for argument in jump_to.arguments() {
-                    value_uses_address(&mut addresses_used, argument);
-                }
-            }
-            BlockTerminator::Branch {
-                condition,
-                when_true,
-                otherwise,
-            } => {
-                value_uses_address(&mut addresses_used, condition);
-
-                for argument in when_true.arguments() {
-                    value_uses_address(&mut addresses_used, argument);
-                }
-
-                for argument in otherwise.arguments() {
-                    value_uses_address(&mut addresses_used, argument);
-                }
-            }
+            BlockTerminator::Jump(_) => {}
         }
     }
 

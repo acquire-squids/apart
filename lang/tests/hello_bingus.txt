@@ -1,0 +1,39 @@
+funky main() {
+	let
+		greeting = "Hello, world!",
+		needle = "world",
+		name = "Bingus",
+		truncate_at = 0,
+	in {
+		while greeting.length_string() > truncate_at {
+			match greeting
+				.slice_string(
+					greeting.floor_boundary_string(truncate_at),
+					greeting.ceil_boundary_string(
+						truncate_at + needle.length_string()
+					)
+			) {
+				Option~Some { value, } => {
+					if value == needle {
+						greeting.truncate_string(
+							greeting.floor_boundary_string(truncate_at),
+						);
+
+						greeting.extend_string(name);
+
+						greeting.extend_string("!");
+
+						print_string(greeting);
+
+						return {};
+					}
+				}
+				else => {}
+			}
+
+			truncate_at = greeting.ceil_boundary_string(truncate_at + 1);
+		}
+	};
+
+	print_string("Who are you, again?");
+}

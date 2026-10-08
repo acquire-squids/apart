@@ -876,7 +876,9 @@ impl NameResolver {
             } => {
                 self.resolve_path_expr(ast, expr);
             }
-            Expr::Match { cases, .. } => {
+            Expr::Match {
+                cases, fallback, ..
+            } => {
                 for case in cases {
                     self.variable_scopes.push(HashMap::new());
 
@@ -886,6 +888,8 @@ impl NameResolver {
 
                     self.variable_scopes.pop();
                 }
+
+                self.resolve_expr(ast, *fallback, false);
             }
             _ => {
                 ast.for_children_exprs(expr, |ast, expr| {
@@ -1261,7 +1265,8 @@ impl NameResolver {
             Pattern::Integer(_)
             | Pattern::NegativeInteger(_)
             | Pattern::Boolean(_)
-            | Pattern::Unit => {}
+            | Pattern::Unit
+            | Pattern::String(_) => {}
             Pattern::Product { path, fields } => {
                 let path_span = path
                     .first()

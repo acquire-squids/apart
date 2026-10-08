@@ -23,6 +23,7 @@ print_optimized = []
 print_allocated = []
 print_lowir = []
 stress_gc = []
+step = []
 
 [[bin]]
 name = "apart_c"

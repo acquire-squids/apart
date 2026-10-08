@@ -2,7 +2,7 @@ use crate::{
     Compiled,
     basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue},
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
-    ssa::{BlockTerminator, Ssa},
+    ssa::{Block as IrBlock, BlockTerminator, Ssa},
 };
 
 use std::fmt;
@@ -29,20 +29,31 @@ pub fn lower(compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
     Ir {
         blocks,
         max_registers: compiled.result().max_registers(),
+        main_max_stack_size: compiled
+            .result()
+            .blocks()
+            .first()
+            .map_or(0, IrBlock::max_stack_size),
     }
 }
 
 pub struct Ir<T> {
     blocks: Vec<Block<T>>,
     max_registers: usize,
+    main_max_stack_size: usize,
 }
 
 impl<T> Ir<T> {
     #[must_use]
-    pub const fn new(blocks: Vec<Block<T>>, max_registers: usize) -> Self {
+    pub const fn new(
+        blocks: Vec<Block<T>>,
+        max_registers: usize,
+        main_max_stack_size: usize,
+    ) -> Self {
         Self {
             blocks,
             max_registers,
+            main_max_stack_size,
         }
     }
 
@@ -62,6 +73,12 @@ impl<T> Ir<T> {
     #[must_use]
     pub const fn max_registers(&self) -> usize {
         self.max_registers
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn main_max_stack_size(&self) -> usize {
+        self.main_max_stack_size
     }
 }
 
@@ -123,6 +140,13 @@ crate::int_enum! {
     PrintU32 => 0x00_08,
     PrintI32 => 0x00_09,
     PrintU64 => 0x00_0A,
+    PrintString => 0x00_0B,
+    ExtendString => 0x00_20,
+    SliceString => 0x00_21,
+    LengthString => 0x00_22,
+    TruncateString => 0x0023,
+    FloorBoundaryString => 0x0024,
+    CeilBoundaryString => 0x0025,
 }
 
 crate::int_enum! {
@@ -161,7 +185,11 @@ pub enum Value {
     F64(f64),
     Boolean(bool),
     Unit,
-    Fn(BlockIndex),
+    String(String),
+    Fn {
+        block_index: BlockIndex,
+        max_stack_size: usize,
+    },
     NativeFn(NativeFn),
     Compound(Vec<ValueOrLocation<Self>>),
     TaggedCompound {
@@ -238,11 +266,12 @@ pub enum Instruction<T> {
         of: ValueOrLocation<T>,
         to: Location,
     },
-    Jump(BlockIndex, Vec<(Location, ValueOrLocation<T>)>),
+    PopN(usize),
+    Jump(BlockIndex),
     Branch {
         condition: ValueOrLocation<T>,
-        when_true: (BlockIndex, Vec<(Location, ValueOrLocation<T>)>),
-        otherwise: (BlockIndex, Vec<(Location, ValueOrLocation<T>)>),
+        when_true: BlockIndex,
+        otherwise: BlockIndex,
     },
     Return(ValueOrLocation<T>),
 }
@@ -254,45 +283,15 @@ fn lower_block_terminator(
 ) -> Instruction<Value> {
     match block_terminator {
         BlockTerminator::Return(value) => Instruction::Return(lower_value(compiled, value)),
-        BlockTerminator::Jump(jump_to) => Instruction::Jump(
-            jump_to.block(),
-            jump_to
-                .arguments()
-                .iter()
-                .zip(compiled.result().blocks()[usize::from(jump_to.block())].parameters())
-                .map(|(argument, to)| {
-                    (lower_value_to_location(to), lower_value(compiled, argument))
-                })
-                .collect::<Vec<_>>(),
-        ),
+        BlockTerminator::Jump(jump_to) => Instruction::Jump(*jump_to),
         BlockTerminator::Branch {
             condition,
             when_true,
             otherwise,
         } => Instruction::Branch {
             condition: lower_value(compiled, condition),
-            when_true: (
-                when_true.block(),
-                when_true
-                    .arguments()
-                    .iter()
-                    .zip(compiled.result().blocks()[usize::from(when_true.block())].parameters())
-                    .map(|(argument, to)| {
-                        (lower_value_to_location(to), lower_value(compiled, argument))
-                    })
-                    .collect::<Vec<_>>(),
-            ),
-            otherwise: (
-                otherwise.block(),
-                otherwise
-                    .arguments()
-                    .iter()
-                    .zip(compiled.result().blocks()[usize::from(otherwise.block())].parameters())
-                    .map(|(argument, to)| {
-                        (lower_value_to_location(to), lower_value(compiled, argument))
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            when_true: *when_true,
+            otherwise: *otherwise,
         },
     }
 }
@@ -303,7 +302,8 @@ fn lower_instruction(
     instruction: &IrInstruction,
 ) -> Instruction<Value> {
     match instruction {
-        IrInstruction::NoOp => Instruction::NoOp,
+        IrInstruction::NoOp | IrInstruction::ScopeStart => Instruction::NoOp,
+        IrInstruction::PopN(count) => Instruction::PopN(*count),
         IrInstruction::Unary {
             op,
             operand,
@@ -382,7 +382,7 @@ fn lower_instruction(
 #[must_use]
 fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation<Value> {
     match value {
-        IrValue::BlockArgument(_) | IrValue::CallArgument(_) | IrValue::Address(_) => {
+        IrValue::CallArgument(_) | IrValue::Address(_) => {
             unreachable!("these are eliminated by register allocation {value:?}")
         }
         IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
@@ -396,7 +396,14 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::F64(value) => ValueOrLocation::Value(Value::F64(*value)),
         IrValue::Boolean(value) => ValueOrLocation::Value(Value::Boolean(*value)),
         IrValue::Unit | IrValue::Runtime => ValueOrLocation::Value(Value::Unit),
-        IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn(*block_index)),
+        IrValue::String(text) => ValueOrLocation::Value(Value::String(text.clone())),
+        IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn {
+            block_index: *block_index,
+            max_stack_size: compiled
+                .result()
+                .get_block(*block_index)
+                .map_or(0, IrBlock::max_stack_size),
+        }),
         IrValue::NativeFn(span) => {
             let source_index = compiled
                 .sources()
@@ -421,6 +428,13 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     Some("print_f64") => NativeFn::PrintF64,
                     Some("print_bool") => NativeFn::PrintBool,
                     Some("print_unit") => NativeFn::PrintUnit,
+                    Some("print_string") => NativeFn::PrintString,
+                    Some("extend_string") => NativeFn::ExtendString,
+                    Some("slice_string") => NativeFn::SliceString,
+                    Some("length_string") => NativeFn::LengthString,
+                    Some("truncate_string") => NativeFn::TruncateString,
+                    Some("floor_boundary_string") => NativeFn::FloorBoundaryString,
+                    Some("ceil_boundary_string") => NativeFn::CeilBoundaryString,
                     _ => unreachable!("unknown native function"),
                 },
             ))

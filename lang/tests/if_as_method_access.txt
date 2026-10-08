@@ -1,0 +1,13 @@
+funky main() {
+	print_bool(if true {
+		Option~Some { value <- 97, }
+	} else {
+		Option~None {}
+	}.is_some());
+
+	print_bool(if true {
+		Option~Some { value <- 97, }
+	} else {
+		Option~None {}
+	}.is_none());
+}

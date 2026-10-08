@@ -15,14 +15,48 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     | Instruction::Assign { .. }
                     | Instruction::Push(_)
                     | Instruction::Call { .. }
-                    | Instruction::Access { .. }
                     | Instruction::AccessAssign { .. }
-                    | Instruction::GetTag { .. } => {}
+                    | Instruction::ScopeStart
+                    | Instruction::PopN(_) => {}
                     Instruction::Unary { .. } => {
                         fold_unary(usize::from(block_index), i, instruction, &mut changed);
                     }
                     Instruction::Binary { .. } => {
                         fold_binary(usize::from(block_index), i, instruction, &mut changed);
+                    }
+                    Instruction::GetTag {
+                        of: value,
+                        temporary: to,
+                    } => {
+                        if let Value::TaggedCompound { tag, .. } = value {
+                            *instruction = Instruction::Assign {
+                                value: Value::U16(*tag),
+                                to: to.clone(),
+                            };
+
+                            changed = true;
+                        }
+                    }
+                    Instruction::Access {
+                        of: value,
+                        index,
+                        temporary: to,
+                    } => {
+                        if let Value::TaggedCompound { fields, .. } = value {
+                            *instruction = Instruction::Assign {
+                                value: fields[*index].clone(),
+                                to: to.clone(),
+                            };
+
+                            changed = true;
+                        } else if let Value::Compound(fields) = value {
+                            *instruction = Instruction::Assign {
+                                value: fields[*index].clone(),
+                                to: to.clone(),
+                            };
+
+                            changed = true;
+                        }
                     }
                 }
             }

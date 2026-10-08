@@ -186,7 +186,6 @@ impl BasicBlocks {
 
 struct Translator {
     blocks: Vec<Block>,
-    call_argument_count: usize,
     current_block: Option<BlockIndex>,
     values: Vec<Value>,
     addresses: HashMap<Span, Addresslike>,
@@ -197,7 +196,6 @@ impl Translator {
     fn new() -> Self {
         Self {
             blocks: vec![],
-            call_argument_count: 0,
             current_block: None,
             values: vec![],
             addresses: HashMap::new(),
@@ -232,11 +230,11 @@ pub enum Value {
     F64(f64),
     Boolean(bool),
     Unit,
+    String(String),
     Fn(BlockIndex),
     Address(Address),
     NativeFn(Span),
     Runtime,
-    BlockArgument(usize),
     CallArgument(usize),
     StackOffset(usize),
     Register(usize),
@@ -282,6 +280,8 @@ pub enum Instruction {
         of: Value,
         temporary: Value,
     },
+    ScopeStart,
+    PopN(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,15 +305,11 @@ pub struct Address {
 impl Translator {
     fn label_function(&mut self, ast: &Ast, f: ItemIndex) {
         match ast[f].kind() {
-            Item::Fn {
-                name, parameters, ..
-            } => {
+            Item::Fn { name, .. } => {
                 self.addresses.insert(
                     name.span(),
                     Addresslike::Block(BlockIndex(self.blocks.len())),
                 );
-
-                self.call_argument_count = parameters.len();
 
                 self.next_block();
             }
@@ -339,7 +335,7 @@ impl Translator {
         let block_index = BlockIndex(self.blocks.len());
 
         self.blocks.push(Block {
-            call_argument_count: self.call_argument_count,
+            call_argument_count: 0,
             instructions: vec![],
             terminator: None,
         });
@@ -356,6 +352,26 @@ impl Translator {
                 .expect("match expressions only exist in blocks"),
             offset: self.instructions_len(),
             version: 0,
+        }
+    }
+
+    fn assign_if_not_address(&mut self) -> Address {
+        let value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        if let Value::Address(address) = value {
+            address
+        } else {
+            let address = self.next_address();
+
+            self.push_instruction(Instruction::Assign {
+                value,
+                to: Value::Address(address),
+            });
+
+            address
         }
     }
 
@@ -453,10 +469,6 @@ impl Translator {
                 })
                 .copied()
         {
-            let call_argument_count = self.call_argument_count;
-
-            self.call_argument_count = parameters.len();
-
             self.switch_to_block(block_index);
 
             for (p, parameter) in parameters.iter().enumerate() {
@@ -469,6 +481,8 @@ impl Translator {
             let Some(block) = self.blocks.get_mut(usize::from(block_index)) else {
                 unreachable!("we're guaranteed to have a block by now");
             };
+
+            block.call_argument_count = parameters.len();
 
             if block.terminator.is_none() {
                 block.terminator = Some(BlockTerminator::Jump(after_arguments));
@@ -485,8 +499,6 @@ impl Translator {
             self.translate_expr(ast, names, types, *body);
 
             self.last_in_fn = last_in_fn;
-
-            self.call_argument_count = call_argument_count;
 
             assert_eq!(self.values.as_slice(), &[]);
         }
@@ -734,6 +746,13 @@ impl Translator {
             } => {
                 self.translate_match(ast, names, types, (*expr, cases.as_slice(), *fallback));
             }
+            Expr::String(text) => {
+                self.values.push(Value::String(text.clone()));
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
         }
     }
 
@@ -804,6 +823,8 @@ impl Translator {
 
         self.last_in_fn = false;
 
+        self.push_instruction(Instruction::ScopeStart);
+
         for expr in exprs.iter().rev().skip(1).rev() {
             self.translate_expr(ast, names, types, *expr);
 
@@ -822,6 +843,8 @@ impl Translator {
                 .last()
                 .expect("`translate_block` in only called on blocks that aren't empty"),
         );
+
+        self.push_instruction(Instruction::PopN(0));
     }
 
     fn translate_unary(
@@ -978,7 +1001,17 @@ impl Translator {
 
                 self.values.push(Value::Address(address));
             }
-            Some(Addresslike::CallArgument(_)) | None => {
+            Some(Addresslike::CallArgument(index)) => {
+                let index = *index;
+
+                self.push_instruction(Instruction::Assign {
+                    value,
+                    to: Value::CallArgument(index),
+                });
+
+                self.values.push(Value::CallArgument(index));
+            }
+            None => {
                 let address = self.next_address();
 
                 self.push_instruction(Instruction::Assign {
@@ -1006,17 +1039,7 @@ impl Translator {
 
         self.translate_expr(ast, names, types, lhs);
 
-        let lhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
-
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value: lhs,
-            to: Value::Address(address),
-        });
+        let address = self.assign_if_not_address();
 
         let current_block = self
             .current_block
@@ -1074,7 +1097,7 @@ impl Translator {
         self.values.push(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
-            version: address.version + 1,
+            version: 0,
         }));
 
         if self.last_in_fn {
@@ -1095,17 +1118,7 @@ impl Translator {
 
         self.translate_expr(ast, names, types, lhs);
 
-        let lhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
-
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value: lhs,
-            to: Value::Address(address),
-        });
+        let address = self.assign_if_not_address();
 
         let current_block = self
             .current_block
@@ -1163,7 +1176,7 @@ impl Translator {
         self.values.push(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
-            version: address.version + 1,
+            version: 0,
         }));
 
         if self.last_in_fn {
@@ -1265,13 +1278,11 @@ impl Translator {
 
         self.last_in_fn = last_in_fn;
 
-        let address = Address {
+        self.values.push(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
-            version: address.version + 1,
-        };
-
-        self.values.push(Value::Address(address));
+            version: 0,
+        }));
 
         if self.last_in_fn {
             self.emit_return();
@@ -1588,12 +1599,14 @@ impl Translator {
         {
             Some(
                 Type::Unknown
+                | Type::Any
                 | Type::Integer(_)
                 | Type::NegativeInteger(_)
                 | Type::Existential(_)
                 | Type::Generic(_)
                 | Type::Fn { .. }
-                | Type::AnyOf(_),
+                | Type::Associations(_)
+                | Type::AnyOf { .. },
             )
             | None => None,
             Some(Type::Primitive(primitive)) => Some(primitive.span()),
@@ -1692,12 +1705,14 @@ impl Translator {
 
         let type_span = match &types[types[ast[target].span()]] {
             Type::Unknown
+            | Type::Any
             | Type::Integer(_)
             | Type::NegativeInteger(_)
             | Type::Existential(_)
             | Type::Generic(_)
             | Type::Fn { .. }
-            | Type::AnyOf(_) => {
+            | Type::Associations(_)
+            | Type::AnyOf { .. } => {
                 unreachable!("type checking guarantees these types are not used for method calls");
             }
             Type::Primitive(primitive) => primitive.span(),
@@ -1777,17 +1792,7 @@ impl Translator {
 
         self.translate_expr(ast, names, types, expr);
 
-        let expr = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
-
-        let expr_address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value: expr,
-            to: Value::Address(expr_address),
-        });
+        let expr_address = self.assign_if_not_address();
 
         let address = self.next_address();
 
@@ -1802,6 +1807,8 @@ impl Translator {
 
         for case in cases {
             let backpatch_these = self.translate_pattern(types, expr_address, case.pattern());
+
+            self.push_instruction(Instruction::ScopeStart);
 
             self.translate_expr(ast, names, types, case.case());
 
@@ -1820,6 +1827,8 @@ impl Translator {
                     version: address_version,
                 }),
             });
+
+            self.push_instruction(Instruction::PopN(0));
 
             backpatch_successes.push(
                 self.current_block
@@ -1874,7 +1883,11 @@ impl Translator {
 
         self.last_in_fn = last_in_fn;
 
-        self.values.push(Value::Address(address));
+        self.values.push(Value::Address(Address {
+            block_index: address.block_index,
+            offset: address.offset,
+            version: 0,
+        }));
 
         if self.last_in_fn {
             self.emit_return();
@@ -1892,11 +1905,13 @@ impl Translator {
             Type::Integer(_)
             | Type::NegativeInteger(_)
             | Type::Unknown
+            | Type::Any
             | Type::Fn { .. }
             | Type::Existential(_)
             | Type::Generic(_)
-            | Type::AnyOf(_) => unreachable!(
-                "only integer primitives, booleans, unit, and products can be patterns"
+            | Type::Associations(_)
+            | Type::AnyOf { .. } => unreachable!(
+                "only integer primitives, booleans, unit, strings, and products can be patterns"
             ),
             Type::Primitive(primitive) => {
                 let value = match (primitive.kind(), pattern.kind()) {
@@ -1944,6 +1959,7 @@ impl Translator {
                     (Primitive::I64, Pattern::NegativeInteger(value)) => Value::I64(*value),
                     (Primitive::Boolean, Pattern::Boolean(value)) => Value::Boolean(*value),
                     (Primitive::Unit, Pattern::Unit) => Value::Unit,
+                    (Primitive::String, Pattern::String(text)) => Value::String(text.clone()),
                     _ => {
                         unreachable!("type checking guarantees no other combinations make it here")
                     }
@@ -1981,7 +1997,8 @@ impl Translator {
                 Pattern::Integer(_)
                 | Pattern::NegativeInteger(_)
                 | Pattern::Boolean(_)
-                | Pattern::Unit => unreachable!(
+                | Pattern::Unit
+                | Pattern::String(_) => unreachable!(
                     "type checking guarantees only patterns that are products make it here"
                 ),
                 Pattern::Product { fields, .. } => {
@@ -2027,7 +2044,8 @@ impl Translator {
                 Pattern::Integer(_)
                 | Pattern::NegativeInteger(_)
                 | Pattern::Boolean(_)
-                | Pattern::Unit => unreachable!(
+                | Pattern::Unit
+                | Pattern::String(_) => unreachable!(
                     "type checking guarantees only patterns that are sum variants make it here"
                 ),
                 Pattern::Product { path, fields } => {
