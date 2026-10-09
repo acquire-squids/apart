@@ -385,7 +385,7 @@ impl Reportable for Error {
             Self::ExpectedExpr => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
             ],
-            Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", or \"teach\"".to_string()],
+            Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", \"teach\", or \"#if\"".to_string()],
             Self::ExpectedType => vec!["type signatures can start with \"funky\" or a name".to_string()],
             Self::ExpectedPattern => vec!["a pattern can start with \"{\", \"true\", \"false\", decimal digits, \"root\", \"super\", or a name".to_string()],
             Self::MatchWithoutFallback => vec!["I'd like to check exhaustiveness, but I don't have that yet".to_string()],
@@ -551,7 +551,7 @@ impl IndexMut<ItemIndex> for &mut Ast {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Integer(u64),
     NegativeInteger(i64),
@@ -616,7 +616,7 @@ pub enum Expr {
     String(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MatchCase {
     pattern: Spanned<Pattern>,
     case: ExprIndex,
@@ -632,7 +632,7 @@ impl MatchCase {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Pattern {
     Integer(u64),
     NegativeInteger(i64),
@@ -645,7 +645,7 @@ pub enum Pattern {
     String(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Primitive(Spanned<String>),
     NativeFn {
@@ -684,6 +684,11 @@ pub enum Item {
         body: Vec<ItemIndex>,
         generics: Vec<Spanned<String>>,
     },
+    Directive {
+        name: Spanned<String>,
+        condition: ExprIndex,
+        item: ItemIndex,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -692,7 +697,7 @@ pub enum Visibility {
     Private,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Parameter {
     name: Spanned<String>,
     type_signature: Spanned<TypeSignature>,
@@ -708,7 +713,7 @@ impl Parameter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeSignature {
     Path {
         path: Vec<Spanned<PathElement>>,
@@ -721,7 +726,7 @@ pub enum TypeSignature {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PathElement {
     Root,
     Super,
@@ -1235,9 +1240,47 @@ impl Parser<'_, '_> {
             } else {
                 Err(Spanned::new(Error::ExpectedItem, token.span()))
             }
+        } else if let Some(hash) = self.match_next(Token::Hash)
+            && let Some(directive) = self.match_next(Token::Identifier)
+        {
+            self.parse_directive(ast, hash.span(), directive.span())
         } else {
             Err(Spanned::new(Error::ExpectedItem, self.span_or_end()))
         }
+    }
+
+    fn parse_directive(
+        &mut self,
+        ast: &mut Ast,
+        hash_span: Span,
+        directive_span: Span,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let name = Spanned::new(
+            directive_span
+                .lexeme(self.source)
+                .expect("the directive is from this source")
+                .to_string(),
+            hash_span
+                .combine_with(directive_span)
+                .expect("these spans are from the same source"),
+        );
+
+        let condition = self.parse_expression(ast, 0)?;
+
+        let item = self.parse_item(ast)?;
+
+        let span = hash_span
+            .combine_with(ast[item].span())
+            .expect("these spans are from the same source");
+
+        Ok(ast.push_item(Spanned::new(
+            Item::Directive {
+                name,
+                condition,
+                item,
+            },
+            span,
+        )))
     }
 
     fn parse_primitive(&mut self, ast: &mut Ast, span: Span) -> Result<ItemIndex, Spanned<Error>> {
@@ -1659,11 +1702,15 @@ impl Parser<'_, '_> {
                 let item = self.parse_item(ast)?;
 
                 match &ast[item].kind() {
+                    Item::Directive { item, .. }
+                        if matches!(ast[*item].kind(), Item::NativeFn { .. } | Item::Fn { .. }) => {
+                    }
                     Item::Primitive(_)
                     | Item::Product { .. }
                     | Item::Sum { .. }
                     | Item::Mod { .. }
-                    | Item::Teach { .. } => {
+                    | Item::Teach { .. }
+                    | Item::Directive { .. } => {
                         self.errors
                             .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
                     }

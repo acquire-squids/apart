@@ -1,5 +1,6 @@
 mod allocate_registers;
 mod basic_blocks;
+mod expand_macros;
 mod lex;
 mod low_ir;
 mod name_resolve;
@@ -12,6 +13,7 @@ mod type_check;
 pub mod vm;
 
 pub use {
+    expand_macros::Error as MacroExpansionError,
     low_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, UnaryOp,
         Value as IrValue, ValueOrLocation,
@@ -30,6 +32,7 @@ const CORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt");
 
 const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang/core.txt"));
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Target {
     Vm,
 }
@@ -57,6 +60,7 @@ impl<'a, T> Compiled<'a, T> {
 pub enum Error {
     TokenTree(TokenTreeError),
     Parse(ParseError),
+    ExpandMacros(MacroExpansionError),
     NameResolve(NameResolveError),
     TypeCheck(TypeCheckError),
 }
@@ -66,6 +70,7 @@ impl fmt::Display for Error {
         match self {
             Self::TokenTree(error) => write!(f, "{error}"),
             Self::Parse(error) => write!(f, "{error}"),
+            Self::ExpandMacros(error) => write!(f, "{error}"),
             Self::NameResolve(error) => write!(f, "{error}"),
             Self::TypeCheck(error) => write!(f, "{error}"),
         }
@@ -81,6 +86,7 @@ impl Reportable for Error {}
 #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 pub fn compile<'a>(
     sources: &[(usize, &'a str)],
+    target: Target,
     optimized: bool,
 ) -> Result<Compiled<'a, Ir<IrValue>>, Compiled<'a, Vec<Spanned<Error>>>> {
     let mut source_ids = sources
@@ -163,6 +169,14 @@ pub fn compile<'a>(
         });
     }
 
+    expand_macros::expand(&mut ast, target).map_err(|errors| Compiled {
+        sources_with_core: sources_with_core.clone(),
+        result: errors
+            .into_iter()
+            .map(|error| error.transmute(Error::ExpandMacros))
+            .collect::<Vec<_>>(),
+    })?;
+
     let names = name_resolve::resolve_names(&ast).map_err(|errors| Compiled {
         sources_with_core: sources_with_core.clone(),
         result: errors
@@ -232,7 +246,7 @@ macro_rules! __test_vm_output_single_function {
         fn $test_name() {
             let mut out = vec![];
 
-            let result = $crate::compile([(0, SOURCE)].as_slice(), $optimized)
+            let result = $crate::compile([(0, SOURCE)].as_slice(), $crate::Target::Vm, $optimized)
                 .map(|compiled| $crate::targets::vm::compile(&compiled))
                 .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
                 .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
@@ -321,7 +335,7 @@ macro_rules! __test_compilation_errors {
 
             #[test]
             fn compilation_error() {
-                let result = $crate::compile([(0, SOURCE)].as_slice(), false)
+                let result = $crate::compile([(0, SOURCE)].as_slice(), $crate::Target::Vm, false)
                     .map(|_| "ERRONEOUS SUCCESSFUL COMPILATION");
 
                 let result = result.as_ref()

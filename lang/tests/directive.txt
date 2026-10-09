@@ -1,0 +1,13 @@
+funky main() {
+	print_string(target());
+}
+
+#if target == "vm"
+funky target() -> String {
+	"vm"
+}
+
+#if target == "wasi"
+funky target() -> String {
+	"wasi"
+}

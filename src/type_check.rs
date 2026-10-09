@@ -932,7 +932,10 @@ impl TypeChecker {
 
                     self.type_map.insert(name.span(), type_index);
                 }
-                Item::Primitive(_) | Item::NativeFn { .. } | Item::Fn { .. } => {}
+                Item::Primitive(_)
+                | Item::NativeFn { .. }
+                | Item::Fn { .. }
+                | Item::Directive { .. } => {}
             }
         }
     }
@@ -940,6 +943,7 @@ impl TypeChecker {
     fn associate_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
         for item in items {
             let name = match ast[*item].kind() {
+                Item::Directive { .. } => None,
                 Item::Primitive(name) | Item::Product { name, .. } | Item::Sum { name, .. } => {
                     Some(name)
                 }
@@ -1424,7 +1428,8 @@ impl TypeChecker {
                 Item::Primitive(_)
                 | Item::NativeFn { .. }
                 | Item::Product { .. }
-                | Item::Sum { .. } => {}
+                | Item::Sum { .. }
+                | Item::Directive { .. } => {}
                 Item::Mod {
                     contents, generics, ..
                 } => {

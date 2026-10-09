@@ -42,7 +42,7 @@ fn main() -> ExitCode {
                         let source_labels = source_labels.as_slice();
                         let sources = sources.as_slice();
 
-                        compile(source_labels, sources, options.optimize).map_or(
+                        compile(source_labels, sources, options.target, options.optimize).map_or(
                             ExitCode::FAILURE,
                             |compiled| {
                                 let output_path = Path::new(options.output.as_str());
@@ -76,9 +76,10 @@ fn main() -> ExitCode {
 fn compile<'a>(
     source_labels: &[&str],
     sources: &[(usize, &'a str)],
+    target: Target,
     optimize: bool,
 ) -> Option<apart::Compiled<'a, Ir<IrValue>>> {
-    match apart::compile(sources, optimize) {
+    match apart::compile(sources, target, optimize) {
         Ok(compiled) => Some(compiled),
         Err(compiled) => {
             let sources = compiled.sources();

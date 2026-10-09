@@ -1,0 +1,26 @@
+funky main() {
+	let
+		wrapped = wrapper~Wrapper~wrap("pickle"),
+	in {
+		print_string(wrapped.unwrap());
+	};
+}
+
+#if false
+mod wrapper {
+	pub product Wrapper[T] {
+		value <- T,
+	}
+
+	teach[T] Wrapper[T] {
+		funky wrap(value <- T) -> Self {
+			Self {
+				value <- value,
+			}
+		}
+
+		funky unwrap(self <- Self) -> T {
+			self.value
+		}
+	}
+}

@@ -37,6 +37,7 @@ pub enum Token {
     Ampersand,
     Pipe,
     String,
+    Hash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,6 +164,7 @@ impl Iterator for Lexer {
 
             match ch {
                 _ if ch.is_ascii_whitespace() => {}
+                '#' => return Some(Ok(self.single_char_token(Token::Hash))),
                 '~' => return Some(Ok(self.single_char_token(Token::Tilde))),
                 '.' => return Some(Ok(self.single_char_token(Token::Dot))),
                 '*' => return Some(Ok(self.single_char_token(Token::Star))),

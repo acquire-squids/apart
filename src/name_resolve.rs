@@ -20,7 +20,7 @@ pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
     if resolver.errors.is_empty() {
         Ok(Names {
             names: resolver.names,
-            associations: resolver.persistent_scopes,
+            associations: resolver.associations,
         })
     } else {
         Err(resolver.errors)
@@ -32,7 +32,7 @@ const ROOT_SPAN: Span = Span::new(0, 0, 0);
 
 struct NameResolver {
     variable_scopes: Vec<HashMap<String, Definition>>,
-    persistent_scopes: HashMap<Span, HashMap<String, Definition>>,
+    associations: HashMap<Span, HashMap<String, Definition>>,
     associated_with: Vec<Span>,
     current_mod: Vec<Span>,
     errors: Vec<Spanned<Error>>,
@@ -242,7 +242,7 @@ impl NameResolver {
     fn new() -> Self {
         Self {
             variable_scopes: vec![HashMap::new()],
-            persistent_scopes: HashMap::new(),
+            associations: HashMap::new(),
             associated_with: vec![],
             current_mod: vec![ROOT_SPAN],
             errors: vec![],
@@ -251,7 +251,7 @@ impl NameResolver {
     }
 
     fn associate_name(&mut self, of: Span, name: String, definition: Definition) {
-        self.persistent_scopes
+        self.associations
             .entry(of)
             .and_modify(|associated_with| {
                 associated_with.insert(name.clone(), definition);
@@ -266,7 +266,7 @@ impl NameResolver {
     }
 
     fn resolve_associated_name(&self, of: Span, name: &str) -> Option<Definition> {
-        self.persistent_scopes
+        self.associations
             .get(&of)
             .and_then(|associated_with| associated_with.get(name))
             .copied()
@@ -411,7 +411,7 @@ impl NameResolver {
     fn associate_types(&mut self, ast: &Ast, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
-                Item::NativeFn { .. } => {}
+                Item::NativeFn { .. } | Item::Directive { .. } => {}
                 Item::Primitive(name) => {
                     if self.resolve_name(name.kind()).is_some() {
                         self.errors
@@ -623,7 +623,7 @@ impl NameResolver {
     fn resolve_types(&mut self, ast: &Ast, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
-                Item::Primitive(_) => {}
+                Item::Primitive(_) | Item::Directive { .. } => {}
                 Item::NativeFn {
                     name,
                     signature,
@@ -772,7 +772,8 @@ impl NameResolver {
             Item::Primitive(_)
             | Item::NativeFn { .. }
             | Item::Product { .. }
-            | Item::Sum { .. } => {}
+            | Item::Sum { .. }
+            | Item::Directive { .. } => {}
             Item::Mod { name, contents, .. } => {
                 self.current_mod.push(name.span());
 

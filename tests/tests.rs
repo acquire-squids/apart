@@ -17,6 +17,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(callee_is_call, "callee_is_call.txt", "true\n");
 
+            apart::$test_macro!(directive, "directive.txt", "vm\n");
+
             apart::$test_macro!(empty, "empty.txt", "");
 
             apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
@@ -193,6 +195,14 @@ mod compilation_error {
         [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
             expected, got
         })] if expected == "unit" && got == "bool"
+    );
+
+    apart::test_compilation_errors!(
+        directive_never,
+        "directive_never.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::PathDoesNotExist
+        )]
     );
 
     apart::test_compilation_errors!(
