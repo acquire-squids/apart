@@ -2968,6 +2968,15 @@ impl<'s, 'p> Parser<'s, 'p> {
                     .spanned_name()
                     .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
 
+                if self.in_token_tree(current_tree) && self.match_next(Token::Comma).is_some() {
+                    fields.push((
+                        name.clone(),
+                        ast.push_expr(Spanned::new(Expr::Name(name.kind().clone()), name.span())),
+                    ));
+
+                    continue;
+                }
+
                 let less = self.consume_next(Token::Less, Error::ProductFieldWithoutLeftArrow)?;
 
                 let minus = self.consume_next(Token::Minus, Error::ProductFieldWithoutLeftArrow)?;

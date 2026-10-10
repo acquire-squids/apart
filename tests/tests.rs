@@ -79,6 +79,12 @@ macro_rules! output_tests {
 
             apart::$test_macro!(product, "product.txt", "");
 
+            apart::$test_macro!(
+                product_elide_name_field,
+                "product_elide_name_field.txt",
+                "-3\n"
+            );
+
             apart::$test_macro!(product_equality, "product_equality.txt", "true\nfalse\n");
 
             apart::$test_macro!(product_fn_parameter, "product_fn_parameter.txt", "{}\n");

@@ -1,0 +1,25 @@
+funky main() {
+	let
+		value = 0-3,
+	in {
+		print_i16(Wrapper {
+			value,
+		}.unwrap());
+	};
+}
+
+product Wrapper {
+	value <- i16,
+}
+
+teach Wrapper {
+	funky wrap(value <- i16) -> Self {
+		Self {
+			value,
+		}
+	}
+
+	funky unwrap(self <- Self) -> i16 {
+		self.value
+	}
+}
