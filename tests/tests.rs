@@ -31,6 +31,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(identity, "identity.txt", "21\n");
 
+            apart::$test_macro!(if_as_binary_lhs, "if_as_binary_lhs.txt", "-3\n",);
+
             apart::$test_macro!(if_as_call_argument, "if_as_call_argument.txt", "21\n",);
 
             apart::$test_macro!(
@@ -259,6 +261,14 @@ mod compilation_error {
         [apart::Error::NameResolve(
             apart::NameResolveError::InvalidAssignTarget
         )]
+    );
+
+    apart::test_compilation_errors!(
+        negative_unsigned,
+        "negative_unsigned.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::CannotNegate(ty)
+        )] if ty == "u32"
     );
 
     apart::test_compilation_errors!(

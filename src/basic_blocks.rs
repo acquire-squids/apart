@@ -1602,7 +1602,7 @@ impl Translator {
             .and_then(|span| types.get_type(span))
         {
             Some(
-                Type::Unknown
+                Type::Error
                 | Type::Any
                 | Type::Integer(_)
                 | Type::NegativeInteger(_)
@@ -1708,7 +1708,7 @@ impl Translator {
         self.last_in_fn = false;
 
         let type_span = match &types[types[ast[target].span()]] {
-            Type::Unknown
+            Type::Error
             | Type::Any
             | Type::Integer(_)
             | Type::NegativeInteger(_)
@@ -1908,7 +1908,7 @@ impl Translator {
         match &types[types[pattern.span()]] {
             Type::Integer(_)
             | Type::NegativeInteger(_)
-            | Type::Unknown
+            | Type::Error
             | Type::Any
             | Type::Fn { .. }
             | Type::Existential(_)

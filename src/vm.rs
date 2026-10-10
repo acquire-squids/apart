@@ -126,14 +126,16 @@ impl Vm {
             Some(Instruction::Unary { op, operand, to }) => {
                 let (op, operand, to) = (*op, *operand, *to);
 
+                let operand = self.dereference_value(operand);
+
                 match op {
-                    UnaryOp::Not => match self.dereference_value(operand) {
+                    UnaryOp::Not => match operand {
                         CopyableValue::Boolean(value) => {
                             self.assign(to, CopyableValue::Boolean(!value));
                         }
                         _ => panic!("incorrect argument for logical not ({op:?} {operand:?})"),
                     },
-                    UnaryOp::Negate => match self.dereference_value(operand) {
+                    UnaryOp::Negate => match operand {
                         CopyableValue::I8(value) => {
                             self.assign(to, CopyableValue::I8(-value));
                         }
@@ -1074,10 +1076,10 @@ impl Vm {
 
                         true
                     }
-                    (_, _) => false,
+                    (_, _) => panic!("(EQUALITY {lhs:?} {rhs:?})"),
                 }
             }
-            (_, _) => false,
+            (_, _) => panic!("(EQUALITY {lhs:?} {rhs:?})"),
         }
     }
 

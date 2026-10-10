@@ -1,0 +1,11 @@
+funky main() {
+	let
+		a <- i16 = 3,
+	in {
+		print_i16(if true {
+			0
+		} else {
+			3
+		} - a);
+	};
+}

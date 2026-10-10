@@ -1,0 +1,7 @@
+funky main() {
+	let
+		a <- u32 = 97,
+	in {
+		a = -a;
+	};
+}
