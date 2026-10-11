@@ -1,0 +1,11 @@
+funky main() {
+	print_string(wrapper~Wrapper {
+		value <- "this shouldn't work",
+	}.value);
+}
+
+mod wrapper {
+	pub product Wrapper[T] {
+		value <- T,
+	}
+}

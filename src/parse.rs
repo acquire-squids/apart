@@ -1893,7 +1893,7 @@ impl Parser<'_, '_> {
                     };
 
                     let span = path
-                        .first()
+                        .last()
                         .and_then(|first_path_element| first_path_element.span().combine_with(span))
                         .expect("these spans are from the same source");
 

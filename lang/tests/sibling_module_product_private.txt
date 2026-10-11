@@ -1,0 +1,23 @@
+funky main() {
+	first~print_second_text();
+}
+
+pub mod first {
+	pub funky print_second_text() -> super~second~Text {
+		let
+			text = super~second~Text {
+				value <- "this shouldn't work",
+			},
+		in {
+			print_string(text.value);
+
+			text
+		}
+	}
+}
+
+mod second {
+	pub product Text {
+		value <- String,
+	}
+}

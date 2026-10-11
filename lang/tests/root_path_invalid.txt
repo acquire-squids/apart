@@ -2,8 +2,8 @@ funky main() {
 	print_i64(outer~root~bingus(97));
 }
 
-mod outer {
-	mod inner {
+pub mod outer {
+	pub mod inner {
 		pub funky identity[I](value <- I) -> I {
 			value
 		}

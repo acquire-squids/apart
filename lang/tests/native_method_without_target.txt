@@ -1,0 +1,3 @@
+funky main() {
+	print_u64(length_string("this shouldn't work"));
+}

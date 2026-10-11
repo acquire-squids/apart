@@ -1,0 +1,7 @@
+funky main() {
+	let
+		a = Some { value <- 97, },
+	in {
+		print_u8(a);
+	};
+}

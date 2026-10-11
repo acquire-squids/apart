@@ -30,13 +30,22 @@ pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
 // TODO: is it okay to use this span?
 const ROOT_SPAN: Span = Span::new(0, 0, 0);
 
+const ROOT_MODULE_ID: ModuleId = 0;
+
+const ROOT_MODULE: Module = Module {
+    span: ROOT_SPAN,
+    is: ROOT_MODULE_ID,
+    visibility: Visibility::Public,
+};
+
 struct NameResolver {
     variable_scopes: Vec<HashMap<String, Definition>>,
     associations: HashMap<Span, HashMap<String, Definition>>,
     associated_with: Vec<Span>,
-    current_mod: Vec<Span>,
+    current_mod: Vec<Module>,
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
+    module_id: ModuleId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,7 +127,7 @@ impl fmt::Display for Error {
                 write!(f, "this name is not associated with this scope")
             }
             Self::PathDoesNotExist => {
-                write!(f, "this path does not exist at this depth")
+                write!(f, "this path does not exist in this scope")
             }
             Self::PathIsValue => {
                 write!(f, "this path must be a mod or a type, but it is a variable")
@@ -170,6 +179,35 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
+pub type ModuleId = u64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Module {
+    span: Span,
+    is: ModuleId,
+    visibility: Visibility,
+}
+
+impl Module {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn is(&self) -> ModuleId {
+        self.is
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefinitionKind {
     Type,
@@ -179,11 +217,12 @@ pub enum DefinitionKind {
     DeclaredOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {
     kind: DefinitionKind,
     visibility: Visibility,
     span: Span,
+    module: Module,
 }
 
 impl Definition {
@@ -203,6 +242,12 @@ impl Definition {
     #[must_use]
     pub const fn span(&self) -> Span {
         self.span
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn module(&self) -> &Module {
+        &self.module
     }
 }
 
@@ -244,9 +289,10 @@ impl NameResolver {
             variable_scopes: vec![HashMap::new()],
             associations: HashMap::new(),
             associated_with: vec![],
-            current_mod: vec![ROOT_SPAN],
+            current_mod: vec![ROOT_MODULE],
             errors: vec![],
             names: HashMap::new(),
+            module_id: ROOT_MODULE_ID,
         }
     }
 
@@ -254,7 +300,7 @@ impl NameResolver {
         self.associations
             .entry(of)
             .and_modify(|associated_with| {
-                associated_with.insert(name.clone(), definition);
+                associated_with.insert(name.clone(), definition.clone());
             })
             .or_insert_with(|| {
                 let mut hash_map = HashMap::new();
@@ -269,7 +315,7 @@ impl NameResolver {
         self.associations
             .get(&of)
             .and_then(|associated_with| associated_with.get(name))
-            .copied()
+            .cloned()
     }
 
     fn declare_name(&mut self, name: String, span: Span) {
@@ -283,6 +329,7 @@ impl NameResolver {
                 kind: DefinitionKind::DeclaredOnly,
                 visibility: Visibility::Public,
                 span,
+                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
             },
         );
     }
@@ -320,7 +367,7 @@ impl NameResolver {
             }
 
             if definition.kind != DefinitionKind::DeclaredOnly {
-                return Some(*definition);
+                return Some(definition.clone());
             }
         }
 
@@ -337,7 +384,7 @@ impl NameResolver {
                             self.resolve_associated_name(
                                 self.current_mod
                                     .last()
-                                    .copied()
+                                    .map(|module| module.span)
                                     .expect("there will always be at least one mod"),
                                 name,
                             )
@@ -350,6 +397,7 @@ impl NameResolver {
                     kind: DefinitionKind::DeclaredOnly,
                     visibility: Visibility::Public,
                     span,
+                    module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                 })
             },
         )
@@ -432,6 +480,7 @@ impl NameResolver {
                                 kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -444,6 +493,14 @@ impl NameResolver {
                     contents,
                     visibility,
                 } => {
+                    self.module_id += 1;
+
+                    let module = Module {
+                        span: name.span(),
+                        is: self.module_id,
+                        visibility: *visibility,
+                    };
+
                     if self.resolve_name(name.kind()).is_some() {
                         self.errors
                             .push(Spanned::new(Error::DuplicateModName, name.span()));
@@ -451,18 +508,19 @@ impl NameResolver {
                         self.associate_name(
                             self.current_mod
                                 .last()
-                                .copied()
+                                .map(|module| module.span)
                                 .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Mod,
                                 visibility: *visibility,
                                 span: name.span(),
+                                module: module.clone(),
                             },
                         );
                     }
 
-                    self.current_mod.push(name.span());
+                    self.current_mod.push(module);
 
                     self.associated_with.push(name.span());
 
@@ -474,6 +532,7 @@ impl NameResolver {
                                 kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -499,11 +558,16 @@ impl NameResolver {
                                 kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
 
+                    self.variable_scopes.push(HashMap::new());
+
                     self.associate_types(ast, body);
+
+                    self.variable_scopes.pop();
 
                     self.associated_with.pop();
                 }
@@ -520,13 +584,14 @@ impl NameResolver {
                         self.associate_name(
                             self.current_mod
                                 .last()
-                                .copied()
+                                .map(|module| module.span)
                                 .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
                                 visibility: *visibility,
                                 span: name.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -541,6 +606,7 @@ impl NameResolver {
                                 kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -561,13 +627,14 @@ impl NameResolver {
                         self.associate_name(
                             self.current_mod
                                 .last()
-                                .copied()
+                                .map(|module| module.span)
                                 .expect("there will always be at least one mod"),
                             name.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
                                 visibility: *visibility,
                                 span: name.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -582,6 +649,7 @@ impl NameResolver {
                                 kind: DefinitionKind::Type,
                                 visibility: Visibility::Private,
                                 span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
                         );
                     }
@@ -608,6 +676,7 @@ impl NameResolver {
                                     kind: DefinitionKind::Type,
                                     visibility: *visibility,
                                     span: variant_name.span(),
+                                    module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                                 },
                             );
                         }
@@ -637,7 +706,10 @@ impl NameResolver {
                     self.define_name(name.kind(), DefinitionKind::Function);
                 }
                 Item::Mod { name, contents, .. } => {
-                    self.current_mod.push(name.span());
+                    self.current_mod.push(
+                        self.resolve_name(name.kind())
+                            .map_or(ROOT_MODULE, |definition| definition.module),
+                    );
 
                     self.associated_with.push(name.span());
 
@@ -662,7 +734,11 @@ impl NameResolver {
 
                     self.associated_with.push(span);
 
+                    self.variable_scopes.push(HashMap::new());
+
                     self.resolve_types(ast, body);
+
+                    self.variable_scopes.pop();
 
                     self.undeclare("Self");
 
@@ -741,6 +817,7 @@ impl NameResolver {
                     kind: DefinitionKind::Function,
                     visibility,
                     span: name.span(),
+                    module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                 },
             );
         } else if self.resolve_name(name.kind()).is_some() {
@@ -749,13 +826,14 @@ impl NameResolver {
             self.associate_name(
                 self.current_mod
                     .last()
-                    .copied()
+                    .map(|module| module.span)
                     .expect("there will always be at least one mod"),
                 name.kind().clone(),
                 Definition {
                     kind: DefinitionKind::Function,
                     visibility,
                     span: name.span(),
+                    module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                 },
             );
         }
@@ -775,7 +853,10 @@ impl NameResolver {
             | Item::Sum { .. }
             | Item::Directive { .. } => {}
             Item::Mod { name, contents, .. } => {
-                self.current_mod.push(name.span());
+                self.current_mod.push(
+                    self.resolve_name(name.kind())
+                        .map_or(ROOT_MODULE, |definition| definition.module),
+                );
 
                 self.associated_with.push(name.span());
 
@@ -798,7 +879,11 @@ impl NameResolver {
 
                 self.associated_with.push(span);
 
+                self.variable_scopes.push(HashMap::new());
+
                 self.resolve_items(ast, body);
+
+                self.variable_scopes.pop();
 
                 self.undeclare("Self");
 
@@ -836,7 +921,7 @@ impl NameResolver {
                     }
                 }
 
-                self.resolve_expr(ast, *body, false);
+                self.resolve_expr(ast, *body, None);
 
                 self.variable_scopes.pop();
 
@@ -848,7 +933,7 @@ impl NameResolver {
 
 impl NameResolver {
     #[allow(clippy::too_many_lines)]
-    fn resolve_expr(&mut self, ast: &Ast, expr: ExprIndex, check_visibility: bool) {
+    fn resolve_expr(&mut self, ast: &Ast, expr: ExprIndex, resolved_path: Option<&[Module]>) {
         match ast[expr].kind() {
             Expr::Let {
                 name,
@@ -865,7 +950,7 @@ impl NameResolver {
                 self.variable_scopes.push(HashMap::new());
             }
             Expr::Match { expr, .. } => {
-                self.resolve_expr(ast, *expr, false);
+                self.resolve_expr(ast, *expr, resolved_path);
             }
             _ => {}
         }
@@ -885,16 +970,16 @@ impl NameResolver {
 
                     self.resolve_pattern(case.pattern().kind());
 
-                    self.resolve_expr(ast, case.case(), false);
+                    self.resolve_expr(ast, case.case(), resolved_path);
 
                     self.variable_scopes.pop();
                 }
 
-                self.resolve_expr(ast, *fallback, false);
+                self.resolve_expr(ast, *fallback, resolved_path);
             }
             _ => {
                 ast.for_children_exprs(expr, |ast, expr| {
-                    self.resolve_expr(ast, expr, false);
+                    self.resolve_expr(ast, expr, resolved_path);
                 });
             }
         }
@@ -958,10 +1043,7 @@ impl NameResolver {
                     Ok(definition) if matches!(definition.kind, DefinitionKind::Mod) => {
                         self.errors.push(Spanned::new(Error::NameIsMod, span));
                     }
-                    Ok(definition)
-                        if check_visibility
-                            && matches!(definition.visibility, Visibility::Private) =>
-                    {
+                    Ok(definition) if !self.is_visible(resolved_path, &definition) => {
                         self.errors.push(Spanned::new(Error::PathIsPrivate, span));
                     }
                     Ok(_) => {}
@@ -976,11 +1058,7 @@ impl NameResolver {
                         self.errors
                             .push(Spanned::new(Error::ExpectedType, name.span()));
                     }
-                    Ok(definition)
-                        if check_visibility
-                            && matches!(definition.visibility, Visibility::Private)
-                            && matches!(definition.kind, DefinitionKind::Type) =>
-                    {
+                    Ok(definition) if !self.is_visible(resolved_path, &definition) => {
                         self.errors
                             .push(Spanned::new(Error::PathIsPrivate, name.span()));
                     }
@@ -1043,18 +1121,12 @@ impl NameResolver {
         }
 
         if self.errors.len() == error_count {
+            let mut resolved_path = self.current_mod.clone();
+
             let associated_with = mem::take(&mut self.associated_with);
 
-            let mut resolved_path = self.current_mod.clone();
-            let mut module_depth = resolved_path.len();
-
             for p in path.iter().copied().skip(1).rev() {
-                self.resolve_path_element_expr(
-                    ast[p].kind(),
-                    ast[p].span(),
-                    &mut module_depth,
-                    &mut resolved_path,
-                );
+                self.resolve_path_element_expr(ast[p].kind(), ast[p].span(), &mut resolved_path);
 
                 if self.errors.len() > error_count {
                     break;
@@ -1063,7 +1135,13 @@ impl NameResolver {
                 }
 
                 if let Some(span) = self.names.get(&ast[p].span()).copied() {
-                    resolved_path.push(span);
+                    if let Some(definition) = self.resolve_name(match ast[p].kind() {
+                        Expr::Name(name) => name,
+                        Expr::SelfType => "Self",
+                        _ => unreachable!("the above \"continue\" ensures only Expr::Name and Expr::SelfType make it here"),
+                    }) {
+                        resolved_path.push(definition.module.clone());
+                    }
 
                     self.associated_with.pop();
                     self.associated_with.push(span);
@@ -1075,7 +1153,7 @@ impl NameResolver {
             if self.errors.len() == error_count
                 && let Some(rhs) = path.first().copied()
             {
-                self.resolve_expr(ast, rhs, module_depth > self.current_mod.len());
+                self.resolve_expr(ast, rhs, Some(resolved_path.as_slice()));
             }
 
             self.associated_with = associated_with;
@@ -1086,28 +1164,22 @@ impl NameResolver {
         &mut self,
         element: &Expr,
         span: Span,
-        module_depth: &mut usize,
-        resolved_path: &mut Vec<Span>,
+        resolved_path: &mut Vec<Module>,
     ) {
         match element {
             Expr::Name(name) => {
                 self.resolve_path_element(
                     &PathElement::Name(name.clone()),
                     span,
-                    module_depth,
                     resolved_path,
+                    true,
                 );
             }
             Expr::PathElement(element) => {
-                self.resolve_path_element(element, span, module_depth, resolved_path);
+                self.resolve_path_element(element, span, resolved_path, true);
             }
             Expr::SelfType => {
-                self.resolve_path_element(
-                    &PathElement::Name("Self".to_string()),
-                    span,
-                    module_depth,
-                    resolved_path,
-                );
+                self.resolve_path_element(&PathElement::SelfType, span, resolved_path, true);
             }
             _ => {
                 self.errors.push(Spanned::new(Error::InvalidPath, span));
@@ -1115,40 +1187,65 @@ impl NameResolver {
         }
     }
 
+    fn is_visible(&self, resolved_path: Option<&[Module]>, definition: &Definition) -> bool {
+        resolved_path
+            .unwrap_or_default()
+            .iter()
+            .all(|resolved_module| {
+                matches!(resolved_module.visibility, Visibility::Public)
+                    || self
+                        .current_mod
+                        .iter()
+                        .any(|module| module.is == resolved_module.is)
+            })
+            && (matches!(definition.visibility, Visibility::Public)
+                || self
+                    .current_mod
+                    .iter()
+                    .any(|module| module.is == definition.module.is))
+            && (!matches!(definition.kind, DefinitionKind::Mod)
+                || matches!(definition.visibility, Visibility::Public))
+    }
+
     fn resolve_path_element(
         &mut self,
         element: &PathElement,
         span: Span,
-        module_depth: &mut usize,
-        resolved_path: &mut Vec<Span>,
+        resolved_path: &mut Vec<Module>,
+        check_associated: bool,
     ) {
         match element {
             PathElement::Root => {
-                if resolved_path.len() == self.current_mod.len() {
-                    *module_depth = 0;
-
+                if resolved_path.as_slice() == self.current_mod.as_slice() {
                     resolved_path.clear();
+
+                    resolved_path.push(ROOT_MODULE);
 
                     self.associated_with.pop();
 
-                    self.associated_with.push(ROOT_SPAN);
+                    self.associated_with.push(ROOT_MODULE.span);
                 } else {
                     self.errors
                         .push(Spanned::new(Error::RootDeeperThanPathStart, span));
                 }
             }
             PathElement::Super => {
-                if *module_depth > 1 {
-                    *module_depth -= 1;
-
+                if resolved_path
+                    .last()
+                    .map_or(ROOT_MODULE_ID, |module| module.is)
+                    == ROOT_MODULE_ID
+                {
+                    self.errors.push(Spanned::new(Error::SuperAtRoot, span));
+                } else {
                     resolved_path.pop();
 
                     self.associated_with.pop();
 
-                    self.associated_with
-                        .push(resolved_path.last().map_or(ROOT_SPAN, |span| *span));
-                } else {
-                    self.errors.push(Spanned::new(Error::SuperAtRoot, span));
+                    self.associated_with.push(
+                        resolved_path
+                            .last()
+                            .map_or(ROOT_MODULE.span, |module| module.span),
+                    );
                 }
             }
             PathElement::SelfType => {
@@ -1156,53 +1253,69 @@ impl NameResolver {
                     self.errors.push(Spanned::new(Error::UnknownSelf, span));
                 }
             }
-            PathElement::Name(name) => match self.resolve_and_insert_name(name, span) {
-                Err(_) => {
-                    self.errors
-                        .push(Spanned::new(Error::PathDoesNotExist, span));
-                }
-                Ok(definition) if matches!(definition.kind, DefinitionKind::DefinedName) => {
-                    self.errors.push(Spanned::new(Error::PathIsValue, span));
-                }
-                Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
-                    self.errors
-                        .push(Spanned::new(Error::PathCannotAssociate, span));
-                }
-                Ok(definition)
-                    if *module_depth > self.current_mod.len()
-                        && matches!(definition.visibility, Visibility::Private) =>
-                {
-                    self.errors.push(Spanned::new(Error::PathIsPrivate, span));
-                }
-                Ok(definition) => {
-                    if matches!(definition.kind, DefinitionKind::Mod) {
-                        *module_depth += 1;
+            PathElement::Name(name) => {
+                match self.resolve_path_name(resolved_path, (name, span), check_associated) {
+                    Err(error) => {
+                        self.errors.push(error);
                     }
+                    Ok(definition) if matches!(definition.kind, DefinitionKind::Function) => {
+                        self.errors
+                            .push(Spanned::new(Error::PathCannotAssociate, span));
+                    }
+                    Ok(_) => {}
                 }
-            },
+            }
         }
     }
 
-    fn resolve_path_type(&mut self, path: &[Spanned<PathElement>], ty_span: Span) {
+    fn resolve_path_name(
+        &mut self,
+        resolved_path: &[Module],
+        (name, span): (&str, Span),
+        check_associated: bool,
+    ) -> Result<Definition, Spanned<Error>> {
+        match self.resolve_and_insert_name(name, span) {
+            Err(_) => Err(Spanned::new(Error::PathDoesNotExist, span)),
+            Ok(_)
+                if check_associated
+                    && self
+                        .associated_with
+                        .last()
+                        .and_then(|of| self.associations.get(of))
+                        .is_some_and(|associations| !associations.contains_key(name)) =>
+            {
+                Err(Spanned::new(Error::PathDoesNotExist, span))
+            }
+            Ok(definition) if matches!(definition.kind, DefinitionKind::DefinedName) => {
+                Err(Spanned::new(Error::PathIsValue, span))
+            }
+            Ok(definition) if !self.is_visible(Some(resolved_path), &definition) => {
+                Err(Spanned::new(Error::PathIsPrivate, span))
+            }
+            Ok(definition) => Ok(definition),
+        }
+    }
+
+    fn resolve_path_type(
+        &mut self,
+        path: &[Spanned<PathElement>],
+        ty_span: Span,
+    ) -> Option<Definition> {
         if path.len() == 1
             && let Some(name) = path.last()
         {
-            self.resolve_path_element_type(name, ty_span);
+            self.resolve_path_element_type(name, ty_span, None, false)
         } else {
-            let associated_with = mem::take(&mut self.associated_with);
+            let error_count = self.errors.len();
 
             let mut resolved_path = self.current_mod.clone();
-            let mut module_depth = resolved_path.len();
+
+            let associated_with = mem::take(&mut self.associated_with);
 
             for element in path.iter().rev().skip(1).rev() {
                 let error_count = self.errors.len();
 
-                self.resolve_path_element(
-                    element.kind(),
-                    element.span(),
-                    &mut module_depth,
-                    &mut resolved_path,
-                );
+                self.resolve_path_element(element.kind(), element.span(), &mut resolved_path, true);
 
                 if self.errors.len() > error_count {
                     break;
@@ -1211,7 +1324,13 @@ impl NameResolver {
                 }
 
                 if let Some(span) = self.names.get(&element.span()).copied() {
-                    resolved_path.push(span);
+                    if let Some(definition) = self.resolve_name(match element.kind() {
+                        PathElement::Name(name) => name,
+                        PathElement::SelfType => "Self",
+                        PathElement::Super | PathElement::Root => unreachable!("the above \"continue\" ensures only PathElement::Name and PathElement::SelfType make it here"),
+                    }) {
+                        resolved_path.push(definition.module.clone());
+                    }
 
                     self.associated_with.pop();
                     self.associated_with.push(span);
@@ -1220,43 +1339,79 @@ impl NameResolver {
                 }
             }
 
-            if let Some(name) = path.last() {
-                self.resolve_path_element_type(name, ty_span);
-            }
+            let definition = if self.errors.len() > error_count {
+                None
+            } else {
+                path.last().and_then(|name| {
+                    self.resolve_path_element_type(
+                        name,
+                        ty_span,
+                        Some(resolved_path.as_slice()),
+                        true,
+                    )
+                })
+            };
 
             self.associated_with = associated_with;
+
+            definition
         }
     }
 
-    fn resolve_path_element_type(&mut self, element: &Spanned<PathElement>, ty_span: Span) {
+    #[must_use]
+    fn resolve_path_element_type(
+        &mut self,
+        element: &Spanned<PathElement>,
+        ty_span: Span,
+        resolved_path: Option<&[Module]>,
+        check_associated: bool,
+    ) -> Option<Definition> {
         match element.kind() {
             PathElement::SelfType => match self.resolve_and_insert_name("Self", element.span()) {
                 Err(error) => {
                     self.errors.push(error);
+
+                    None
                 }
                 Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                     self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
+
+                    None
                 }
                 Ok(definition) => {
                     self.names.insert(ty_span, definition.span);
+
+                    Some(definition)
                 }
             },
             PathElement::Name(name_text) => {
-                match self.resolve_and_insert_name(name_text, element.span()) {
+                match self.resolve_path_name(
+                    resolved_path.unwrap_or_default(),
+                    (name_text, element.span()),
+                    check_associated,
+                ) {
                     Err(error) => {
                         self.errors.push(error);
+
+                        None
                     }
                     Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
                         self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
+
+                        None
                     }
                     Ok(definition) => {
                         self.names.insert(ty_span, definition.span);
+
+                        Some(definition)
                     }
                 }
             }
             PathElement::Root | PathElement::Super => {
                 self.errors
                     .push(Spanned::new(Error::ExpectedType, element.span()));
+
+                None
             }
         }
     }

@@ -2,7 +2,7 @@ funky main() {
 	print_bool(either~Either~Second { value <- 21 }.is_second());
 }
 
-mod either[U] {
+pub mod either[U] {
 	pub sum Either[T] {
 		First {
 			value <- T,

@@ -6,7 +6,7 @@ funky triple_get_y[B, C, D, E](triple <- outer~inner~inner_inner~Triple[B, C, D,
 	triple.y
 }
 
-mod outer[O] {
+pub mod outer[O] {
 	pub mod inner[I] {
 		pub mod inner_inner[T] {
 			pub product Triple[W] {

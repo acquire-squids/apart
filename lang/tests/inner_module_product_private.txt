@@ -1,0 +1,21 @@
+funky main() {
+	print_wrapped_text();
+}
+
+funky print_wrapped_text() -> wrapper~Wrapper[String] {
+	let
+		text = wrapper~Wrapper {
+			value <- "this shouldn't work",
+		},
+	in {
+		print_string(text.value);
+
+		text
+	}
+}
+
+pub mod wrapper {
+	product Wrapper[T] {
+		value <- T,
+	}
+}

@@ -119,6 +119,12 @@ macro_rules! output_tests {
 
             apart::$test_macro!(root_path, "root_path.txt", "97\n");
 
+            apart::$test_macro!(
+                sibling_module_inner_inner,
+                "sibling_module_inner_inner.txt",
+                "",
+            );
+
             apart::$test_macro!(signed_min, "signed_min.txt", "-128\n",);
 
             apart::$test_macro!(some_some_none, "some_some_none.txt", "true\n21\n",);
@@ -262,10 +268,35 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        inner_module_private,
+        "inner_module_private.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::PathIsPrivate
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        inner_module_product_private,
+        "inner_module_product_private.txt",
+        [
+            apart::Error::NameResolve(apart::NameResolveError::PathIsPrivate),
+            apart::Error::NameResolve(apart::NameResolveError::PathIsPrivate)
+        ]
+    );
+
+    apart::test_compilation_errors!(
         invalid_assign_target,
         "invalid_assign_target.txt",
         [apart::Error::NameResolve(
             apart::NameResolveError::InvalidAssignTarget
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        native_method_without_target,
+        "native_method_without_target.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::NameNotDeclared
         )]
     );
 
@@ -326,11 +357,44 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        sibling_module_private,
+        "sibling_module_private.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::PathIsPrivate
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        sibling_module_inner_inner_self,
+        "sibling_module_inner_inner_self.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::PathDoesNotExist
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        sibling_module_product_private,
+        "sibling_module_product_private.txt",
+        [
+            apart::Error::NameResolve(apart::NameResolveError::PathIsPrivate,),
+            apart::Error::NameResolve(apart::NameResolveError::PathIsPrivate,)
+        ]
+    );
+
+    apart::test_compilation_errors!(
         signed_equals_unsigned,
         "signed_equals_unsigned.txt",
         [apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
             expected, got
         })] if expected == "i32" && got == "u32"
+    );
+
+    apart::test_compilation_errors!(
+        some_without_option,
+        "some_without_option.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::NameNotDeclared
+        )]
     );
 
     apart::test_compilation_errors!(

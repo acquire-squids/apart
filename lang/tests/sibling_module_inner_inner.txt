@@ -1,0 +1,17 @@
+funky main() {
+	
+}
+
+pub mod first_outer {
+	pub mod first_inner {
+		pub product First {}
+	}
+}
+
+mod second_outer {
+	mod second_inner {
+		product Second {
+			value <- root~first_outer~first_inner~First,
+		}
+	}
+}

@@ -1,0 +1,15 @@
+funky main() {
+	first~print_second_text();
+}
+
+pub mod first {
+	pub funky print_second_text() {
+		print_string(super~second~text());
+	}
+}
+
+mod second {
+	pub funky text() -> String {
+		"this shouldn't work"
+	}
+}
