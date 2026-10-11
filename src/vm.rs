@@ -4,6 +4,7 @@ use crate::{
 };
 
 use std::{
+    collections::HashSet,
     io::{BufRead, Write},
     mem,
 };
@@ -77,6 +78,87 @@ where
 }
 
 impl Vm {
+    fn value_to_string(&self, value: CopyableValue, seen: &mut HashSet<ValueIndex>) -> String {
+        if let CopyableValue::ValueIndex(value_index) = value
+            && let Some(value) = self.values.get(usize::from(value_index))
+        {
+            if seen.insert(value_index) {
+                return format!("{value_index:?}");
+            }
+
+            match value {
+                Value::MakeCompound(_)
+                | Value::MakeTaggedCompound { .. }
+                | Value::MakeString(_) => {
+                    unreachable!("You shouldn't print constants");
+                }
+                Value::Compound(values) => {
+                    let mut buffer = "Compound(".to_string();
+
+                    if let Some(first_value) = values.first() {
+                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+
+                        for value in values.iter().skip(1) {
+                            buffer.push_str(", ");
+
+                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                        }
+                    }
+
+                    buffer.push(')');
+
+                    buffer
+                }
+                Value::TaggedCompound {
+                    tag,
+                    fields: values,
+                } => {
+                    let mut buffer = format!("TaggedCompound {{ tag: {tag}, fields: [");
+
+                    if let Some(first_value) = values.first() {
+                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+
+                        for value in values.iter().skip(1) {
+                            buffer.push_str(", ");
+
+                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                        }
+                    }
+
+                    buffer.push_str("] }");
+
+                    buffer
+                }
+                Value::String(_) => {
+                    format!("{value:?}")
+                }
+            }
+        } else {
+            format!("{value:?}")
+        }
+    }
+
+    fn registers_to_string(&self) -> String {
+        let mut buffer = "[".to_string();
+
+        if let Some(first_value) = self.registers.first() {
+            buffer.push_str(
+                self.value_to_string(*first_value, &mut HashSet::new())
+                    .as_str(),
+            );
+
+            for value in self.registers.iter().skip(1) {
+                buffer.push_str(", ");
+
+                buffer.push_str(self.value_to_string(*value, &mut HashSet::new()).as_str());
+            }
+        }
+
+        buffer.push(']');
+
+        buffer
+    }
+
     fn run<O>(&mut self, out: &mut O)
     where
         O: Write,
@@ -93,11 +175,11 @@ impl Vm {
 
                 println!();
 
-                println!("    {:?}", self.registers);
+                println!("    {}", self.registers_to_string());
 
                 println!();
 
-                println!("    {:?}", (self.fp, self.sp));
+                println!("    {:?}", self.sp);
 
                 std::io::stdin().lock().lines().next();
             }
