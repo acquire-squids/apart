@@ -1,5 +1,5 @@
 use crate::{
-    basic_blocks::{Address, BlockIndex, Value},
+    basic_blocks::{Address, BlockIndex, Instruction, Value},
     ssa::{Block, BlockTerminator, Ssa},
 };
 
@@ -10,7 +10,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
     for (b, block) in ssa.blocks().iter().enumerate() {
         if let BlockTerminator::Jump(destination) = block.terminator()
-            && block.instructions().is_empty()
+            && (block.instructions().is_empty()
+                || block.instructions().iter().all(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(0)
+                    )
+                }))
         {
             block_swaps[usize::from(*destination)] = Some((
                 BlockIndex(b),
