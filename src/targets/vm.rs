@@ -1481,6 +1481,35 @@ where
     fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self;
 }
 
+macro_rules! disassemble_number_from {
+    (
+        $bytes:ident, $instructive:ident ;
+        $from:ident $(,)?
+    ) => {{
+        const SIZE: usize = std::mem::size_of::<$from>();
+
+        $bytes[(*$instructive.ip_mut())..{
+            *$instructive.ip_mut() += SIZE;
+            *$instructive.ip_mut()
+        }]
+            .as_array::<SIZE>()
+            .map(|array| $from::from_le_bytes(*array))
+    }};
+}
+
+macro_rules! disassemble_number_and_convert {
+    (
+        $bytes:ident, $instructive:ident ;
+        $from:ident, $to:ident $(,)?
+    ) => {{
+        disassemble_number_from!(
+            $bytes, $instructive ;
+            $from,
+        )
+        .and_then(|field_count| <$to>::try_from(field_count).ok())
+    }};
+}
+
 pub trait Instructive: Sized {
     fn ip_mut(&mut self) -> &mut usize;
 
@@ -1537,13 +1566,11 @@ pub trait Instructive: Sized {
                     self.instructions_mut().push(IrInstruction::Push(value));
                 }
                 OpCode::AccessU8 => {
-                    let index = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1553,13 +1580,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessU16 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1569,13 +1594,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessU32 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1585,13 +1608,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessU64 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1601,13 +1622,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessAssignU8 => {
-                    let index = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1617,13 +1636,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::AccessAssign { index, of, value });
                 }
                 OpCode::AccessAssignU16 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1633,13 +1650,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::AccessAssign { index, of, value });
                 }
                 OpCode::AccessAssignU32 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1649,13 +1664,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::AccessAssign { index, of, value });
                 }
                 OpCode::AccessAssignU64 => {
-                    let index = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|index| usize::try_from(index).ok())
-                        .expect("access index is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let index = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("access index is not a valid usize");
 
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1673,57 +1686,47 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::GetTag { of, to });
                 }
                 OpCode::PopNU8 => {
-                    let count = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("pop count is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let count = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("pop count is not a valid usize");
 
                     self.instructions_mut().push(IrInstruction::PopN(count));
                 }
                 OpCode::PopNU16 => {
-                    let count = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("pop count is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let count = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("pop count is not a valid usize");
 
                     self.instructions_mut().push(IrInstruction::PopN(count));
                 }
                 OpCode::PopNU32 => {
-                    let count = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|count| usize::try_from(count).ok())
-                        .expect("pop count is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let count = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("pop count is not a valid usize");
 
                     self.instructions_mut().push(IrInstruction::PopN(count));
                 }
                 OpCode::PopNU64 => {
-                    let count = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|count| usize::try_from(count).ok())
-                        .expect("pop count is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let count = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("pop count is not a valid usize");
 
                     self.instructions_mut().push(IrInstruction::PopN(count));
                 }
                 OpCode::CallU8 => {
-                    let arity = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("call arity is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let arity = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("call arity is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1733,13 +1736,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::CallU16 => {
-                    let arity = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("call arity is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let arity = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("call arity is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1749,13 +1750,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::CallU32 => {
-                    let arity = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|arity| usize::try_from(arity).ok())
-                        .expect("call arity is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let arity = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("call arity is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1765,13 +1764,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::CallU64 => {
-                    let arity = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|arity| usize::try_from(arity).ok())
-                        .expect("call arity is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let arity = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("call arity is not a valid usize");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1781,69 +1778,57 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::JumpU8 => {
-                    let to = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let to = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     self.instructions_mut()
                         .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::JumpU16 => {
-                    let to = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let to = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     self.instructions_mut()
                         .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::JumpU32 => {
-                    let to = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let to = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     self.instructions_mut()
                         .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::JumpU64 => {
-                    let to = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let to = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     self.instructions_mut()
                         .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::BranchU8 => {
-                    let when_true = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
+                    let when_true = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
-                    *self.ip_mut() += 1;
-
-                    let otherwise = bytes[(*self.ip_mut())..=(*self.ip_mut())]
-                        .as_array::<1>()
-                        .map(|array| u8::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 1;
+                    let otherwise = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u8, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     let condition = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1858,21 +1843,17 @@ pub trait Instructive: Sized {
                     });
                 }
                 OpCode::BranchU16 => {
-                    let when_true = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
+                    let when_true = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
-                    *self.ip_mut() += 2;
-
-                    let otherwise = bytes[(*self.ip_mut())..(*self.ip_mut() + 2)]
-                        .as_array::<2>()
-                        .map(|array| u16::from_le_bytes(*array))
-                        .map(usize::from)
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 2;
+                    let otherwise = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u16, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     let condition = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1887,21 +1868,17 @@ pub trait Instructive: Sized {
                     });
                 }
                 OpCode::BranchU32 => {
-                    let when_true = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
+                    let when_true = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
-                    *self.ip_mut() += 4;
-
-                    let otherwise = bytes[(*self.ip_mut())..(*self.ip_mut() + 4)]
-                        .as_array::<4>()
-                        .map(|array| u32::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 4;
+                    let otherwise = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u32, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     let condition = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1916,21 +1893,17 @@ pub trait Instructive: Sized {
                     });
                 }
                 OpCode::BranchU64 => {
-                    let when_true = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
+                    let when_true = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
-                    *self.ip_mut() += 8;
-
-                    let otherwise = bytes[(*self.ip_mut())..(*self.ip_mut() + 8)]
-                        .as_array::<8>()
-                        .map(|array| u64::from_le_bytes(*array))
-                        .and_then(|to| usize::try_from(to).ok())
-                        .expect("jump address is not a valid usize");
-
-                    *self.ip_mut() += 8;
+                    let otherwise = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("jump address is not a valid usize");
 
                     let condition = ValueOrLocation::from_bytes(bytes, self);
 
@@ -2156,44 +2129,32 @@ where
             }],
         ) {
             Ok(ValueAt::RegisterU8) => Self(
-                bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 1;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<1>()
-                    .map(|array| u8::from_le_bytes(*array))
-                    .map(usize::from)
-                    .expect("128-bit register not allowed!  sorry!"),
+                disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u8, usize,
+                )
+                .expect("128-bit register not allowed!  sorry!"),
             ),
             Ok(ValueAt::RegisterU16) => Self(
-                bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .map(|array| u16::from_le_bytes(*array))
-                    .map(usize::from)
-                    .expect("128-bit register not allowed!  sorry!"),
+                disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u16, usize,
+                )
+                .expect("128-bit register not allowed!  sorry!"),
             ),
             Ok(ValueAt::RegisterU32) => Self(
-                bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .and_then(|index| usize::try_from(index).ok())
-                    .expect("128-bit register not allowed!  sorry!"),
+                disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u32, usize,
+                )
+                .expect("128-bit register not allowed!  sorry!"),
             ),
             Ok(ValueAt::RegisterU64) => Self(
-                bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|index| usize::try_from(index).ok())
-                    .expect("128-bit register not allowed!  sorry!"),
+                disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("128-bit register not allowed!  sorry!"),
             ),
             Ok(ValueAt::Value) => panic!("got a value where a register was expected"),
             Err(error) => panic!("invalid register op {error:#X}"),
@@ -2214,78 +2175,69 @@ where
                 ip
             }],
         ) {
-            Ok(TypeId::U8) => Self::U8(u8::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 1;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<1>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::I8) => Self::I8(i8::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 1;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<1>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::U16) => Self::U16(u16::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::I16) => Self::I16(i16::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::U32) => Self::U32(u32::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::I32) => Self::I32(i32::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::U64) => Self::U64(u64::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::I64) => Self::I64(i64::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .expect("the range is the same length as the expected array"),
-            )),
-            Ok(TypeId::F64) => Self::F64(f64::from_le_bytes(
-                *bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .expect("the range is the same length as the expected array"),
-            )),
+            Ok(TypeId::U8) => Self::U8(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    u8,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::I8) => Self::I8(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    i8,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::U16) => Self::U16(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    u16,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::I16) => Self::I16(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    i16,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::U32) => Self::U32(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    u32,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::I32) => Self::I32(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    i32,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::U64) => Self::U64(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    u64,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::I64) => Self::I64(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    i64,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::F64) => Self::F64(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    f64,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
             Ok(TypeId::Boolean) => Self::Boolean(
                 bool::try_from(
                     bytes[{
@@ -2298,46 +2250,38 @@ where
             ),
             Ok(TypeId::Unit) => Self::Unit,
             Ok(TypeId::String) => {
-                let text = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|length| usize::try_from(length).ok())
-                    .and_then(|length| {
-                        String::from_utf8(
-                            bytes[(*instructive.ip_mut())..{
-                                *instructive.ip_mut() += length;
-                                *instructive.ip_mut()
-                            }]
-                                .to_vec(),
-                        )
-                        .ok()
-                    })
-                    .expect("a string wasn't valid utf-8");
+                let text = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .and_then(|length| {
+                    String::from_utf8(
+                        bytes[(*instructive.ip_mut())..{
+                            *instructive.ip_mut() += length;
+                            *instructive.ip_mut()
+                        }]
+                            .to_vec(),
+                    )
+                    .ok()
+                })
+                .expect("a string wasn't valid utf-8");
 
                 instructive.values_mut().push(Value::MakeString(text));
 
                 Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
             }
             Ok(TypeId::FnU8) => {
-                let block_index = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 1;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<1>()
-                    .map(|array| u8::from_le_bytes(*array))
-                    .map(usize::from)
-                    .expect("a function was not a valid usize");
+                let block_index = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u8, usize,
+                )
+                .expect("a function was not a valid usize");
 
-                let max_register_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .expect("a function's max register count was not a valid u32");
+                let max_register_count = disassemble_number_from!(
+                    bytes, instructive ;
+                    u32,
+                )
+                .expect("a function's max register count was not a valid u32");
 
                 Self::Fn {
                     address: block_index,
@@ -2345,22 +2289,17 @@ where
                 }
             }
             Ok(TypeId::FnU16) => {
-                let block_index = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .map(|array| u16::from_le_bytes(*array))
-                    .map(usize::from)
-                    .expect("a function was not a valid usize");
+                let block_index = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u16, usize,
+                )
+                .expect("a function was not a valid usize");
 
-                let max_register_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .expect("a function's max register count was not a valid u32");
+                let max_register_count = disassemble_number_from!(
+                    bytes, instructive ;
+                    u32,
+                )
+                .expect("a function's max register count was not a valid u32");
 
                 Self::Fn {
                     address: block_index,
@@ -2368,22 +2307,17 @@ where
                 }
             }
             Ok(TypeId::FnU32) => {
-                let block_index = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .and_then(|address| usize::try_from(address).ok())
-                    .expect("a function was not a valid usize");
+                let block_index = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u32, usize,
+                )
+                .expect("a function was not a valid usize");
 
-                let max_register_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .expect("a function's max register count was not a valid u32");
+                let max_register_count = disassemble_number_from!(
+                    bytes, instructive ;
+                    u32,
+                )
+                .expect("a function's max register count was not a valid u32");
 
                 Self::Fn {
                     address: block_index,
@@ -2391,22 +2325,17 @@ where
                 }
             }
             Ok(TypeId::FnU64) => {
-                let block_index = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|address| usize::try_from(address).ok())
-                    .expect("a function was not a valid usize");
+                let block_index = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("a function was not a valid usize");
 
-                let max_register_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 4;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<4>()
-                    .map(|array| u32::from_le_bytes(*array))
-                    .expect("a function's max register count was not a valid u32");
+                let max_register_count = disassemble_number_from!(
+                    bytes, instructive ;
+                    u32,
+                )
+                .expect("a function's max register count was not a valid u32");
 
                 Self::Fn {
                     address: block_index,
@@ -2414,24 +2343,19 @@ where
                 }
             }
             Ok(TypeId::NativeFn) => Self::NativeFn(
-                bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .map(|array| u16::from_le_bytes(*array))
-                    .and_then(|native_fn| NativeFn::try_from(native_fn).ok())
-                    .expect("a native function was not valid"),
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    u16,
+                )
+                .and_then(|value| NativeFn::try_from(value).ok())
+                .expect("a native function was not valid"),
             ),
             Ok(TypeId::Compound) => {
-                let field_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|field_count| usize::try_from(field_count).ok())
-                    .expect("a compound's field count was not a valid usize");
+                let field_count = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("a compound's field count was not a valid usize");
 
                 let mut fields = vec![];
 
@@ -2446,22 +2370,17 @@ where
                 Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
             }
             Ok(TypeId::TaggedCompound) => {
-                let tag = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 2;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<2>()
-                    .map(|array| u16::from_le_bytes(*array))
-                    .expect("a tagged compound's tag was not a valid u16");
+                let tag = disassemble_number_from!(
+                    bytes, instructive ;
+                    u16,
+                )
+                .expect("a tagged compound's tag was not a valid u16");
 
-                let field_count = bytes[(*instructive.ip_mut())..{
-                    *instructive.ip_mut() += 8;
-                    *instructive.ip_mut()
-                }]
-                    .as_array::<8>()
-                    .map(|array| u64::from_le_bytes(*array))
-                    .and_then(|field_count| usize::try_from(field_count).ok())
-                    .expect("a tagged compound's field count was not a valid usize");
+                let field_count = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("a tagged compound's field count was not a valid usize");
 
                 let mut fields = vec![];
 
