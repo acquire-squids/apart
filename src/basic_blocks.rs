@@ -321,7 +321,8 @@ impl Translator {
             Item::Primitive(_)
             | Item::Product { .. }
             | Item::Sum { .. }
-            | Item::Directive { .. } => {}
+            | Item::Directive { .. }
+            | Item::Alias { .. } => {}
             Item::NativeFn { name, .. } => {
                 self.addresses.insert(
                     name.span(),
@@ -426,7 +427,8 @@ impl Translator {
                 | Item::Sum { .. }
                 | Item::Fn { .. }
                 | Item::NativeFn { .. }
-                | Item::Directive { .. } => {}
+                | Item::Directive { .. }
+                | Item::Alias { .. } => {}
             }
         }
     }
@@ -445,7 +447,8 @@ impl Translator {
                 | Item::NativeFn { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. }
-                | Item::Directive { .. } => {}
+                | Item::Directive { .. }
+                | Item::Alias { .. } => {}
                 Item::Mod { contents, .. } => {
                     self.translate_items(ast, names, types, contents.as_slice(), true);
                 }

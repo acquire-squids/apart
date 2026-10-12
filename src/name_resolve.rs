@@ -13,6 +13,14 @@ pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
 
     resolver.associate_types(ast, ast.roots());
 
+    let errors = resolver.errors.len();
+
+    loop {
+        if !resolver.resolve_aliases(ast, ast.roots()) || resolver.errors.len() > errors {
+            break;
+        }
+    }
+
     resolver.resolve_types(ast, ast.roots());
 
     resolver.resolve_items(ast, ast.roots());
@@ -82,6 +90,8 @@ pub enum Error {
     SuperAtRoot,
     PathMorePrivateThanUse,
     OverlappingName,
+    DuplicateAlias,
+    RecursiveAlias,
 }
 
 impl fmt::Display for Error {
@@ -181,6 +191,8 @@ impl fmt::Display for Error {
                 write!(f, "this path is more private than the item using it")
             }
             Self::OverlappingName => write!(f, "this name resolves to more than one definition"),
+            Self::DuplicateAlias => write!(f, "this alias name is already in use in this scope"),
+            Self::RecursiveAlias => write!(f, "this alias is infinitely recursive and not allowed"),
         }
     }
 }
@@ -220,6 +232,7 @@ impl Module {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefinitionKind {
+    Alias,
     Type,
     Mod,
     Function,
@@ -477,7 +490,12 @@ impl NameResolver {
                 Err(error) => {
                     self.errors.push(error);
                 }
-                Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                Ok(definition)
+                    if !matches!(
+                        definition.kind,
+                        DefinitionKind::Type | DefinitionKind::Alias
+                    ) =>
+                {
                     self.errors
                         .push(Spanned::new(Error::UnknownSelf, ty.span()));
                 }
@@ -518,6 +536,48 @@ impl NameResolver {
                     for generic in generics {
                         self.associate_name(
                             name.span(),
+                            generic.kind().clone(),
+                            Definition {
+                                kind: DefinitionKind::Type,
+                                visibility: Visibility::Public,
+                                span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
+                            },
+                        );
+                    }
+
+                    self.associated_with.pop();
+                }
+                Item::Alias {
+                    alias,
+                    generics,
+                    visibility,
+                    ..
+                } => {
+                    if self.resolve_name(alias.kind()).is_some() {
+                        self.errors
+                            .push(Spanned::new(Error::DuplicateAlias, alias.span()));
+                    } else {
+                        self.associate_name(
+                            self.current_mod
+                                .last()
+                                .map(|module| module.span)
+                                .expect("there will always be at least one mod"),
+                            alias.kind().clone(),
+                            Definition {
+                                kind: DefinitionKind::Alias,
+                                visibility: *visibility,
+                                span: alias.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
+                            },
+                        );
+                    }
+
+                    self.associated_with.push(alias.span());
+
+                    for generic in generics {
+                        self.associate_name(
+                            alias.span(),
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
@@ -731,11 +791,118 @@ impl NameResolver {
         }
     }
 
+    #[must_use]
+    fn resolve_aliases(&mut self, ast: &Ast, items: &[ItemIndex]) -> bool {
+        let mut changed = false;
+
+        for item in items {
+            match ast[*item].kind() {
+                Item::Primitive(_)
+                | Item::NativeFn { .. }
+                | Item::Fn { .. }
+                | Item::Product { .. }
+                | Item::Sum { .. }
+                | Item::Directive { .. } => {}
+                Item::Alias {
+                    alias,
+                    visibility,
+                    target,
+                    ..
+                } => {
+                    self.associated_with.push(alias.span());
+
+                    self.current_visibility.push(*visibility);
+
+                    self.resolve_type_signature(target);
+
+                    let mut span = target.span();
+
+                    while let Some(resolved_span) = self
+                        .names
+                        .get(&span)
+                        .and_then(|span| self.definitions.get(span))
+                        .map(Definition::span)
+                    {
+                        span = resolved_span;
+
+                        if span == alias.span() {
+                            self.errors
+                                .push(Spanned::new(Error::RecursiveAlias, alias.span()));
+
+                            break;
+                        }
+                    }
+
+                    if self
+                        .definitions
+                        .get(&alias.span())
+                        .is_some_and(|definition| definition.span != span)
+                        && let Some(definition) = self.definitions.get(&span).cloned()
+                        && let Some(alias_definition) = self.definitions.get_mut(&alias.span())
+                    {
+                        *alias_definition = definition;
+
+                        changed |= true;
+                    }
+
+                    self.current_visibility.pop();
+
+                    self.associated_with.pop();
+                }
+                Item::Mod { name, contents, .. } => {
+                    self.current_mod.push(
+                        self.definitions
+                            .get(&name.span())
+                            .expect("the module should have been resolved by a previous pass")
+                            .module
+                            .clone(),
+                    );
+
+                    self.associated_with.push(name.span());
+
+                    changed |= self.resolve_aliases(ast, contents);
+
+                    self.associated_with.pop();
+
+                    self.current_mod.pop();
+                }
+                Item::Teach { student, body, .. } => {
+                    self.associated_with.push(student.span());
+
+                    self.resolve_type_signature(student);
+
+                    let span = self
+                        .names
+                        .get(&student.span())
+                        .map_or_else(|| student.span(), |span| *span);
+
+                    self.associated_with.push(span);
+
+                    self.variable_scopes.push(HashMap::new());
+
+                    self.current_type.push(span);
+
+                    changed |= self.resolve_aliases(ast, body);
+
+                    self.current_type.pop();
+
+                    self.variable_scopes.pop();
+
+                    self.associated_with.pop();
+
+                    self.associated_with.pop();
+                }
+            }
+        }
+
+        changed
+    }
+
     #[allow(clippy::too_many_lines)]
     fn resolve_types(&mut self, ast: &Ast, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
-                Item::Primitive(_) | Item::Directive { .. } => {}
+                Item::Primitive(_) | Item::Directive { .. } | Item::Alias { .. } => {}
                 Item::NativeFn {
                     name,
                     signature,
@@ -916,7 +1083,8 @@ impl NameResolver {
             | Item::NativeFn { .. }
             | Item::Product { .. }
             | Item::Sum { .. }
-            | Item::Directive { .. } => {}
+            | Item::Directive { .. }
+            | Item::Alias { .. } => {}
             Item::Mod { name, contents, .. } => {
                 self.current_mod.push(
                     self.definitions
@@ -1070,7 +1238,12 @@ impl NameResolver {
                         Err(error) => {
                             self.errors.push(error);
                         }
-                        Ok(definition) if matches!(definition.kind, DefinitionKind::Type) => {
+                        Ok(definition)
+                            if matches!(
+                                definition.kind,
+                                DefinitionKind::Type | DefinitionKind::Alias
+                            ) =>
+                        {
                             self.errors
                                 .push(Spanned::new(Error::AssignmentTargetIsType, ast[lhs].span()));
                         }
@@ -1104,7 +1277,12 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition) if matches!(definition.kind, DefinitionKind::Type) => {
+                    Ok(definition)
+                        if matches!(
+                            definition.kind,
+                            DefinitionKind::Type | DefinitionKind::Alias
+                        ) =>
+                    {
                         self.errors.push(Spanned::new(Error::NameIsType, span));
                     }
                     Ok(definition) if matches!(definition.kind, DefinitionKind::Mod) => {
@@ -1121,7 +1299,12 @@ impl NameResolver {
                     Err(error) => {
                         self.errors.push(error);
                     }
-                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                    Ok(definition)
+                        if !matches!(
+                            definition.kind,
+                            DefinitionKind::Type | DefinitionKind::Alias
+                        ) =>
+                    {
                         self.errors
                             .push(Spanned::new(Error::ExpectedType, name.span()));
                     }
@@ -1200,15 +1383,24 @@ impl NameResolver {
                     continue;
                 }
 
-                if let Some(span) = self.names.get(&ast[p].span()).copied() {
-                    if let Some(definition) = self.definitions.get(&span)
-                        && matches!(definition.kind, DefinitionKind::Mod)
-                    {
-                        resolved_path.push(definition.module.clone());
+                if let Some(definition) = self
+                    .names
+                    .get(&ast[p].span())
+                    .and_then(|span| self.definitions.get(span))
+                {
+                    match definition.kind {
+                        DefinitionKind::Alias => {
+                            self.associated_with = associated_with;
+                            return;
+                        }
+                        DefinitionKind::Mod => {
+                            resolved_path.push(definition.module.clone());
+                        }
+                        _ => {}
                     }
 
                     self.associated_with.pop();
-                    self.associated_with.push(span);
+                    self.associated_with.push(definition.span);
                 } else {
                     break;
                 }
@@ -1400,15 +1592,24 @@ impl NameResolver {
                     continue;
                 }
 
-                if let Some(span) = self.names.get(&element.span()).copied() {
-                    if let Some(definition) = self.definitions.get(&span)
-                        && matches!(definition.kind, DefinitionKind::Mod)
-                    {
-                        resolved_path.push(definition.module.clone());
+                if let Some(definition) = self
+                    .names
+                    .get(&element.span())
+                    .and_then(|span| self.definitions.get(span))
+                {
+                    match definition.kind {
+                        DefinitionKind::Alias => {
+                            self.associated_with = associated_with;
+                            return Some(definition.clone());
+                        }
+                        DefinitionKind::Mod => {
+                            resolved_path.push(definition.module.clone());
+                        }
+                        _ => {}
                     }
 
                     self.associated_with.pop();
-                    self.associated_with.push(span);
+                    self.associated_with.push(definition.span);
                 } else {
                     break;
                 }
@@ -1448,7 +1649,12 @@ impl NameResolver {
 
                     None
                 }
-                Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                Ok(definition)
+                    if !matches!(
+                        definition.kind,
+                        DefinitionKind::Type | DefinitionKind::Alias
+                    ) =>
+                {
                     self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
 
                     None
@@ -1470,7 +1676,12 @@ impl NameResolver {
 
                         None
                     }
-                    Ok(definition) if !matches!(definition.kind, DefinitionKind::Type) => {
+                    Ok(definition)
+                        if !matches!(
+                            definition.kind,
+                            DefinitionKind::Type | DefinitionKind::Alias
+                        ) =>
+                    {
                         self.errors.push(Spanned::new(Error::ExpectedType, ty_span));
 
                         None

@@ -16,6 +16,8 @@ pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<
 
     type_checker.check_type_signatures(ast, names, ast.roots());
 
+    type_checker.check_aliases(ast, names, ast.roots());
+
     type_checker.associate_items(ast, names, ast.roots());
 
     type_checker.type_check_functions(ast, names, ast.roots(), [].as_slice());
@@ -1024,6 +1026,59 @@ impl TypeChecker {
                 Item::Primitive(_)
                 | Item::NativeFn { .. }
                 | Item::Fn { .. }
+                | Item::Directive { .. }
+                | Item::Alias { .. } => {}
+            }
+        }
+    }
+
+    fn check_aliases(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
+        for item in items {
+            match ast[*item].kind() {
+                Item::Alias {
+                    generics, target, ..
+                } => {
+                    for generic in generics {
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
+
+                        self.type_map.insert(generic.span(), type_index);
+                    }
+
+                    self.check_type_signature(names, target);
+                }
+                Item::Mod {
+                    contents, generics, ..
+                } => {
+                    let mut module_generics = vec![];
+
+                    for generic in generics {
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
+
+                        self.type_map.insert(generic.span(), type_index);
+
+                        module_generics.push(type_index);
+                    }
+
+                    self.module_generics.push(module_generics);
+
+                    self.check_aliases(ast, names, contents.as_slice());
+
+                    self.module_generics.pop();
+                }
+                Item::Teach { body, generics, .. } => {
+                    for generic in generics {
+                        let type_index = self.push_type(Type::Existential(generic.clone()));
+
+                        self.type_map.insert(generic.span(), type_index);
+                    }
+
+                    self.check_aliases(ast, names, body.as_slice());
+                }
+                Item::Primitive(_)
+                | Item::NativeFn { .. }
+                | Item::Fn { .. }
+                | Item::Product { .. }
+                | Item::Sum { .. }
                 | Item::Directive { .. } => {}
             }
         }
@@ -1032,7 +1087,7 @@ impl TypeChecker {
     fn associate_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex]) {
         for item in items {
             let name = match ast[*item].kind() {
-                Item::Directive { .. } => None,
+                Item::Directive { .. } | Item::Alias { .. } => None,
                 Item::Primitive(name) | Item::Product { name, .. } | Item::Sum { name, .. } => {
                     Some(name)
                 }
@@ -1536,7 +1591,8 @@ impl TypeChecker {
                 | Item::NativeFn { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. }
-                | Item::Directive { .. } => {}
+                | Item::Directive { .. }
+                | Item::Alias { .. } => {}
                 Item::Mod {
                     name,
                     contents,

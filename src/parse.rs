@@ -102,6 +102,8 @@ pub enum Error {
     UnaryWithoutOperand,
     LetWithoutName,
     MatchWithoutValue,
+    AliasWithoutEqual,
+    AliasWithoutSemicolon,
 }
 
 impl fmt::Display for Error {
@@ -381,6 +383,10 @@ impl fmt::Display for Error {
             Self::UnaryWithoutOperand => write!(f, "this unary operator doesn't have an operand"),
             Self::LetWithoutName => write!(f, "expected a name after \"let\""),
             Self::MatchWithoutValue => write!(f, "expected an expression after \"match\""),
+            Self::AliasWithoutEqual => write!(f, "there should be an equal sign after the alias"),
+            Self::AliasWithoutSemicolon => {
+                write!(f, "the alias should be terminated by a semicolon")
+            }
         }
     }
 }
@@ -462,7 +468,9 @@ impl Reportable for Error {
             | Self::MatchWithMultipleFallback
             | Self::MatchWithoutCases
             | Self::BinaryWithoutRightOperand
-            | Self::UnaryWithoutOperand => vec![],
+            | Self::UnaryWithoutOperand
+            | Self::AliasWithoutEqual
+            | Self::AliasWithoutSemicolon => vec![],
         }
     }
 }
@@ -701,6 +709,12 @@ pub enum Item {
         name: Spanned<String>,
         condition: ExprIndex,
         item: ItemIndex,
+    },
+    Alias {
+        alias: Spanned<String>,
+        generics: Vec<Spanned<String>>,
+        target: Spanned<TypeSignature>,
+        visibility: Visibility,
     },
 }
 
@@ -989,9 +1003,8 @@ impl<'s, 'p> Parser<'s, 'p> {
         match lexeme {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
-            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" | "match" => {
-                Some(lexeme)
-            }
+            | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" | "match"
+            | "alias" => Some(lexeme),
             _ => None,
         }
     }
@@ -1267,6 +1280,7 @@ impl Parser<'_, '_> {
                     "product" => self.parse_product(ast, span, visibility, true),
                     "sum" => self.parse_sum(ast, span, visibility),
                     "mod" => self.parse_mod(ast, span, visibility),
+                    "alias" => self.parse_alias(ast, span, visibility),
                     "teach" => self.parse_teach(ast, span),
                     _ => Err(Spanned::new(Error::ExpectedItem, span)),
                 }
@@ -1280,6 +1294,38 @@ impl Parser<'_, '_> {
         } else {
             Err(Spanned::new(Error::ExpectedItem, self.span_or_end()))
         }
+    }
+
+    fn parse_alias(
+        &mut self,
+        ast: &mut Ast,
+        span: Span,
+        visibility: Visibility,
+    ) -> Result<ItemIndex, Spanned<Error>> {
+        let alias = self.spanned_name()?;
+
+        let generics = self.parse_generics()?;
+
+        self.consume_next(Token::Equal, Error::AliasWithoutEqual)?;
+
+        let target = self.parse_type_signature()?;
+
+        let span = span
+            .combine_with(
+                self.consume_next(Token::Semicolon, Error::AliasWithoutSemicolon)?
+                    .span(),
+            )
+            .expect("these spans are from the same source");
+
+        Ok(ast.push_item(Spanned::new(
+            Item::Alias {
+                alias,
+                generics,
+                target,
+                visibility,
+            },
+            span,
+        )))
     }
 
     fn parse_directive(
@@ -1735,7 +1781,8 @@ impl Parser<'_, '_> {
                     | Item::Sum { .. }
                     | Item::Mod { .. }
                     | Item::Teach { .. }
-                    | Item::Directive { .. } => {
+                    | Item::Directive { .. }
+                    | Item::Alias { .. } => {
                         self.errors
                             .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
                     }

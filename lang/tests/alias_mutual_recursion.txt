@@ -1,0 +1,7 @@
+funky main() {
+	
+}
+
+alias A = B;
+alias B = C;
+alias C = A;

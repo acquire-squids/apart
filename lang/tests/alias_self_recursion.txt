@@ -1,0 +1,5 @@
+funky main() {
+	
+}
+
+alias Recursion = Recursion;

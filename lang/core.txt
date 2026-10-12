@@ -11,6 +11,9 @@ primitive bool;
 primitive unit;
 primitive String;
 
+pub alias Option[T] = option~Option[T];
+pub alias Result[T, E] = result~Result[T, E];
+
 native funky print_u8 = funky(u8) -> unit;
 native funky print_i8 = funky(i8) -> unit;
 native funky print_u16 = funky(u16) -> unit;
@@ -25,7 +28,7 @@ native funky print_unit = funky(unit) -> unit;
 native funky print_string = funky(String) -> unit;
 native funky clock = funky() -> f64;
 
-pub mod string_native_functions {
+pub mod string {
 	teach String {
 		pub native funky extend = funky(Self, Self) -> unit;
 
@@ -41,50 +44,54 @@ pub mod string_native_functions {
 	}
 }
 
-sum Option[T] {
-	Some {
-		value <- T,
-	},
-	None {},
-}
-
-sum Result[T, E] {
-	Ok {
-		value <- T,
-	},
-	Err {
-		error <- E,
-	},
-}
-
-teach[T] Option[T] {
-	funky is_some(self <- Self) -> bool {
-		match self {
-			Self~Some { .. } => true,
-			else => false,
-		}
+pub mod option {
+	pub sum Option[T] {
+		Some {
+			pub value <- T,
+		},
+		None {},
 	}
 
-	funky is_none(self <- Self) -> bool {
-		match self {
-			Self~None {} => true,
-			else => false,
+	teach[T] Option[T] {
+		pub funky is_some(self <- Self) -> bool {
+			match self {
+				Self~Some { .. } => true,
+				else => false,
+			}
+		}
+
+		pub funky is_none(self <- Self) -> bool {
+			match self {
+				Self~None {} => true,
+				else => false,
+			}
 		}
 	}
 }
 
-teach[T, E] Result[T, E] {
-	funky is_ok(self <- Self) -> bool {
-		match self {
-			Self~Ok { .. } => true,
-			else => false,
-		}
+pub mod result {
+	pub sum Result[T, E] {
+		Ok {
+			pub value <- T,
+		},
+		Err {
+			pub error <- E,
+		},
 	}
 
-	funky is_err(self <- Self) -> bool {
-		match self {
-			Self~Err { ..} => true,
-			else => false,
+	teach[T, E] Result[T, E] {
+		pub funky is_ok(self <- Self) -> bool {
+			match self {
+				Self~Ok { .. } => true,
+				else => false,
+			}
+		}
+
+		pub funky is_err(self <- Self) -> bool {
+			match self {
+				Self~Err { ..} => true,
+				else => false,
+			}
 		}
 	}
 }

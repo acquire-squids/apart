@@ -23,6 +23,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
 
+            apart::$test_macro!(forward_alias, "forward_alias.txt", "true\n");
+
             apart::$test_macro!(fn_parameter, "fn_parameter.txt", "21\n");
 
             apart::$test_macro!(hello_bingus, "hello_bingus.txt", "Hello, Bingus!\n");
@@ -180,6 +182,22 @@ output_tests!(
 
 mod compilation_error {
     apart::test_compilation_errors!(
+        alias_self_recursion,
+        "alias_self_recursion.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::RecursiveAlias
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        alias_mutual_recursion,
+        "alias_mutual_recursion.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::RecursiveAlias
+        )]
+    );
+
+    apart::test_compilation_errors!(
         assign_to_fn,
         "assign_to_fn.txt",
         [apart::Error::NameResolve(
@@ -263,6 +281,21 @@ mod compilation_error {
         [apart::Error::NameResolve(
             apart::NameResolveError::PathDoesNotExist
         )]
+    );
+
+    apart::test_compilation_errors!(
+        forward_alias_generic_mismatch,
+        "forward_alias_generic_mismatch.txt",
+        [
+            apart::Error::TypeCheck(apart::TypeCheckError::GenericCountMismatch {
+                expected: 2,
+                got: 0
+            }),
+            apart::Error::TypeCheck(apart::TypeCheckError::GenericCountMismatch {
+                expected: 2,
+                got: 0
+            })
+        ]
     );
 
     apart::test_compilation_errors!(

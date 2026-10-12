@@ -1,0 +1,13 @@
+funky main() {
+	print_bool(wrap_in_ok(97).is_ok());
+}
+
+funky wrap_in_ok[T](value <- T) -> A[T, unit] {
+	A~Ok { value, }
+}
+
+alias A[T, E] = B[T, E];
+
+alias B[T, E] = Either[T, E];
+
+alias Either[T, E] = Result[T, E];

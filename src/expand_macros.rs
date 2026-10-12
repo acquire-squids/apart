@@ -114,7 +114,8 @@ fn expand_item(mut ast: &mut Ast, target: Target, item: ItemIndex) -> Result<(),
         | Item::Sum { .. }
         | Item::Mod { .. }
         | Item::Teach { .. }
-        | Item::Fn { .. } => Ok(()),
+        | Item::Fn { .. }
+        | Item::Alias { .. } => Ok(()),
     }
 }
 
