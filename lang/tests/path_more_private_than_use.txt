@@ -1,0 +1,35 @@
+funky main() {
+	
+}
+
+pub mod wrapper {
+	product Wrapper[T] {
+		value <- T,
+	}
+
+	pub mod inner {
+		pub product InnerDoubleWrapper[T] {
+			value <- super~Wrapper[T],
+		}
+	}
+
+	pub funky print_wrapped_string(wrapped <- Wrapper[String]) {
+		print_string(wrapped.unwrap());
+	}
+
+	pub product DoubleWrapper[T] {
+		value <- Wrapper[T],
+	}
+
+	teach[T] Wrapper[T] {
+		pub funky wrap(value <- T) -> Self {
+			Self {
+				value,
+			}
+		}
+
+		pub funky unwrap(self <- Self) -> T {
+			self.value
+		}
+	}
+}

@@ -46,6 +46,8 @@ struct NameResolver {
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
     module_id: ModuleId,
+    current_visibility: Vec<Visibility>,
+    currently_teaching: Vec<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,6 +78,7 @@ pub enum Error {
     RootDeeperThanPathStart,
     UnknownSelf,
     SuperAtRoot,
+    PathMorePrivateThanUse,
 }
 
 impl fmt::Display for Error {
@@ -170,6 +173,9 @@ impl fmt::Display for Error {
                     f,
                     "\"super\" can only be used in a path if there is an outer module"
                 )
+            }
+            Self::PathMorePrivateThanUse => {
+                write!(f, "this path is more private than the item using it")
             }
         }
     }
@@ -293,6 +299,8 @@ impl NameResolver {
             errors: vec![],
             names: HashMap::new(),
             module_id: ROOT_MODULE_ID,
+            current_visibility: vec![],
+            currently_teaching: vec![],
         }
     }
 
@@ -478,7 +486,7 @@ impl NameResolver {
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
-                                visibility: Visibility::Private,
+                                visibility: Visibility::Public,
                                 span: generic.span(),
                                 module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
@@ -530,7 +538,7 @@ impl NameResolver {
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
-                                visibility: Visibility::Private,
+                                visibility: Visibility::Public,
                                 span: generic.span(),
                                 module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
@@ -556,7 +564,7 @@ impl NameResolver {
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
-                                visibility: Visibility::Private,
+                                visibility: Visibility::Public,
                                 span: generic.span(),
                                 module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
@@ -604,7 +612,7 @@ impl NameResolver {
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
-                                visibility: Visibility::Private,
+                                visibility: Visibility::Public,
                                 span: generic.span(),
                                 module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
@@ -647,7 +655,7 @@ impl NameResolver {
                             generic.kind().clone(),
                             Definition {
                                 kind: DefinitionKind::Type,
-                                visibility: Visibility::Private,
+                                visibility: Visibility::Public,
                                 span: generic.span(),
                                 module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
                             },
@@ -736,7 +744,11 @@ impl NameResolver {
 
                     self.variable_scopes.push(HashMap::new());
 
+                    self.currently_teaching.push(span);
+
                     self.resolve_types(ast, body);
+
+                    self.currently_teaching.pop();
 
                     self.variable_scopes.pop();
 
@@ -755,35 +767,55 @@ impl NameResolver {
                 } => {
                     self.associated_with.push(name.span());
 
+                    self.current_visibility.push(*visibility);
+
                     for parameter in parameters {
                         self.resolve_type_signature(parameter.ty());
                     }
 
                     self.resolve_type_signature(return_type);
 
+                    self.current_visibility.pop();
+
                     self.associated_with.pop();
 
                     self.resolve_function_name(name, *visibility, Error::DuplicateFnName);
                 }
-                Item::Product { name, fields, .. } => {
+                Item::Product {
+                    name,
+                    fields,
+                    visibility,
+                    ..
+                } => {
                     self.associated_with.push(name.span());
 
                     self.declare_name("Self".to_string(), name.span());
                     self.define_name("Self", DefinitionKind::Type);
+
+                    self.current_visibility.push(*visibility);
 
                     for field in fields {
                         self.resolve_type_signature(field.ty());
                     }
 
+                    self.current_visibility.pop();
+
                     self.undeclare("Self");
 
                     self.associated_with.pop();
                 }
-                Item::Sum { name, variants, .. } => {
+                Item::Sum {
+                    name,
+                    variants,
+                    visibility,
+                    ..
+                } => {
                     self.associated_with.push(name.span());
 
                     self.declare_name("Self".to_string(), name.span());
                     self.define_name("Self", DefinitionKind::Type);
+
+                    self.current_visibility.push(*visibility);
 
                     for variant in variants {
                         let Item::Product { fields, .. } = ast[*variant].kind() else {
@@ -794,6 +826,8 @@ impl NameResolver {
                             self.resolve_type_signature(field.ty());
                         }
                     }
+
+                    self.current_visibility.pop();
 
                     self.undeclare("Self");
 
@@ -1139,7 +1173,7 @@ impl NameResolver {
                         Expr::Name(name) => name,
                         Expr::SelfType => "Self",
                         _ => unreachable!("the above \"continue\" ensures only Expr::Name and Expr::SelfType make it here"),
-                    }) {
+                    }) && matches!(definition.kind, DefinitionKind::Mod) {
                         resolved_path.push(definition.module.clone());
                     }
 
@@ -1292,6 +1326,22 @@ impl NameResolver {
             Ok(definition) if !self.is_visible(Some(resolved_path), &definition) => {
                 Err(Spanned::new(Error::PathIsPrivate, span))
             }
+            Ok(definition)
+                if matches!(definition.visibility, Visibility::Private)
+                    && (resolved_path.len() >= self.current_mod.len()
+                        || definition.module.is
+                            == self
+                                .current_mod
+                                .last()
+                                .map_or(ROOT_MODULE.is, |module| module.is))
+                    && matches!(self.current_visibility.last(), Some(Visibility::Public))
+                    && self
+                        .currently_teaching
+                        .last()
+                        .is_none_or(|student| *student != definition.span) =>
+            {
+                Err(Spanned::new(Error::PathMorePrivateThanUse, span))
+            }
             Ok(definition) => Ok(definition),
         }
     }
@@ -1328,7 +1378,7 @@ impl NameResolver {
                         PathElement::Name(name) => name,
                         PathElement::SelfType => "Self",
                         PathElement::Super | PathElement::Root => unreachable!("the above \"continue\" ensures only PathElement::Name and PathElement::SelfType make it here"),
-                    }) {
+                    }) && matches!(definition.kind, DefinitionKind::Mod) {
                         resolved_path.push(definition.module.clone());
                     }
 

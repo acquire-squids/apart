@@ -333,6 +333,15 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        path_more_private_than_use,
+        "path_more_private_than_use.txt",
+        [
+            apart::Error::NameResolve(apart::NameResolveError::PathMorePrivateThanUse),
+            apart::Error::NameResolve(apart::NameResolveError::PathMorePrivateThanUse)
+        ]
+    );
+
+    apart::test_compilation_errors!(
         path_nonexistent,
         "path_nonexistent.txt",
         [apart::Error::NameResolve(
