@@ -1155,12 +1155,8 @@ impl NameResolver {
                     op: BinaryOp::PathAccess,
                     ..
                 }
-                | Expr::PathElement(_)
-                | Expr::SelfType => match ast[*rhs_of_lhs].kind() {
-                    Expr::Name(_)
-                    | Expr::Product { .. }
-                    | Expr::PathElement(_)
-                    | Expr::SelfType => {
+                | Expr::PathElement(_) => match ast[*rhs_of_lhs].kind() {
+                    Expr::Name(_) | Expr::Product { .. } | Expr::PathElement(_) => {
                         path.push(*rhs_of_lhs);
                     }
                     _ => {
@@ -1178,7 +1174,7 @@ impl NameResolver {
         }
 
         match ast[lhs].kind() {
-            Expr::Name(_) | Expr::PathElement(_) | Expr::SelfType => {
+            Expr::Name(_) | Expr::PathElement(_) => {
                 path.push(lhs);
             }
             _ => {
@@ -1197,7 +1193,10 @@ impl NameResolver {
 
                 if self.errors.len() > error_count {
                     break;
-                } else if !matches!(ast[p].kind(), Expr::Name(_) | Expr::SelfType) {
+                } else if !matches!(
+                    ast[p].kind(),
+                    Expr::Name(_) | Expr::PathElement(PathElement::SelfType)
+                ) {
                     continue;
                 }
 
@@ -1242,9 +1241,6 @@ impl NameResolver {
             }
             Expr::PathElement(element) => {
                 self.resolve_path_element(element, span, resolved_path, true);
-            }
-            Expr::SelfType => {
-                self.resolve_path_element(&PathElement::SelfType, span, resolved_path, true);
             }
             _ => {
                 self.errors.push(Spanned::new(Error::InvalidPath, span));

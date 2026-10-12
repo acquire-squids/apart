@@ -1693,7 +1693,6 @@ impl TypeChecker {
                     unreachable!("these won't exist since parsing succeeded");
                 }
                 Expr::PathElement(_)
-                | Expr::SelfType
                 | Expr::Float(_)
                 | Expr::Boolean(_)
                 | Expr::Unit
@@ -1841,13 +1840,13 @@ impl TypeChecker {
             | Expr::ProductNoName(_) => {
                 unreachable!("these won't exist since parsing succeeded");
             }
-            Expr::PathElement(_) => {
-                self.errors.push(Spanned::new(Error::ModuleAsExpr, span));
+            Expr::PathElement(PathElement::SelfType) => {
+                self.errors.push(Spanned::new(Error::TypeAsExpr, span));
 
                 self.type_error()
             }
-            Expr::SelfType => {
-                self.errors.push(Spanned::new(Error::TypeAsExpr, span));
+            Expr::PathElement(_) => {
+                self.errors.push(Spanned::new(Error::ModuleAsExpr, span));
 
                 self.type_error()
             }
@@ -2551,13 +2550,13 @@ impl TypeChecker {
         match op {
             BinaryOp::PathAccess => {
                 let lhs = match ast[lhs].kind() {
-                    Expr::Name(_) | Expr::SelfType => lhs,
+                    Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => lhs,
                     Expr::Binary {
                         op: BinaryOp::PathAccess,
                         rhs,
                         ..
                     } => match ast[*rhs].kind() {
-                        Expr::Name(_) | Expr::SelfType => *rhs,
+                        Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => *rhs,
                         _ => {
                             unreachable!("name resolution verifies the path is correct");
                         }

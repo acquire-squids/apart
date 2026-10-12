@@ -195,7 +195,6 @@ fn interpret(ast: &Ast, target: Target, expr: ExprIndex) -> Result<Value, Spanne
         | Expr::AsUnit(_)
         | Expr::Product { .. }
         | Expr::PathElement(_)
-        | Expr::SelfType
         | Expr::ProductNoName(_)
         | Expr::Match { .. } => Err(Spanned::new(
             Error::InvalidDirectiveExpression,

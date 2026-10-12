@@ -606,7 +606,6 @@ pub enum Expr {
         fields: Vec<(Spanned<String>, ExprIndex)>,
     },
     PathElement(PathElement),
-    SelfType,
     ProductNoName(Vec<(Spanned<String>, ExprIndex)>),
     Match {
         expr: ExprIndex,
@@ -875,7 +874,6 @@ impl Ast {
                 ..
             }
             | Expr::PathElement(_)
-            | Expr::SelfType
             | Expr::ProductNoName(_)
             | Expr::CallNoCallee(_)
             | Expr::String(_) => {}
@@ -1417,28 +1415,15 @@ impl Parser<'_, '_> {
         let current_tree = self.current_tree;
         let at = self.at;
 
-        let return_type = if let Some(minus) = self.match_next(Token::Minus) {
-            if self
-                .match_next(Token::Greater)
+        let return_type = if self.match_next(Token::Minus).is_some_and(|minus| {
+            self.match_next(Token::Greater)
                 .is_some_and(|greater| minus.span().end() == greater.span().start())
-            {
-                self.parse_type_signature()?
-            } else {
-                self.current_tree = current_tree;
-                self.at = at;
-
-                Spanned::new(
-                    TypeSignature::Path {
-                        path: vec![Spanned::new(
-                            PathElement::Name("unit".to_string()),
-                            parameters_span,
-                        )],
-                        generics: vec![],
-                    },
-                    parameters_span,
-                )
-            }
+        }) {
+            self.parse_type_signature()?
         } else {
+            self.current_tree = current_tree;
+            self.at = at;
+
             Spanned::new(
                 TypeSignature::Path {
                     path: vec![Spanned::new(
@@ -1845,27 +1830,15 @@ impl Parser<'_, '_> {
                     let current_tree = self.current_tree;
                     let at = self.at;
 
-                    let return_type = if let Some(minus) = self.match_next(Token::Minus) {
-                        if let Some(greater) = self.match_next(Token::Greater)
-                            && minus.span().end() == greater.span().start()
-                        {
-                            self.parse_type_signature()?
-                        } else {
-                            self.current_tree = current_tree;
-                            self.at = at;
-
-                            Spanned::new(
-                                TypeSignature::Path {
-                                    path: vec![Spanned::new(
-                                        PathElement::Name("unit".to_string()),
-                                        parameters_span,
-                                    )],
-                                    generics: vec![],
-                                },
-                                parameters_span,
-                            )
-                        }
+                    let return_type = if self.match_next(Token::Minus).is_some_and(|minus| {
+                        self.match_next(Token::Greater)
+                            .is_some_and(|greater| minus.span().end() == greater.span().start())
+                    }) {
+                        self.parse_type_signature()?
                     } else {
+                        self.current_tree = current_tree;
+                        self.at = at;
+
                         Spanned::new(
                             TypeSignature::Path {
                                 path: vec![Spanned::new(
@@ -2189,7 +2162,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                             Expr::Product {
                                 name: match ast[lhs].kind() {
                                     Expr::Name(name) => Spanned::new(name.clone(), ast[lhs].span()),
-                                    Expr::SelfType => {
+                                    Expr::PathElement(PathElement::SelfType) => {
                                         Spanned::new("Self".to_string(), ast[lhs].span())
                                     }
                                     Expr::Binary {
@@ -2200,7 +2173,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                                         Expr::Name(name) => {
                                             Spanned::new(name.clone(), ast[lhs].span())
                                         }
-                                        Expr::SelfType => {
+                                        Expr::PathElement(PathElement::SelfType) => {
                                             Spanned::new("Self".to_string(), ast[lhs].span())
                                         }
                                         _ => {
@@ -2310,13 +2283,8 @@ impl<'s, 'p> Parser<'s, 'p> {
                     let span = token.span();
 
                     match self.keyword(span) {
-                        Some("root" | "super") => {
+                        Some("root" | "super" | "Self") => {
                             Some((precedence::PRIMARY, (Self::path_element_expr, span)))
-                        }
-                        Some("Self") => {
-                            self.advance_token_tree()?;
-
-                            Some((precedence::PRIMARY, (Self::self_type_expr, span)))
                         }
                         Some("let") => {
                             self.advance_token_tree()?;
@@ -2729,16 +2697,6 @@ impl<'s, 'p> Parser<'s, 'p> {
         let exprs = self.block_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
-    }
-
-    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn self_type_expr(
-        &mut self,
-        ast: &mut Ast,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        Ok(ast.push_expr(Spanned::new(Expr::SelfType, span)))
     }
 
     fn path_element_expr(

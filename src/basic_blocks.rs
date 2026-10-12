@@ -537,9 +537,6 @@ impl Translator {
                     "type checking guarantees these path elements aren't used as expressions"
                 );
             }
-            Expr::SelfType => {
-                unreachable!("type checking guarantees a \"Self\" isn't used as an expression");
-            }
             Expr::Integer(value) => {
                 self.values.push(
                     if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
@@ -1597,13 +1594,13 @@ impl Translator {
         let original_lhs = lhs;
 
         let lhs = match ast[lhs].kind() {
-            Expr::Name(_) | Expr::SelfType => lhs,
+            Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => lhs,
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 rhs,
                 ..
             } => match ast[*rhs].kind() {
-                Expr::Name(_) | Expr::SelfType => *rhs,
+                Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => *rhs,
                 _ => {
                     unreachable!("name resolution verifies the path is correct");
                 }
