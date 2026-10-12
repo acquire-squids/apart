@@ -196,6 +196,52 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        bad_token_tree_0,
+        "bad_token_tree_0.txt",
+        [apart::Error::Parse(
+            apart::ParseError::BinaryWithoutRightOperand
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_1,
+        "bad_token_tree_1.txt",
+        [apart::Error::Parse(apart::ParseError::MatchWithoutValue)]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_2,
+        "bad_token_tree_2.txt",
+        [apart::Error::Parse(apart::ParseError::IfWithoutCondition)]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_3,
+        "bad_token_tree_3.txt",
+        [apart::Error::Parse(apart::ParseError::LetWithoutName)]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_4,
+        "bad_token_tree_4.txt",
+        [apart::Error::Parse(
+            apart::ParseError::WhileWithoutCondition
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_5,
+        "bad_token_tree_5.txt",
+        [apart::Error::Parse(apart::ParseError::UnaryWithoutOperand)]
+    );
+
+    apart::test_compilation_errors!(
+        bad_token_tree_6,
+        "bad_token_tree_6.txt",
+        [apart::Error::Parse(apart::ParseError::ReturnWithoutValue)]
+    );
+
+    apart::test_compilation_errors!(
         callee_is_access_error,
         "callee_is_access_error.txt",
         [apart::Error::TypeCheck(

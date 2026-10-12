@@ -1,0 +1,6 @@
+funky main() {
+	{match} true {
+		true => print_bool(false),
+		else => {},
+	}
+}

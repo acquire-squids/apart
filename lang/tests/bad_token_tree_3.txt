@@ -1,0 +1,7 @@
+funky main() {
+	{let}
+		i = 1,
+	in {
+		print_bool(false);
+	};
+}

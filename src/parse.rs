@@ -98,6 +98,10 @@ pub enum Error {
     MatchWithMultipleFallback,
     MatchWithoutCases,
     MatchWithoutFallback,
+    BinaryWithoutRightOperand,
+    UnaryWithoutOperand,
+    LetWithoutName,
+    MatchWithoutValue,
 }
 
 impl fmt::Display for Error {
@@ -371,6 +375,12 @@ impl fmt::Display for Error {
             Self::MatchWithoutFallback => {
                 write!(f, "a match expression must have an \"else\" case")
             }
+            Self::BinaryWithoutRightOperand => {
+                write!(f, "this binary operator doesn't have a right operand")
+            }
+            Self::UnaryWithoutOperand => write!(f, "this unary operator doesn't have an operand"),
+            Self::LetWithoutName => write!(f, "expected a name after \"let\""),
+            Self::MatchWithoutValue => write!(f, "expected an expression after \"match\""),
         }
     }
 }
@@ -380,9 +390,11 @@ impl error::Error for Error {}
 impl Reportable for Error {
     fn notes(&self) -> Vec<String> {
         match self {
-            Self::InvalidName => vec!["a name can start with \"_\" or any ASCII letter, and may be followed by zero or more of \"_\" or any ASCII letters or any ASCII digits".to_string()],
+            Self::InvalidName
+            | Self::LetWithoutName => vec!["a name can start with \"_\" or any ASCII letter, and may be followed by zero or more of \"_\" or any ASCII letters or any ASCII digits".to_string()],
             Self::InvalidInteger => vec!["only u8, i8, u16, i16, u32, i32, u64, and i64 are supported".to_string()],
-            Self::ExpectedExpr => vec![
+            Self::ExpectedExpr
+            | Self::MatchWithoutValue => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
             ],
             Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", \"teach\", or \"#if\"".to_string()],
@@ -448,7 +460,9 @@ impl Reportable for Error {
             | Self::PatternFieldElisionWasNotEnd
             | Self::ExpectedNegativeIntegerPattern
             | Self::MatchWithMultipleFallback
-            | Self::MatchWithoutCases => vec![],
+            | Self::MatchWithoutCases
+            | Self::BinaryWithoutRightOperand
+            | Self::UnaryWithoutOperand => vec![],
         }
     }
 }
@@ -1907,10 +1921,15 @@ impl Parser<'_, '_> {
 }
 
 mod precedence {
-    use super::{Ast, Error, ExprIndex, Parser, Span, Spanned};
+    use super::{Ast, Error, ExprIndex, Parser, Span, Spanned, TokenTreeIndex};
 
-    pub type ParseFn<'s, 'p> =
-        fn(&mut Parser<'s, 'p>, &mut Ast, u16, Span) -> Result<ExprIndex, Spanned<Error>>;
+    pub type ParseFn<'s, 'p> = fn(
+        &mut Parser<'s, 'p>,
+        &mut Ast,
+        TokenTreeIndex,
+        u16,
+        Span,
+    ) -> Result<ExprIndex, Spanned<Error>>;
 
     pub const PRIMARY: u16 = 0xEE00;
 
@@ -2021,9 +2040,17 @@ macro_rules! unary_op {
         fn $name(
             &mut self,
             ast: &mut $crate::parse::Ast,
+            current_tree: $crate::parse::TokenTreeIndex,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
+            if !self.in_token_tree(current_tree) {
+                return Err(Spanned::new(
+                    $crate::parse::Error::UnaryWithoutOperand,
+                    span,
+                ));
+            }
+
             let expr = self.parse_expression(ast, precedence)?;
 
             Ok(ast.push_expr($crate::Spanned::new(
@@ -2045,9 +2072,17 @@ macro_rules! binary_op {
         fn $name(
             &mut self,
             ast: &mut $crate::parse::Ast,
+            current_tree: $crate::parse::TokenTreeIndex,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
+            if !self.in_token_tree(current_tree) {
+                return Err(Spanned::new(
+                    $crate::parse::Error::BinaryWithoutRightOperand,
+                    span,
+                ));
+            }
+
             let rhs = self.parse_expression(ast, precedence)?;
 
             Ok(ast.push_expr($crate::Spanned::new(
@@ -2075,7 +2110,7 @@ impl<'s, 'p> Parser<'s, 'p> {
             return Err(Spanned::new(Error::ExpectedExpr, self.span_or_end()));
         };
 
-        let mut lhs = prefix_fn(self, ast, precedence, prefix_span)?;
+        let mut lhs = prefix_fn(self, ast, within_tree, precedence, prefix_span)?;
 
         loop {
             let current_tree = self.current_tree;
@@ -2092,7 +2127,8 @@ impl<'s, 'p> Parser<'s, 'p> {
                     break;
                 }
 
-                let unfinished_postfix = postfix_fn(self, ast, left_precedence, postfix_span);
+                let unfinished_postfix =
+                    postfix_fn(self, ast, within_tree, left_precedence, postfix_span);
 
                 let unfinished_postfix = match unfinished_postfix.as_ref().map_err(Spanned::kind) {
                     Ok(expr_index) => *expr_index,
@@ -2223,7 +2259,8 @@ impl<'s, 'p> Parser<'s, 'p> {
                     break;
                 }
 
-                let unfinished_infix = infix_fn(self, ast, right_precedence, infix_span)?;
+                let unfinished_infix =
+                    infix_fn(self, ast, within_tree, right_precedence, infix_span)?;
 
                 match ast[unfinished_infix].kind() {
                     Expr::BinaryNoLhs { op, rhs } => {
@@ -2493,7 +2530,13 @@ impl<'s, 'p> Parser<'s, 'p> {
         }
     }
 
-    fn integer(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn integer(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        _: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
             .advance_token_tree()
             .and_then(|token_tree| match token_tree {
@@ -2520,6 +2563,7 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn string_expr(
         &mut self,
         ast: &mut Ast,
+        _: TokenTreeIndex,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -2542,7 +2586,13 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(Spanned::new(text, span)))
     }
 
-    fn float(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn float(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        _: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
             .advance_token_tree()
             .and_then(|token_tree| match token_tree {
@@ -2580,12 +2630,24 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_true(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_true(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(true), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_false(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_false(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(false), span)))
     }
 
@@ -2594,9 +2656,14 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn negate(
         &mut self,
         ast: &mut Ast,
+        current_tree: TokenTreeIndex,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::UnaryWithoutOperand, span));
+        }
+
         let expr = self.parse_expression(ast, precedence)?;
 
         if let Expr::Integer(value) = ast[expr].kind() {
@@ -2650,7 +2717,13 @@ impl<'s, 'p> Parser<'s, 'p> {
     binary_op!(or, Or);
     binary_op!(assign, Assign);
 
-    fn group(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn group(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         self.advance_token_tree();
 
         let expr = self.parse_expression(ast, 0)?;
@@ -2693,7 +2766,13 @@ impl<'s, 'p> Parser<'s, 'p> {
         )
     }
 
-    fn block(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn block(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         let exprs = self.block_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
@@ -2702,6 +2781,7 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn path_element_expr(
         &mut self,
         ast: &mut Ast,
+        _: TokenTreeIndex,
         _: u16,
         _: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -2710,13 +2790,29 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(path_element.transmute(Expr::PathElement)))
     }
 
-    fn name(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn name(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        _: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         let name = self.spanned_name()?;
 
         Ok(ast.push_expr(name.transmute(Expr::Name)))
     }
 
-    fn let_in(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn let_in(
+        &mut self,
+        ast: &mut Ast,
+        current_tree: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::LetWithoutName, span));
+        }
+
         let mut exprs = vec![];
 
         while self.peek_token_tree().is_some() && self.check_keyword_next("in").is_none() {
@@ -2778,7 +2874,17 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
     }
 
-    fn if_expr(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn if_expr(
+        &mut self,
+        ast: &mut Ast,
+        current_tree: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::IfWithoutCondition, span));
+        }
+
         let condition = self
             .parse_expression(ast, 0)
             .map_err(|error| error.transmute(|_| Error::IfWithoutCondition))?;
@@ -2791,26 +2897,29 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let current_tree = self.current_tree;
 
-        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
-            error.transmute(|error| match error {
-                Error::ExpectedBlock => Error::IfThenWithoutBlock,
-                error => error,
-            })
-        })?;
+        let when_true = self
+            .block(ast, current_tree, 0, when_true_span)
+            .map_err(|error| {
+                error.transmute(|error| match error {
+                    Error::ExpectedBlock => Error::IfThenWithoutBlock,
+                    error => error,
+                })
+            })?;
 
         let otherwise =
             if self.in_token_tree(current_tree) && self.match_keyword_next("else").is_some() {
                 if let Some(next_token) = self.match_keyword_next("if") {
-                    self.if_expr(ast, 0, next_token.span())?
+                    self.if_expr(ast, current_tree, 0, next_token.span())?
                 } else {
                     let otherwise_span = self.span_or_end();
 
-                    self.block(ast, 0, otherwise_span).map_err(|error| {
-                        error.transmute(|error| match error {
-                            Error::ExpectedBlock => Error::IfElseWithoutBlock,
-                            error => error,
-                        })
-                    })?
+                    self.block(ast, current_tree, 0, otherwise_span)
+                        .map_err(|error| {
+                            error.transmute(|error| match error {
+                                Error::ExpectedBlock => Error::IfElseWithoutBlock,
+                                error => error,
+                            })
+                        })?
                 }
             } else {
                 ast.push_expr(Spanned::new(
@@ -2837,9 +2946,14 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn while_expr(
         &mut self,
         ast: &mut Ast,
+        current_tree: TokenTreeIndex,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::WhileWithoutCondition, span));
+        }
+
         let condition = self
             .parse_expression(ast, 0)
             .map_err(|error| error.transmute(|_| Error::WhileWithoutCondition))?;
@@ -2850,12 +2964,14 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let when_true_span = self.span_or_end();
 
-        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
-            error.transmute(|error| match error {
-                Error::ExpectedBlock => Error::WhileWithoutBlock,
-                error => error,
-            })
-        })?;
+        let when_true = self
+            .block(ast, current_tree, 0, when_true_span)
+            .map_err(|error| {
+                error.transmute(|error| match error {
+                    Error::ExpectedBlock => Error::WhileWithoutBlock,
+                    error => error,
+                })
+            })?;
 
         let span = span
             .combine_with(ast[when_true].span())
@@ -2897,23 +3013,40 @@ impl<'s, 'p> Parser<'s, 'p> {
         )
     }
 
-    fn call(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn call(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         let arguments = self.call_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::CallNoCallee(arguments), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn as_unit(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+    fn as_unit(
+        &mut self,
+        ast: &mut Ast,
+        _: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::AsUnitNoValue, span)))
     }
 
     fn return_expr(
         &mut self,
         ast: &mut Ast,
+        current_tree: TokenTreeIndex,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::ReturnWithoutValue, span));
+        }
+
         let value = self
             .parse_expression(ast, precedence)
             .map_err(|error| error.transmute(|_| Error::ReturnWithoutValue))?;
@@ -2928,6 +3061,7 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn product_expr(
         &mut self,
         ast: &mut Ast,
+        _: TokenTreeIndex,
         _: u16,
         mut span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -2994,9 +3128,14 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn match_expr(
         &mut self,
         ast: &mut Ast,
+        current_tree: TokenTreeIndex,
         _: u16,
         mut span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
+        if !self.in_token_tree(current_tree) {
+            return Err(Spanned::new(Error::MatchWithoutValue, span));
+        }
+
         let expr = self.parse_expression(ast, 0)?;
 
         let mut fallback = None;
