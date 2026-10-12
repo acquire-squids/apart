@@ -1,6 +1,6 @@
 use crate::{
     Compiled,
-    basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue},
+    basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue, modules},
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
     ssa::{Block as IrBlock, BlockTerminator, Ssa},
 };
@@ -132,8 +132,8 @@ crate::int_enum! {
     SliceString => 0x10_01,
     LengthString => 0x10_02,
     TruncateString => 0x10_03,
-    FloorBoundaryString => 0x10_04,
-    CeilBoundaryString => 0x10_05,
+    FloorCharBoundaryString => 0x10_04,
+    CeilCharBoundaryString => 0x10_05,
     Clock => 0x20_00,
 }
 
@@ -382,19 +382,29 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                 .get_block(*block_index)
                 .map_or(0, IrBlock::max_register_count),
         }),
-        IrValue::NativeFn(span) => {
+        IrValue::NativeFn { name, module_id } => {
             let source_index = compiled
                 .sources()
                 .iter()
-                .position(|(id, _)| *id == span.source_id())
+                .position(|(id, _)| *id == name.source_id())
                 .expect("the source must exist");
 
-            ValueOrLocation::Value(Value::NativeFn(
-                match compiled
-                    .sources()
-                    .get(source_index)
-                    .and_then(|(_, source)| span.lexeme(source))
-                {
+            let lexeme = compiled
+                .sources()
+                .get(source_index)
+                .and_then(|(_, source)| name.lexeme(source));
+
+            ValueOrLocation::Value(Value::NativeFn(match module_id {
+                module_id if *module_id == modules::MODULE_STRING => match lexeme {
+                    Some("extend") => NativeFn::ExtendString,
+                    Some("slice") => NativeFn::SliceString,
+                    Some("length") => NativeFn::LengthString,
+                    Some("truncate") => NativeFn::TruncateString,
+                    Some("floor_char_boundary") => NativeFn::FloorCharBoundaryString,
+                    Some("ceil_char_boundary") => NativeFn::CeilCharBoundaryString,
+                    _ => unreachable!("unknown native function in string module"),
+                },
+                module_id if *module_id == modules::MODULE_ROOT => match lexeme {
                     Some("print_u8") => NativeFn::PrintU8,
                     Some("print_i8") => NativeFn::PrintI8,
                     Some("print_u16") => NativeFn::PrintU16,
@@ -407,16 +417,11 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     Some("print_bool") => NativeFn::PrintBool,
                     Some("print_unit") => NativeFn::PrintUnit,
                     Some("print_string") => NativeFn::PrintString,
-                    Some("extend_string") => NativeFn::ExtendString,
-                    Some("slice_string") => NativeFn::SliceString,
-                    Some("length_string") => NativeFn::LengthString,
-                    Some("truncate_string") => NativeFn::TruncateString,
-                    Some("floor_boundary_string") => NativeFn::FloorBoundaryString,
-                    Some("ceil_boundary_string") => NativeFn::CeilBoundaryString,
                     Some("clock") => NativeFn::Clock,
-                    _ => unreachable!("unknown native function"),
+                    _ => unreachable!("unknown native function in root module"),
                 },
-            ))
+                _ => unreachable!("unknown native function module id {module_id}"),
+            }))
         }
         IrValue::Register(_) => ValueOrLocation::At(lower_value_to_location(value)),
         IrValue::Compound(fields) => ValueOrLocation::Value(Value::Compound(

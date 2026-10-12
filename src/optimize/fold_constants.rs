@@ -400,9 +400,19 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::Equal, Value::NativeFn(lhs), Value::NativeFn(rhs)) => {
+            (
+                BinaryOp::Equal,
+                Value::NativeFn {
+                    name: lhs_name,
+                    module_id: lhs_module_id,
+                },
+                Value::NativeFn {
+                    name: rhs_name,
+                    module_id: rhs_module_id,
+                },
+            ) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Boolean(lhs == rhs),
+                    value: Value::Boolean(lhs_name == rhs_name && lhs_module_id == rhs_module_id),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,
@@ -472,9 +482,19 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
 
                 *changed = true;
             }
-            (BinaryOp::NotEqual, Value::NativeFn(lhs), Value::NativeFn(rhs)) => {
+            (
+                BinaryOp::NotEqual,
+                Value::NativeFn {
+                    name: lhs_name,
+                    module_id: lhs_module_id,
+                },
+                Value::NativeFn {
+                    name: rhs_name,
+                    module_id: rhs_module_id,
+                },
+            ) => {
                 *instruction = Instruction::Assign {
-                    value: Value::Boolean(lhs != rhs),
+                    value: Value::Boolean(lhs_name != rhs_name && lhs_module_id != rhs_module_id),
                     to: Value::Address(Address {
                         block_index: BlockIndex(b),
                         offset: i,

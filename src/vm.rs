@@ -1054,7 +1054,7 @@ impl Vm {
 
                 CopyableValue::Unit
             }
-            NativeFn::FloorBoundaryString => {
+            NativeFn::FloorCharBoundaryString => {
                 let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
                     panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
                 };
@@ -1081,7 +1081,7 @@ impl Vm {
 
                 CopyableValue::U64(boundary)
             }
-            NativeFn::CeilBoundaryString => {
+            NativeFn::CeilCharBoundaryString => {
                 let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
                     panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
                 };

@@ -368,6 +368,22 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        private_function,
+        "private_function.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::PathIsPrivate
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        private_method,
+        "private_method.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::PrivateMethod
+        )]
+    );
+
+    apart::test_compilation_errors!(
         root_path_invalid,
         "root_path_invalid.txt",
         [apart::Error::NameResolve(

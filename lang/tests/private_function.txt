@@ -1,0 +1,9 @@
+funky main() {
+	print_string(module~status());
+}
+
+pub mod module {
+	funky status() -> String {
+		"this shouldn't work"
+	}
+}

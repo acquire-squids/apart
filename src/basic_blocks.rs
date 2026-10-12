@@ -1,6 +1,6 @@
 use crate::{
     Span, Spanned,
-    name_resolve::Names,
+    name_resolve::{ModuleId, Names, ROOT_MODULE},
     parse::{
         Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, MatchCase, PathElement, Pattern, UnaryOp,
     },
@@ -8,6 +8,12 @@ use crate::{
 };
 
 use std::{collections::HashMap, fmt, iter};
+
+pub mod modules {
+    pub const MODULE_ROOT: u64 = super::ROOT_MODULE.is();
+
+    pub const MODULE_STRING: u64 = 1;
+}
 
 pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
     let mut translator = Translator::new();
@@ -21,10 +27,10 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
             false
         }
     }) {
-        translator.label_function(ast, *root);
+        translator.label_function(ast, names, *root);
     }
 
-    translator.label_items(ast, ast.roots(), false);
+    translator.label_items(ast, names, ast.roots(), false);
 
     let function_count = translator.blocks.len();
 
@@ -213,7 +219,7 @@ enum Addresslike {
     Address(Address),
     Block(BlockIndex),
     CallArgument(usize),
-    NativeFn(Span),
+    NativeFn { name: Span, module_id: ModuleId },
     CompoundField { index: usize, of: Address },
 }
 
@@ -233,7 +239,7 @@ pub enum Value {
     String(String),
     Fn(BlockIndex),
     Address(Address),
-    NativeFn(Span),
+    NativeFn { name: Span, module_id: ModuleId },
     Runtime,
     CallArgument(usize),
     Register(usize),
@@ -302,7 +308,7 @@ pub struct Address {
 }
 
 impl Translator {
-    fn label_function(&mut self, ast: &Ast, f: ItemIndex) {
+    fn label_function(&mut self, ast: &Ast, names: &Names, f: ItemIndex) {
         match ast[f].kind() {
             Item::Fn { name, .. } => {
                 self.addresses.insert(
@@ -317,17 +323,24 @@ impl Translator {
             | Item::Sum { .. }
             | Item::Directive { .. } => {}
             Item::NativeFn { name, .. } => {
-                self.addresses
-                    .insert(name.span(), Addresslike::NativeFn(name.span()));
+                self.addresses.insert(
+                    name.span(),
+                    Addresslike::NativeFn {
+                        name: name.span(),
+                        module_id: names
+                            .get_definition(name.span())
+                            .map_or(ROOT_MODULE.is(), |definition| definition.module().is()),
+                    },
+                );
             }
             Item::Mod { contents, .. } => {
                 for item in contents {
-                    self.label_function(ast, *item);
+                    self.label_function(ast, names, *item);
                 }
             }
             Item::Teach { body, .. } => {
                 for item in body {
-                    self.label_function(ast, *item);
+                    self.label_function(ast, names, *item);
                 }
             }
         }
@@ -394,19 +407,19 @@ impl Translator {
             .len()
     }
 
-    fn label_items(&mut self, ast: &Ast, items: &[ItemIndex], allow_main: bool) {
+    fn label_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex], allow_main: bool) {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod { contents, .. } => {
-                    self.label_items(ast, contents, true);
+                    self.label_items(ast, names, contents, true);
                 }
                 Item::Teach { body, .. } => {
-                    self.label_items(ast, body, true);
+                    self.label_items(ast, names, body, true);
                 }
                 Item::Fn { name, .. } | Item::NativeFn { name, .. }
                     if name.kind() != "main" || allow_main =>
                 {
-                    self.label_function(ast, *item);
+                    self.label_function(ast, names, *item);
                 }
                 Item::Primitive(_)
                 | Item::Product { .. }
@@ -793,8 +806,11 @@ impl Translator {
             Addresslike::CallArgument(offset) => {
                 self.values.push(Value::CallArgument(*offset));
             }
-            Addresslike::NativeFn(span) => {
-                self.values.push(Value::NativeFn(*span));
+            Addresslike::NativeFn { name, module_id } => {
+                self.values.push(Value::NativeFn {
+                    name: *name,
+                    module_id: *module_id,
+                });
             }
             Addresslike::CompoundField { index, of } => {
                 let (index, of) = (*index, *of);
@@ -979,7 +995,7 @@ impl Translator {
             .get(span)
             .and_then(|span| self.addresses.get_mut(&span))
         {
-            Some(Addresslike::Block(_) | Addresslike::NativeFn(_)) => {
+            Some(Addresslike::Block(_) | Addresslike::NativeFn { .. }) => {
                 unreachable!("name resolution prevents assigning to these addresses");
             }
             Some(Addresslike::CompoundField { index, of }) => {
@@ -1632,7 +1648,10 @@ impl Translator {
                         .expect("type checking guarantees the method exists")
                     {
                         Addresslike::Block(block_index) => Value::Fn(*block_index),
-                        Addresslike::NativeFn(span) => Value::NativeFn(*span),
+                        Addresslike::NativeFn { name, module_id } => Value::NativeFn {
+                            name: *name,
+                            module_id: *module_id,
+                        },
                         Addresslike::CallArgument(_)
                         | Addresslike::Address(_)
                         | Addresslike::CompoundField { .. } => {
@@ -1741,7 +1760,10 @@ impl Translator {
             .expect("type checking guarantees the method exists")
         {
             Addresslike::Block(block_index) => Value::Fn(*block_index),
-            Addresslike::NativeFn(span) => Value::NativeFn(*span),
+            Addresslike::NativeFn { name, module_id } => Value::NativeFn {
+                name: *name,
+                module_id: *module_id,
+            },
             Addresslike::CallArgument(_)
             | Addresslike::Address(_)
             | Addresslike::CompoundField { .. } => {

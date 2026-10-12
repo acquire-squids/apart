@@ -152,7 +152,7 @@ fn clone_constant(
         | Value::Boolean(_)
         | Value::Unit
         | Value::Fn(_)
-        | Value::NativeFn(_)
+        | Value::NativeFn { .. }
         | Value::CallArgument(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address, address_to_ip),
         Value::Runtime

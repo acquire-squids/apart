@@ -5,23 +5,23 @@ funky main() {
 		name = "Bingus",
 		truncate_at = 0,
 	in {
-		while greeting.length_string() > truncate_at {
+		while greeting.length() > truncate_at {
 			match greeting
-				.slice_string(
-					greeting.floor_boundary_string(truncate_at),
-					greeting.ceil_boundary_string(
-						truncate_at + needle.length_string()
+				.slice(
+					greeting.floor_char_boundary(truncate_at),
+					greeting.ceil_char_boundary(
+						truncate_at + needle.length()
 					)
 			) {
 				Option~Some { value, } => {
 					if value == needle {
-						greeting.truncate_string(
-							greeting.floor_boundary_string(truncate_at),
+						greeting.truncate(
+							greeting.floor_char_boundary(truncate_at),
 						);
 
-						greeting.extend_string(name);
+						greeting.extend(name);
 
-						greeting.extend_string("!");
+						greeting.extend("!");
 
 						print_string(greeting);
 
@@ -31,7 +31,7 @@ funky main() {
 				else => {}
 			}
 
-			truncate_at = greeting.ceil_boundary_string(truncate_at + 1);
+			truncate_at = greeting.ceil_char_boundary(truncate_at + 1);
 		}
 	};
 

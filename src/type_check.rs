@@ -101,7 +101,14 @@ pub enum Type {
         variants: Vec<TypeIndex>,
         generics: Vec<TypeIndex>,
     },
-    Associations(Vec<(usize, TypeIndex)>),
+    Associations(Vec<Association>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Association {
+    resolved_index: usize,
+    type_index: TypeIndex,
+    span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -331,14 +338,14 @@ impl Type {
 
                 if let Some(first_alternative) = alternatives
                     .first()
-                    .and_then(|(_, type_index)| types.get(usize::from(*type_index)))
+                    .and_then(|association| types.get(usize::from(association.type_index)))
                 {
                     buffer.push_str(first_alternative.to_string(types).as_str());
 
                     for alternative in alternatives
                         .iter()
                         .skip(1)
-                        .filter_map(|(_, type_index)| types.get(usize::from(*type_index)))
+                        .filter_map(|association| types.get(usize::from(association.type_index)))
                     {
                         buffer.push_str(" | ");
 
@@ -455,6 +462,8 @@ pub enum Error {
     ProductPatternMissingField(String),
     CannotNegate(String),
     PrivateField,
+    PrivateFunction,
+    PrivateMethod,
 }
 
 impl fmt::Display for Error {
@@ -535,6 +544,14 @@ impl fmt::Display for Error {
             Self::PrivateField => write!(
                 f,
                 "this field is private and can't be accessed outside of the module that defined it"
+            ),
+            Self::PrivateFunction => write!(
+                f,
+                "this function is private and can't be called outside of the module that defined it"
+            ),
+            Self::PrivateMethod => write!(
+                f,
+                "this method is private and can't be called outside of the module that defined it"
             ),
         }
     }
@@ -1150,7 +1167,14 @@ impl TypeChecker {
                 self.push_type(Type::AnyOf { alternatives, span })
             }
             Type::Associations(alternatives) => {
-                let alternatives = alternatives.clone().into_iter().map(|(index, type_index)| (index, self.substitute_type(originals, replacements, type_index))).collect::<Vec<_>>();
+                let alternatives = alternatives
+                    .clone()
+                    .into_iter()
+                    .map(|association| Association {
+                        resolved_index: association.resolved_index,
+                        type_index: self.substitute_type(originals, replacements, association.type_index),
+                        span: association.span,
+                    }).collect::<Vec<_>>();
 
                 self.push_type(Type::Associations(alternatives))
             }
@@ -1849,7 +1873,16 @@ impl TypeChecker {
 
                 let context = &mut context;
 
-                let type_index = self.apply(self[names[span]], context);
+                let type_index = self.apply(
+                    // it should be okay to fall back to an error type
+                    // name resolution would have failed if the name wasn't real
+                    if self.get_type(names[span]).is_some() {
+                        self[names[span]]
+                    } else {
+                        self.type_error()
+                    },
+                    context,
+                );
 
                 self.overwrite_with(ast, names, expr, type_index);
 
@@ -2036,7 +2069,11 @@ impl TypeChecker {
                                     context,
                                 )
                                 .ok()
-                                .map(|_| (index, self[associated_name.definition.span()]))
+                                .map(|_| Association {
+                                    resolved_index: index,
+                                    type_index: self[associated_name.definition.span()],
+                                    span: associated_name.definition.span(),
+                                })
                             })
                             .collect::<Vec<_>>();
 
@@ -2088,6 +2125,7 @@ impl TypeChecker {
                                         Error::MethodCallArgumentCountMismatch { expected, got }
                                     }
                                     Error::CalledUncallable => Error::MethodCalledUncallable,
+                                    Error::PrivateFunction => Error::PrivateMethod,
                                     _ => error,
                                 }));
                             }
@@ -2349,15 +2387,19 @@ impl TypeChecker {
     ) -> Result<TypeIndex, Spanned<Error>> {
         let functions = match &self[callee_type_index] {
             function @ Type::Fn { .. } => {
-                vec![(0, function.clone())]
+                vec![(0, function.clone(), callee_span)]
             }
             Type::Associations(alternatives) => alternatives
                 .iter()
-                .filter_map(|(index, type_index)| match &self[*type_index] {
+                .filter_map(|association| match &self[association.type_index] {
                     Type::Associations(_) => {
                         unreachable!("Type::Associations should never be nested");
                     }
-                    Type::Fn { .. } => Some((*index, self[*type_index].clone())),
+                    Type::Fn { .. } => Some((
+                        association.resolved_index,
+                        self[association.type_index].clone(),
+                        association.span,
+                    )),
                     _ => None,
                 })
                 .collect::<Vec<_>>(),
@@ -2368,7 +2410,7 @@ impl TypeChecker {
 
         let functions = functions
             .into_iter()
-            .map(|(index, function)| {
+            .map(|(index, function, span)| {
                 if let Type::Fn {
                     parameters,
                     return_type,
@@ -2387,7 +2429,7 @@ impl TypeChecker {
                             }
                         }
 
-                        Ok((index, self.apply(return_type, context)))
+                        Ok((index, self.apply(return_type, context), span))
                     } else {
                         Err(Spanned::new(
                             Error::CallArgumentCountMismatch {
@@ -2420,7 +2462,7 @@ impl TypeChecker {
         } else if ok_functions.len() > 1 {
             Err(Spanned::new(Error::AmbiguousFunction, callee_span))
         } else {
-            let (index, type_index) = functions
+            let (index, type_index, span) = functions
                 .into_iter()
                 .find_map(|function| {
                     if function.is_ok() {
@@ -2431,9 +2473,23 @@ impl TypeChecker {
                 })
                 .expect("it's going to be okay");
 
-            self.resolved_associations.insert(callee_span, index);
+            // TODO: better unify name resolution associations and type checking associations
+            // type checking currently expects anything in `associated_with` to have a type
+            // this means modules can't go in there, and a callee can be a path access of a module function
+            if names.get_definition(span).is_none_or(|definition| {
+                definition.module().is()
+                    == self
+                        .current_module
+                        .last()
+                        .map_or(ROOT_MODULE.is(), |module_id| *module_id)
+                    || matches!(definition.visibility(), Visibility::Public)
+            }) {
+                self.resolved_associations.insert(callee_span, index);
 
-            Ok(type_index)
+                Ok(type_index)
+            } else {
+                Err(Spanned::new(Error::PrivateFunction, callee_span))
+            }
         }
     }
 
@@ -2528,7 +2584,11 @@ impl TypeChecker {
                         .filter_map(|(index, associated_name)| {
                             self.check_inferred(self[type_span], associated_name.for_type, context)
                                 .ok()
-                                .map(|_| (index, self[associated_name.definition.span()]))
+                                .map(|_| Association {
+                                    resolved_index: index,
+                                    type_index: self[associated_name.definition.span()],
+                                    span: associated_name.definition.span(),
+                                })
                         })
                         .collect::<Vec<_>>();
 
@@ -3297,7 +3357,11 @@ impl TypeChecker {
                 let alternatives = alternatives
                     .clone()
                     .into_iter()
-                    .map(|(index, type_index)| (index, self.apply(type_index, context)))
+                    .map(|association| Association {
+                        resolved_index: association.resolved_index,
+                        type_index: self.apply(type_index, context),
+                        span: association.span,
+                    })
                     .collect::<Vec<_>>();
 
                 self.push_type(Type::Associations(alternatives))

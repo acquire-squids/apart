@@ -1,0 +1,19 @@
+funky main() {
+	print_string(Wrapper {
+		value <- 97,
+	}.into_string().value);
+}
+
+product Wrapper[T] {
+	pub value <- T,
+}
+
+pub mod wrapper {
+	teach[T] super~Wrapper[T] {
+		funky into_string(self <- Self) -> super~Wrapper[String] {
+			Self {
+				value <- "this shouldn't work",
+			}
+		}
+	}
+}
