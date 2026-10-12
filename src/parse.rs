@@ -664,7 +664,7 @@ pub enum Item {
     Product {
         visibility: Visibility,
         name: Spanned<String>,
-        fields: Vec<Parameter>,
+        fields: Vec<Field>,
         generics: Vec<Spanned<String>>,
     },
     Sum {
@@ -695,6 +695,27 @@ pub enum Item {
 pub enum Visibility {
     Public,
     Private,
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    name: Spanned<String>,
+    type_signature: Spanned<TypeSignature>,
+    visibility: Visibility,
+}
+
+impl Field {
+    pub const fn name(&self) -> &Spanned<String> {
+        &self.name
+    }
+
+    pub const fn ty(&self) -> &Spanned<TypeSignature> {
+        &self.type_signature
+    }
+
+    pub const fn visibility(&self) -> Visibility {
+        self.visibility
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1513,6 +1534,10 @@ impl Parser<'_, '_> {
             let current_tree = self.current_tree;
 
             while self.in_token_tree(current_tree) {
+                let visibility = self
+                    .match_keyword_next("pub")
+                    .map_or(Visibility::Private, |_| Visibility::Public);
+
                 let name = self
                     .spanned_name()
                     .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
@@ -1532,9 +1557,10 @@ impl Parser<'_, '_> {
 
                 let type_signature = self.parse_type_signature()?;
 
-                fields.push(Parameter {
+                fields.push(Field {
                     name,
                     type_signature,
+                    visibility,
                 });
 
                 if self.in_token_tree(current_tree) {

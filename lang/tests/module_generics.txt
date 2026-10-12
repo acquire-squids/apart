@@ -11,7 +11,7 @@ pub mod outer[O] {
 		pub mod inner_inner[T] {
 			pub product Triple[W] {
 				x <- O,
-				y <- I,
+				pub y <- I,
 				z <- T,
 				w <- W,
 			}

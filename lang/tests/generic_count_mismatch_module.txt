@@ -5,10 +5,10 @@ funky main() {
 pub mod either[U] {
 	pub sum Either[T] {
 		First {
-			value <- T,
+			pub value <- T,
 		},
 		Second {
-			value <- U,
+			pub value <- U,
 		},
 	}
 }

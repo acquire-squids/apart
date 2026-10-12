@@ -1,9 +1,9 @@
 use crate::{
     Reportable, Span, Spanned,
-    name_resolve::Names,
+    name_resolve::{Definition, ModuleId, Names, ROOT_MODULE},
     parse::{
         Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, Pattern, TypeSignature,
-        UnaryOp,
+        UnaryOp, Visibility,
     },
 };
 
@@ -55,6 +55,7 @@ pub struct TypeChecker {
     associated_with: Option<Span>,
     resolved_associations: HashMap<Span, usize>,
     module_generics: Vec<Vec<TypeIndex>>,
+    current_module: Vec<ModuleId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,7 +93,7 @@ pub enum Type {
     Generic(Spanned<String>),
     Product {
         name: Spanned<String>,
-        fields: Vec<(String, TypeIndex)>,
+        fields: Vec<Field>,
         generics: Vec<TypeIndex>,
     },
     Sum {
@@ -114,8 +115,35 @@ impl From<TypeIndex> for usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AssociatedName {
-    span: Span,
     for_type: TypeIndex,
+    definition: Definition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    name: String,
+    ty: TypeIndex,
+    visibility: Visibility,
+}
+
+impl Field {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn type_index(&self) -> TypeIndex {
+        self.ty
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn visibility(&self) -> Visibility {
+        self.visibility
+    }
 }
 
 impl Type {
@@ -174,19 +202,20 @@ impl Type {
             ) => {
                 a_name.kind() == b_name.kind()
                     && a_fields.len() == b_fields.len()
-                    && a_fields.iter().zip(b_fields).all(
-                        |((a_field_name, a_field_type), (b_field_name, b_field_type))| {
-                            a_field_name == b_field_name
-                                && types
-                                    .get(usize::from(*a_field_type))
-                                    .and_then(|a_field_type| {
-                                        Some((a_field_type, types.get(usize::from(*b_field_type))?))
-                                    })
-                                    .is_some_and(|(a_field_type, b_field_type)| {
-                                        a_field_type.eq(types, b_field_type)
-                                    })
-                        },
-                    )
+                    && a_fields.iter().zip(b_fields).all(|(a_field, b_field)| {
+                        a_field.name() == b_field.name()
+                            && types
+                                .get(usize::from(a_field.type_index()))
+                                .and_then(|a_field_type| {
+                                    Some((
+                                        a_field_type,
+                                        types.get(usize::from(b_field.type_index()))?,
+                                    ))
+                                })
+                                .is_some_and(|(a_field_type, b_field_type)| {
+                                    a_field_type.eq(types, b_field_type)
+                                })
+                    })
                     && a_generics.len() == b_generics.len()
                     && a_generics
                         .iter()
@@ -375,7 +404,7 @@ impl Type {
                 buffer.push(')');
 
                 if let Some(return_type) = types.get(usize::from(*return_type))
-                    // TODO: is it fine to use this span here?
+                    // TODO: is it okay to use this span?
                     && return_type.ne(types, &Self::Primitive(Spanned::new(Primitive::Unit, Span::new(0, 0, 0))))
                 {
                     buffer.push_str(" -> ");
@@ -425,6 +454,7 @@ pub enum Error {
     TypeMustBeKnown,
     ProductPatternMissingField(String),
     CannotNegate(String),
+    PrivateField,
 }
 
 impl fmt::Display for Error {
@@ -502,6 +532,10 @@ impl fmt::Display for Error {
                 write!(f, "this pattern is missing its required field \"{name}\"")
             }
             Self::CannotNegate(ty) => write!(f, "{ty} cannot be negated"),
+            Self::PrivateField => write!(
+                f,
+                "this field is private and can't be accessed outside of the module that defined it"
+            ),
         }
     }
 }
@@ -568,6 +602,7 @@ impl TypeChecker {
             associated_with: None,
             resolved_associations: HashMap::new(),
             module_generics: vec![],
+            current_module: vec![ROOT_MODULE.is()],
         };
 
         me.push_type(Type::Error);
@@ -593,7 +628,7 @@ impl TypeChecker {
                     .and_then(|associations| {
                         associations
                             .get(*index)
-                            .map(|associated_name| associated_name.span)
+                            .map(|associated_name| associated_name.definition.span())
                     })
             })
     }
@@ -886,17 +921,18 @@ impl TypeChecker {
 
                             self.type_map.insert(field.name().span(), type_index);
 
-                            (
-                                field.name().kind().clone(),
-                                self.get_type_index_or_error(field.name().span()),
-                            )
+                            Field {
+                                name: field.name().kind().clone(),
+                                ty: self.get_type_index_or_error(field.name().span()),
+                                visibility: field.visibility(),
+                            }
                         })
                         .collect::<Vec<_>>();
 
                     for module_generic_type_index in self.module_generics.iter().flatten() {
                         if let Type::Existential(module_generic) = &self[*module_generic_type_index]
-                            && fields.iter().any(|(_, type_index)| {
-                                if let Type::Existential(generic) = &self[*type_index]
+                            && fields.iter().any(|field| {
+                                if let Type::Existential(generic) = &self[field.type_index()]
                                     && module_generic.span() == generic.span()
                                 {
                                     true
@@ -1018,34 +1054,43 @@ impl TypeChecker {
 
                 self.associations
                     .entry(names[associated_with])
-                    .and_modify(|names| {
-                        names
+                    .and_modify(|associations| {
+                        associations
                             .entry(name.kind().clone())
                             .and_modify(|associations| {
                                 associations.push(AssociatedName {
-                                    span: name.span(),
                                     for_type,
+                                    definition: names
+                                        .get_definition(name.span())
+                                        .cloned()
+                                        .expect("this association should have been found by name resolution"),
                                 });
                             })
                             .or_insert_with(|| {
                                 vec![AssociatedName {
-                                    span: name.span(),
                                     for_type,
+                                    definition: names
+                                        .get_definition(name.span())
+                                        .cloned()
+                                        .expect("this association should have been found by name resolution"),
                                 }]
                             });
                     })
                     .or_insert_with(|| {
-                        let mut names = HashMap::new();
+                        let mut associations = HashMap::new();
 
-                        names.insert(
+                        associations.insert(
                             name.kind().clone(),
                             vec![AssociatedName {
-                                span: name.span(),
                                 for_type,
+                                definition: names
+                                    .get_definition(name.span())
+                                    .cloned()
+                                    .expect("this association should have been found by name resolution"),
                             }],
                         );
 
-                        names
+                        associations
                     });
             }
         }
@@ -1140,11 +1185,12 @@ impl TypeChecker {
                 let fields = fields
                     .clone()
                     .into_iter()
-                    .map(|(field_name, type_index)| {
-                        (
-                            field_name,
-                            self.substitute_type(originals, replacements, type_index),
-                        )
+                    .map(|field| {
+                        Field {
+                            name: field.name().to_string(),
+                            ty: self.substitute_type(originals, replacements, field.type_index()),
+                            visibility: field.visibility(),
+                        }
                     })
                     .collect::<Vec<_>>();
 
@@ -1306,20 +1352,21 @@ impl TypeChecker {
                     let fields = fields.clone();
                     let generic_types = generic_types.clone();
 
-                    let fields =
-                        fields
-                            .iter()
-                            .fold(vec![], |mut accum, (field_name, field_type)| {
-                                let type_index = self.substitute_type(
-                                    generic_types.as_slice(),
-                                    checked_generics.as_slice(),
-                                    *field_type,
-                                );
+                    let fields = fields.iter().fold(vec![], |mut accum, field| {
+                        let type_index = self.substitute_type(
+                            generic_types.as_slice(),
+                            checked_generics.as_slice(),
+                            field.type_index(),
+                        );
 
-                                accum.push((field_name.clone(), type_index));
+                        accum.push(Field {
+                            name: field.name().to_string(),
+                            ty: type_index,
+                            visibility: field.visibility,
+                        });
 
-                                accum
-                            });
+                        accum
+                    });
 
                     let type_index = self.push_type(Type::Product {
                         name,
@@ -1467,7 +1514,10 @@ impl TypeChecker {
                 | Item::Sum { .. }
                 | Item::Directive { .. } => {}
                 Item::Mod {
-                    contents, generics, ..
+                    name,
+                    contents,
+                    generics,
+                    ..
                 } => {
                     let mut context = context.to_vec();
 
@@ -1482,7 +1532,17 @@ impl TypeChecker {
                         context.push((generic_name, generic));
                     }
 
+                    self.current_module.push(
+                        names
+                            .get_definition(name.span())
+                            .expect("all modules are found by name resolution")
+                            .module()
+                            .is(),
+                    );
+
                     self.type_check_functions(ast, names, contents.as_slice(), context);
+
+                    self.current_module.pop();
                 }
                 Item::Teach { body, generics, .. } => {
                     let mut context = context.to_vec();
@@ -1976,7 +2036,7 @@ impl TypeChecker {
                                     context,
                                 )
                                 .ok()
-                                .map(|_| (index, self[associated_name.span]))
+                                .map(|_| (index, self[associated_name.definition.span()]))
                             })
                             .collect::<Vec<_>>();
 
@@ -1984,14 +2044,13 @@ impl TypeChecker {
 
                         self.type_map.insert(ast[*method].span(), type_index);
                     } else if let Type::Product { fields, .. } = &self[target_type_index]
-                        && let Some(Type::Fn { .. }) =
-                            fields.iter().find_map(|(field_name, field_type)| {
-                                if field_name == name {
-                                    Some(&self[*field_type])
-                                } else {
-                                    None
-                                }
-                            })
+                        && let Some(Type::Fn { .. }) = fields.iter().find_map(|field| {
+                            if field.name() == name {
+                                Some(&self[field.type_index()])
+                            } else {
+                                None
+                            }
+                        })
                     {
                         self.errors.push(Spanned::new(
                             Error::FnFieldAsMethod,
@@ -2086,50 +2145,44 @@ impl TypeChecker {
                     let mut checked_fields = vec![];
 
                     for (field_name, field) in fields {
-                        if let Some(field_type) =
-                            field_types
-                                .iter()
-                                .find_map(|(field_type_name, field_type)| {
-                                    if field_type_name == field_name.kind() {
-                                        Some(field_type)
-                                    } else {
-                                        None
-                                    }
-                                })
-                        {
-                            if field_types
-                                .iter()
-                                .filter(|(field_type_name, _)| field_type_name == field_name.kind())
-                                .nth(1)
-                                .is_none()
-                            {
-                                match self.check(ast, names, *field, *field_type, context) {
+                        match self.field_type(
+                            names,
+                            &type_name,
+                            field_types.as_slice(),
+                            (field_name.kind(), field_name.span()),
+                        ) {
+                            Err(error) => {
+                                self.errors.push(error);
+                            }
+                            Ok(field_type) => {
+                                match self.check(ast, names, *field, field_type, context) {
                                     Ok(ty) => {
-                                        checked_fields.push((field_name.kind().clone(), ty));
+                                        checked_fields.push(Field {
+                                            name: field_name.kind().clone(),
+                                            ty,
+                                            visibility: field_types.iter().find_map(|field| {
+                                                if field.name() == field_name.kind() {
+                                                    Some(field.visibility())
+                                                } else {
+                                                    None
+                                                }
+                                            }).expect("the field is guaranteed to exist because of the outer match"),
+                                        });
                                     }
                                     Err(error) => {
                                         self.errors.push(Spanned::new(error, ast[*field].span()));
                                     }
                                 }
-                            } else {
-                                self.errors
-                                    .push(Spanned::new(Error::DuplicateField, field_name.span()));
                             }
-                        } else {
-                            self.errors
-                                .push(Spanned::new(Error::NonExistentField, field_name.span()));
                         }
                     }
 
-                    checked_fields.sort_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
+                    checked_fields.sort_by(|a_field, b_field| a_field.name().cmp(b_field.name()));
 
-                    for (field_name, _) in field_types {
-                        if !fields
-                            .iter()
-                            .any(|(name, _)| name.kind() == field_name.as_str())
-                        {
+                    for field in field_types {
+                        if !fields.iter().any(|(name, _)| name.kind() == field.name()) {
                             self.errors.push(Spanned::new(
-                                Error::ProductMissingField(field_name.clone()),
+                                Error::ProductMissingField(field.name().to_string()),
                                 span,
                             ));
                         }
@@ -2475,7 +2528,7 @@ impl TypeChecker {
                         .filter_map(|(index, associated_name)| {
                             self.check_inferred(self[type_span], associated_name.for_type, context)
                                 .ok()
-                                .map(|_| (index, self[associated_name.span]))
+                                .map(|_| (index, self[associated_name.definition.span()]))
                         })
                         .collect::<Vec<_>>();
 
@@ -2562,23 +2615,25 @@ impl TypeChecker {
 
                 let lhs_span = ast[lhs].span();
 
-                if let Type::Product { fields, .. } = &self[lhs_type] {
+                if let Type::Product {
+                    fields,
+                    name: type_name,
+                    ..
+                } = &self[lhs_type]
+                {
                     if let Expr::Name(name) = ast[rhs].kind() {
-                        if let Some(field_type) =
-                            fields.iter().find_map(|(field_name, field_type)| {
-                                if field_name == name {
-                                    Some(field_type)
-                                } else {
-                                    None
-                                }
-                            })
-                        {
-                            *field_type
-                        } else {
-                            self.errors
-                                .push(Spanned::new(Error::NonExistentField, ast[rhs].span()));
+                        match self.field_type(
+                            names,
+                            type_name,
+                            fields.as_slice(),
+                            (name, ast[rhs].span()),
+                        ) {
+                            Ok(type_index) => type_index,
+                            Err(error) => {
+                                self.errors.push(error);
 
-                            self.type_error()
+                                self.type_error()
+                            }
                         }
                     } else {
                         self.errors
@@ -2729,7 +2784,7 @@ impl TypeChecker {
 
                                 let lhs_span = ast[*lhs].span();
 
-                                let Expr::Name(accessor) = ast[*rhs].kind() else {
+                                let Expr::Name(name) = ast[*rhs].kind() else {
                                     unreachable!("accessors are always names");
                                 };
 
@@ -2738,7 +2793,10 @@ impl TypeChecker {
                                 let context = &mut context;
 
                                 let Type::Product {
-                                    fields, generics, ..
+                                    fields,
+                                    generics,
+                                    name: type_name,
+                                    ..
                                 } = &self[self[names[lhs_span]]]
                                 else {
                                     unreachable!("accessees are always products");
@@ -2746,13 +2804,21 @@ impl TypeChecker {
 
                                 let mut applied_generics = generics.clone();
 
-                                let field_index = fields
-                                    .iter()
-                                    .position(|(field_name, _)| field_name == accessor)
-                                    .expect("the field is guaranteed to exist");
+                                let field_type_index = match self.field_type(
+                                    names,
+                                    type_name,
+                                    fields.as_slice(),
+                                    (name, ast[*rhs].span()),
+                                ) {
+                                    Ok(type_index) => type_index,
+                                    Err(error) => {
+                                        self.errors.push(error);
 
-                                match self.check_inferred(fields[field_index].1, rhs_type, context)
-                                {
+                                        return self.type_error();
+                                    }
+                                };
+
+                                match self.check_inferred(field_type_index, rhs_type, context) {
                                     Err(type_index) => {
                                         let error = Spanned::new(
                                             self.type_mismatch_error(type_index, rhs_type),
@@ -2777,7 +2843,12 @@ impl TypeChecker {
                                             unreachable!("accessees are always products");
                                         };
 
-                                        fields[field_index].1 = type_index;
+                                        let field_index = fields
+                                            .iter()
+                                            .position(|field| field.name() == name)
+                                            .expect("if the field doesn't exist, we would have returned early");
+
+                                        fields[field_index].ty = type_index;
 
                                         *generics = applied_generics;
                                     }
@@ -2790,6 +2861,35 @@ impl TypeChecker {
                     }
                 }
             }
+        }
+    }
+
+    fn field_type(
+        &self,
+        names: &Names,
+        type_name: &Spanned<String>,
+        fields: &[Field],
+        (name, span): (&str, Span),
+    ) -> Result<TypeIndex, Spanned<Error>> {
+        if let Some((field_type, visibility)) = fields.iter().find_map(|field| {
+            if field.name() == name {
+                Some((field.type_index(), field.visibility()))
+            } else {
+                None
+            }
+        }) {
+            if let Some(definition) = names.get_definition(type_name.span())
+                && let Some(current_module_id) = self.current_module.last()
+                && definition.module().is() == *current_module_id
+            {
+                Ok(field_type)
+            } else if matches!(visibility, Visibility::Public) {
+                Ok(field_type)
+            } else {
+                Err(Spanned::new(Error::PrivateField, span))
+            }
+        } else {
+            Err(Spanned::new(Error::NonExistentField, span))
         }
     }
 
@@ -3059,15 +3159,17 @@ impl TypeChecker {
 
                 let mut generics = generics.clone();
 
-                for ((_, inferred_field), (_, field)) in
-                    inferred_fields.into_iter().zip(&mut fields)
-                {
-                    match self.check_inferred(inferred_field, *field, context) {
+                for (inferred_field, field) in inferred_fields.into_iter().zip(&mut fields) {
+                    match self.check_inferred(
+                        inferred_field.type_index(),
+                        field.type_index(),
+                        context,
+                    ) {
                         Ok(type_index) => {
-                            *field = type_index;
+                            field.ty = type_index;
                         }
                         Err(type_index) => {
-                            *field = type_index;
+                            field.ty = type_index;
                             errored = true;
                         }
                     }
@@ -3230,8 +3332,8 @@ impl TypeChecker {
 
                 let mut generics = generics.clone();
 
-                for (_, field) in &mut fields {
-                    *field = self.apply(*field, context);
+                for field in &mut fields {
+                    field.ty = self.apply(field.type_index(), context);
                 }
 
                 for generic in &mut generics {
@@ -3361,6 +3463,7 @@ impl TypeChecker {
                     _ => return Err(self.apply(should_be, context)),
                 };
 
+                let should_be_name = should_be_name.clone();
                 let should_be_fields = should_be_fields.clone();
                 let should_be_generics = should_be_generics.clone();
 
@@ -3368,60 +3471,67 @@ impl TypeChecker {
 
                 let mut checked_fields = vec![];
 
-                for (should_be_field_name, should_be_field) in &should_be_fields {
+                for should_be_field in &should_be_fields {
                     if let Some((field_name, field)) =
                         fields.iter().find_map(|(field_name, field)| {
-                            if should_be_field_name.as_str() == field_name.kind() {
+                            if should_be_field.name() == field_name.kind() {
                                 Some((field_name, field))
                             } else {
                                 None
                             }
                         })
                     {
-                        if fields
-                            .iter()
-                            .filter(|(field_name, _)| {
-                                should_be_field_name.as_str() == field_name.kind()
-                            })
-                            .nth(1)
-                            .is_none()
-                        {
-                            if let Some(field) = field {
-                                match self.check_pattern(names, field, *should_be_field, context) {
-                                    Ok(type_index) => {
-                                        checked_fields
-                                            .push((field_name.kind().clone(), type_index));
+                        match self.field_type(names, &should_be_name, should_be_fields.as_slice(), (field_name.kind(), field_name.span())) {
+                            Err(error) => {
+                                self.errors.push(error);
 
-                                        self.type_map.insert(field_name.span(), type_index);
-                                    }
-                                    Err(type_index) => {
-                                        let should_be = self.apply(*should_be_field, context);
-
-                                        self.errors.push(Spanned::new(
-                                            self.type_mismatch_error(type_index, should_be),
-                                            field_name.span(),
-                                        ));
-                                    }
-                                }
-                            } else {
-                                let type_index = self.apply(*should_be_field, context);
-
-                                checked_fields.push((field_name.kind().clone(), type_index));
-
-                                self.type_map.insert(field_name.span(), type_index);
+                                self.type_map.insert(field_name.span(), self.type_error());
                             }
-                        } else {
-                            self.errors
-                                .push(Spanned::new(Error::DuplicateField, field_name.span()));
+                            Ok(should_be_type_index) => {
+                                let visibility = should_be_field.visibility();
+
+                                if let Some(field) = field {
+                                    match self.check_pattern(names, field, should_be_type_index, context) {
+                                        Ok(type_index) => {
+                                            checked_fields
+                                                .push(Field {
+                                                    name: field_name.kind().clone(),
+                                                    ty: type_index,
+                                                    visibility,
+                                                });
+
+                                            self.type_map.insert(field_name.span(), type_index);
+                                        }
+                                        Err(type_index) => {
+                                            let should_be = self.apply(should_be_type_index, context);
+
+                                            self.errors.push(Spanned::new(
+                                                self.type_mismatch_error(type_index, should_be),
+                                                field_name.span(),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    let type_index = self.apply(should_be_type_index, context);
+
+                                    checked_fields.push(Field {
+                                        name: field_name.kind().clone(),
+                                        ty: type_index,
+                                        visibility,
+                                    });
+
+                                    self.type_map.insert(field_name.span(), type_index);
+                                }
+                            }
                         }
                     }
                 }
 
-                checked_fields.sort_by(|(a_name, _), (b_name, _)| a_name.cmp(b_name));
+                checked_fields.sort_by(|a_field, b_field| a_field.name().cmp(b_field.name()));
 
                 for (field_name, _) in fields {
-                    if !should_be_fields.iter().any(|(should_be_field_name, _)| {
-                        should_be_field_name.as_str() == field_name.kind()
+                    if !should_be_fields.iter().any(|should_be_field| {
+                        should_be_field.name() == field_name.kind()
                     }) {
                         self.errors
                             .push(Spanned::new(Error::NonExistentField, field_name.span()));

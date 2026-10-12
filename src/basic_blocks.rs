@@ -1438,8 +1438,9 @@ impl Translator {
 
         let mut values = vec![];
 
-        for (field_name, _) in type_fields {
-            let Some((_, value)) = fields.iter().find(|(name, _)| name.kind() == field_name) else {
+        for field in type_fields {
+            let Some((_, value)) = fields.iter().find(|(name, _)| name.kind() == field.name())
+            else {
                 unreachable!("type checking guarantees all fields are present and not duplicated");
             };
 
@@ -1507,9 +1508,8 @@ impl Translator {
                 ..
             } => match ast[rhs].kind() {
                 Expr::Name(name) => {
-                    let Some(field_index) = type_fields
-                        .iter()
-                        .position(|(field_name, _)| field_name == name)
+                    let Some(field_index) =
+                        type_fields.iter().position(|field| field.name() == name)
                     else {
                         unreachable!("type checking guarantees the field exists on the type");
                     };
@@ -2012,7 +2012,7 @@ impl Translator {
                         let field_address = self.next_address();
 
                         let field_index = field_types.iter()
-                            .position(|(field_type_name, _)| field_type_name == field_name.kind())
+                            .position(|field_type| field_type.name() == field_name.kind())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {
@@ -2115,7 +2115,7 @@ impl Translator {
                         let field_address = self.next_address();
 
                         let field_index = field_types.iter()
-                            .position(|(field_type_name, _)| field_type_name == field_name.kind())
+                            .position(|field_type| field_type.name() == field_name.kind())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {

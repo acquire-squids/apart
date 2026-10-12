@@ -19,8 +19,9 @@ pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
 
     if resolver.errors.is_empty() {
         Ok(Names {
-            names: resolver.names,
+            resolved: resolver.names,
             associations: resolver.associations,
+            definitions: resolver.definitions,
         })
     } else {
         Err(resolver.errors)
@@ -32,22 +33,23 @@ const ROOT_SPAN: Span = Span::new(0, 0, 0);
 
 const ROOT_MODULE_ID: ModuleId = 0;
 
-const ROOT_MODULE: Module = Module {
+pub const ROOT_MODULE: Module = Module {
     span: ROOT_SPAN,
     is: ROOT_MODULE_ID,
     visibility: Visibility::Public,
 };
 
 struct NameResolver {
-    variable_scopes: Vec<HashMap<String, Definition>>,
-    associations: HashMap<Span, HashMap<String, Definition>>,
+    variable_scopes: Vec<HashMap<String, Span>>,
+    associations: HashMap<Span, HashMap<String, Vec<Span>>>,
+    definitions: HashMap<Span, Definition>,
     associated_with: Vec<Span>,
     current_mod: Vec<Module>,
     errors: Vec<Spanned<Error>>,
     names: HashMap<Span, Span>,
     module_id: ModuleId,
     current_visibility: Vec<Visibility>,
-    currently_teaching: Vec<Span>,
+    current_type: Vec<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,6 +81,7 @@ pub enum Error {
     UnknownSelf,
     SuperAtRoot,
     PathMorePrivateThanUse,
+    OverlappingName,
 }
 
 impl fmt::Display for Error {
@@ -177,6 +180,7 @@ impl fmt::Display for Error {
             Self::PathMorePrivateThanUse => {
                 write!(f, "this path is more private than the item using it")
             }
+            Self::OverlappingName => write!(f, "this name resolves to more than one definition"),
         }
     }
 }
@@ -258,15 +262,16 @@ impl Definition {
 }
 
 pub struct Names {
-    names: HashMap<Span, Span>,
-    associations: HashMap<Span, HashMap<String, Definition>>,
+    resolved: HashMap<Span, Span>,
+    associations: HashMap<Span, HashMap<String, Vec<Span>>>,
+    definitions: HashMap<Span, Definition>,
 }
 
 impl Index<Span> for Names {
     type Output = Span;
 
     fn index(&self, index: Span) -> &Self::Output {
-        self.names.get(&index).unwrap_or_else(|| {
+        self.resolved.get(&index).unwrap_or_else(|| {
             panic!("unresolved span: {index:?}");
         })
     }
@@ -276,16 +281,25 @@ impl Names {
     #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, span: Span) -> Option<Span> {
-        self.names.get(&span).copied()
+        self.resolved.get(&span).copied()
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub fn get_association(&self, of: Span, associated_name: &str) -> Option<&Definition> {
+    pub fn get_association(&self, of: Span, associated_name: &str) -> Option<&[Span]> {
         self.get(of)
             .map_or(Some(of), Some)
             .and_then(|name| self.associations.get(&name))
             .and_then(|associations| associations.get(associated_name))
+            .map(Vec::as_slice)
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn get_definition(&self, span: Span) -> Option<&Definition> {
+        self.get(span)
+            .map_or(Some(span), Some)
+            .and_then(|span| self.definitions.get(&span))
     }
 }
 
@@ -294,13 +308,14 @@ impl NameResolver {
         Self {
             variable_scopes: vec![HashMap::new()],
             associations: HashMap::new(),
+            definitions: HashMap::new(),
             associated_with: vec![],
             current_mod: vec![ROOT_MODULE],
             errors: vec![],
             names: HashMap::new(),
             module_id: ROOT_MODULE_ID,
             current_visibility: vec![],
-            currently_teaching: vec![],
+            current_type: vec![],
         }
     }
 
@@ -308,22 +323,29 @@ impl NameResolver {
         self.associations
             .entry(of)
             .and_modify(|associated_with| {
-                associated_with.insert(name.clone(), definition.clone());
+                associated_with
+                    .entry(name.clone())
+                    .and_modify(|definitions| {
+                        definitions.push(definition.span);
+                    })
+                    .or_insert_with(|| vec![definition.span]);
             })
             .or_insert_with(|| {
                 let mut hash_map = HashMap::new();
 
-                hash_map.insert(name, definition);
+                hash_map.insert(name, vec![definition.span]);
 
                 hash_map
             });
+
+        self.definitions.insert(definition.span, definition);
     }
 
-    fn resolve_associated_name(&self, of: Span, name: &str) -> Option<Definition> {
+    fn resolve_associated_name(&self, of: Span, name: &str) -> Option<&[Span]> {
         self.associations
             .get(&of)
             .and_then(|associated_with| associated_with.get(name))
-            .cloned()
+            .map(Vec::as_slice)
     }
 
     fn declare_name(&mut self, name: String, span: Span) {
@@ -331,8 +353,10 @@ impl NameResolver {
             unreachable!("there will always be at least one scope");
         };
 
-        scope.insert(
-            name,
+        scope.insert(name, span);
+
+        self.definitions.insert(
+            span,
             Definition {
                 kind: DefinitionKind::DeclaredOnly,
                 visibility: Visibility::Public,
@@ -345,37 +369,36 @@ impl NameResolver {
     fn define_name(&mut self, name: &str, definition_kind: DefinitionKind) {
         if let Some(definition) = self
             .variable_scopes
-            .iter_mut()
-            .filter_map(|scope| scope.get_mut(name))
+            .iter()
+            .filter_map(|scope| scope.get(name))
             .next_back()
+            .and_then(|span| self.definitions.get_mut(span))
         {
             definition.kind = definition_kind;
         }
     }
 
-    fn undeclare(&mut self, name: &str) {
-        let Some(scope) = self.variable_scopes.last_mut() else {
-            unreachable!("there will always be at least one scope");
-        };
+    fn resolve_name(&self, name: &str) -> Option<&[Span]> {
+        if name == "Self"
+            && let Some(item_span) = self.current_type.last()
+        {
+            return Some(std::slice::from_ref(item_span));
+        }
 
-        scope.remove(name);
-    }
-
-    fn resolve_name(&self, name: &str) -> Option<Definition> {
         let mut found = None;
 
         for definition in self
             .variable_scopes
             .iter()
             .rev()
-            .filter_map(|scope| scope.get(name))
+            .filter_map(|scope| scope.get(name).and_then(|span| self.definitions.get(span)))
         {
             if found.is_none() {
-                found = Some(definition.span);
+                found = Some(definition);
             }
 
             if definition.kind != DefinitionKind::DeclaredOnly {
-                return Some(definition.clone());
+                return Some(std::slice::from_ref(&definition.span));
             }
         }
 
@@ -400,14 +423,7 @@ impl NameResolver {
                         Some,
                     )
             },
-            |span| {
-                Some(Definition {
-                    kind: DefinitionKind::DeclaredOnly,
-                    visibility: Visibility::Public,
-                    span,
-                    module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
-                })
-            },
+            |definition| Some(std::slice::from_ref(&definition.span)),
         )
     }
 
@@ -416,11 +432,30 @@ impl NameResolver {
         name: &str,
         span: Span,
     ) -> Result<Definition, Spanned<Error>> {
-        if let Some(definition) = self.resolve_name(name) {
-            if definition.kind == DefinitionKind::DeclaredOnly {
+        if let Some(definitions) = self.resolve_name(name) {
+            if matches!(
+                definitions
+                    .first()
+                    .and_then(|span| self.definitions.get(span))
+                    .map(|definition| definition.kind),
+                Some(DefinitionKind::DeclaredOnly)
+            ) {
                 Err(Spanned::new(Error::NameUsedInItsDeclaration, span))
             } else {
-                self.names.insert(span, definition.span);
+                let definition = definitions
+                    .first()
+                    .and_then(|span| self.definitions.get(span))
+                    .cloned()
+                    .expect("the outer if condition guarantees this is some");
+
+                self.names.insert(
+                    span,
+                    definitions
+                        .first()
+                        .and_then(|span| self.definitions.get(span))
+                        .map_or(span, |definition| definition.span),
+                );
+
                 Ok(definition)
             }
         } else {
@@ -715,8 +750,11 @@ impl NameResolver {
                 }
                 Item::Mod { name, contents, .. } => {
                     self.current_mod.push(
-                        self.resolve_name(name.kind())
-                            .map_or(ROOT_MODULE, |definition| definition.module),
+                        self.definitions
+                            .get(&name.span())
+                            .expect("the module should have been resolved by a previous pass")
+                            .module
+                            .clone(),
                     );
 
                     self.associated_with.push(name.span());
@@ -737,22 +775,17 @@ impl NameResolver {
                         .get(&student.span())
                         .map_or_else(|| student.span(), |span| *span);
 
-                    self.declare_name("Self".to_string(), span);
-                    self.define_name("Self", DefinitionKind::Type);
-
                     self.associated_with.push(span);
 
                     self.variable_scopes.push(HashMap::new());
 
-                    self.currently_teaching.push(span);
+                    self.current_type.push(span);
 
                     self.resolve_types(ast, body);
 
-                    self.currently_teaching.pop();
+                    self.current_type.pop();
 
                     self.variable_scopes.pop();
-
-                    self.undeclare("Self");
 
                     self.associated_with.pop();
 
@@ -789,18 +822,17 @@ impl NameResolver {
                 } => {
                     self.associated_with.push(name.span());
 
-                    self.declare_name("Self".to_string(), name.span());
-                    self.define_name("Self", DefinitionKind::Type);
-
                     self.current_visibility.push(*visibility);
+
+                    self.current_type.push(name.span());
 
                     for field in fields {
                         self.resolve_type_signature(field.ty());
                     }
 
-                    self.current_visibility.pop();
+                    self.current_type.pop();
 
-                    self.undeclare("Self");
+                    self.current_visibility.pop();
 
                     self.associated_with.pop();
                 }
@@ -812,10 +844,9 @@ impl NameResolver {
                 } => {
                     self.associated_with.push(name.span());
 
-                    self.declare_name("Self".to_string(), name.span());
-                    self.define_name("Self", DefinitionKind::Type);
-
                     self.current_visibility.push(*visibility);
+
+                    self.current_type.push(name.span());
 
                     for variant in variants {
                         let Item::Product { fields, .. } = ast[*variant].kind() else {
@@ -827,9 +858,9 @@ impl NameResolver {
                         }
                     }
 
-                    self.current_visibility.pop();
+                    self.current_type.pop();
 
-                    self.undeclare("Self");
+                    self.current_visibility.pop();
 
                     self.associated_with.pop();
                 }
@@ -888,8 +919,11 @@ impl NameResolver {
             | Item::Directive { .. } => {}
             Item::Mod { name, contents, .. } => {
                 self.current_mod.push(
-                    self.resolve_name(name.kind())
-                        .map_or(ROOT_MODULE, |definition| definition.module),
+                    self.definitions
+                        .get(&name.span())
+                        .expect("the module should have been resolved by a previous pass")
+                        .module
+                        .clone(),
                 );
 
                 self.associated_with.push(name.span());
@@ -908,18 +942,17 @@ impl NameResolver {
                     .get(&student.span())
                     .map_or_else(|| student.span(), |span| *span);
 
-                self.declare_name("Self".to_string(), span);
-                self.define_name("Self", DefinitionKind::Type);
-
                 self.associated_with.push(span);
 
                 self.variable_scopes.push(HashMap::new());
 
+                self.current_type.push(span);
+
                 self.resolve_items(ast, body);
 
-                self.variable_scopes.pop();
+                self.current_type.pop();
 
-                self.undeclare("Self");
+                self.variable_scopes.pop();
 
                 self.associated_with.pop();
 
@@ -1169,11 +1202,9 @@ impl NameResolver {
                 }
 
                 if let Some(span) = self.names.get(&ast[p].span()).copied() {
-                    if let Some(definition) = self.resolve_name(match ast[p].kind() {
-                        Expr::Name(name) => name,
-                        Expr::SelfType => "Self",
-                        _ => unreachable!("the above \"continue\" ensures only Expr::Name and Expr::SelfType make it here"),
-                    }) && matches!(definition.kind, DefinitionKind::Mod) {
+                    if let Some(definition) = self.definitions.get(&span)
+                        && matches!(definition.kind, DefinitionKind::Mod)
+                    {
                         resolved_path.push(definition.module.clone());
                     }
 
@@ -1336,7 +1367,7 @@ impl NameResolver {
                                 .map_or(ROOT_MODULE.is, |module| module.is))
                     && matches!(self.current_visibility.last(), Some(Visibility::Public))
                     && self
-                        .currently_teaching
+                        .current_type
                         .last()
                         .is_none_or(|student| *student != definition.span) =>
             {
@@ -1374,11 +1405,9 @@ impl NameResolver {
                 }
 
                 if let Some(span) = self.names.get(&element.span()).copied() {
-                    if let Some(definition) = self.resolve_name(match element.kind() {
-                        PathElement::Name(name) => name,
-                        PathElement::SelfType => "Self",
-                        PathElement::Super | PathElement::Root => unreachable!("the above \"continue\" ensures only PathElement::Name and PathElement::SelfType make it here"),
-                    }) && matches!(definition.kind, DefinitionKind::Mod) {
+                    if let Some(definition) = self.definitions.get(&span)
+                        && matches!(definition.kind, DefinitionKind::Mod)
+                    {
                         resolved_path.push(definition.module.clone());
                     }
 

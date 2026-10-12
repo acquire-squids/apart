@@ -358,6 +358,16 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        private_field,
+        "private_field.txt",
+        [
+            apart::Error::TypeCheck(apart::TypeCheckError::PrivateField),
+            apart::Error::TypeCheck(apart::TypeCheckError::PrivateField),
+            apart::Error::TypeCheck(apart::TypeCheckError::PrivateField)
+        ]
+    );
+
+    apart::test_compilation_errors!(
         root_path_invalid,
         "root_path_invalid.txt",
         [apart::Error::NameResolve(

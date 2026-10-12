@@ -1,0 +1,26 @@
+funky main() {
+	let
+		wrapped = wrap_string("this shouldn't work"),
+	in {
+		print_string(wrapped.value);
+	};
+}
+
+funky wrap_string(value <- String) -> wrapper~Wrapper[String] {
+	wrapper~Wrapper {
+		value,
+	}
+}
+
+funky wrapped_string_to_option(wrapped <- wrapper~Wrapper[String]) -> Option[String] {
+	match wrapped {
+		wrapper~Wrapper { value, } => Option~Some { value, },
+		else => Option~None {},
+	}
+}
+
+pub mod wrapper {
+	pub product Wrapper[T] {
+		value <- T,
+	}
+}
