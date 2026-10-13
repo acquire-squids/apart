@@ -7,7 +7,7 @@ use crate::{
     },
 };
 
-use std::{collections::HashMap, error, fmt, iter, ops::Index};
+use std::{collections::HashMap, error, fmt, ops::Index};
 
 pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<Error>>> {
     let mut type_checker = TypeChecker::new();
@@ -49,7 +49,6 @@ pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<
 
 pub struct TypeChecker {
     errors: Vec<Spanned<Error>>,
-    changed: bool,
     type_map: HashMap<Span, TypeIndex>,
     types: Vec<Type>,
     fn_return_type: Option<TypeIndex>,
@@ -74,6 +73,7 @@ pub enum Primitive {
     Boolean,
     Unit,
     String,
+    Never,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +81,6 @@ pub enum Type {
     Primitive(Spanned<Primitive>),
     Integer(Spanned<u64>),
     NegativeInteger(Spanned<i64>),
-    Any,
     AnyOf {
         alternatives: Vec<TypeIndex>,
         span: Span,
@@ -157,11 +156,23 @@ impl Field {
 
 impl Type {
     #[allow(clippy::too_many_lines)]
-    fn eq(&self, types: &[Self], other: &Self) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Primitive(a), Self::Primitive(b)) => a.kind() == b.kind(),
+            (Self::Integer(a), Self::Integer(b)) => a.kind() == b.kind() && a.span() == b.span(),
+            (Self::NegativeInteger(a), Self::NegativeInteger(b)) => {
+                a.kind() == b.kind() && a.span() == b.span()
+            }
             (Self::Error, Self::Error) => true,
-            (Self::Generic(a), Self::Generic(b)) => a.kind() == b.kind(),
+            (Self::Existential(a), Self::Existential(b)) => {
+                a.kind() == b.kind() && a.span() == b.span()
+            }
+            (Self::Generic(a), Self::Generic(b)) => a.kind() == b.kind() && a.span() == b.span(),
+            (Self::Associations(a), Self::Associations(b)) => {
+                a.iter().zip(b).all(|(a_association, b_association)| {
+                    a_association.type_index == b_association.type_index
+                })
+            }
             (
                 Self::Fn {
                     parameters: a_parameters,
@@ -172,29 +183,10 @@ impl Type {
                     return_type: b_return_type,
                 },
             ) => {
-                types
-                    .get(usize::from(*a_return_type))
-                    .and_then(|a_return_type| {
-                        Some((a_return_type, types.get(usize::from(*b_return_type))?))
-                    })
-                    .is_some_and(|(a_return_type, b_return_type)| {
-                        a_return_type.eq(types, b_return_type)
-                    })
+                a_return_type == b_return_type
                     && a_parameters.len() == b_parameters.len()
                     && a_parameters.iter().zip(b_parameters).all(
-                        |(a_parameter_type, b_parameter_type)| {
-                            types
-                                .get(usize::from(*a_parameter_type))
-                                .and_then(|a_parameter_type| {
-                                    Some((
-                                        a_parameter_type,
-                                        types.get(usize::from(*b_parameter_type))?,
-                                    ))
-                                })
-                                .is_some_and(|(a_parameter_type, b_parameter_type)| {
-                                    a_parameter_type.eq(types, b_parameter_type)
-                                })
-                        },
+                        |(a_parameter_type, b_parameter_type)| a_parameter_type == b_parameter_type,
                     )
             }
             (
@@ -213,32 +205,13 @@ impl Type {
                     && a_fields.len() == b_fields.len()
                     && a_fields.iter().zip(b_fields).all(|(a_field, b_field)| {
                         a_field.name() == b_field.name()
-                            && types
-                                .get(usize::from(a_field.type_index()))
-                                .and_then(|a_field_type| {
-                                    Some((
-                                        a_field_type,
-                                        types.get(usize::from(b_field.type_index()))?,
-                                    ))
-                                })
-                                .is_some_and(|(a_field_type, b_field_type)| {
-                                    a_field_type.eq(types, b_field_type)
-                                })
+                            && a_field.type_index() == b_field.type_index()
                     })
                     && a_generics.len() == b_generics.len()
                     && a_generics
                         .iter()
                         .zip(b_generics)
-                        .all(|(a_generic_type, b_generic_type)| {
-                            types
-                                .get(usize::from(*a_generic_type))
-                                .and_then(|a_generic_type| {
-                                    Some((a_generic_type, types.get(usize::from(*b_generic_type))?))
-                                })
-                                .is_some_and(|(a_generic_type, b_generic_type)| {
-                                    a_generic_type.eq(types, b_generic_type)
-                                })
-                        })
+                        .all(|(a_generic_type, b_generic_type)| a_generic_type == b_generic_type)
             }
             (
                 Self::Sum {
@@ -257,37 +230,15 @@ impl Type {
                     && a_variants
                         .iter()
                         .zip(b_variants)
-                        .all(|(a_variant_type, b_variant_type)| {
-                            types
-                                .get(usize::from(*a_variant_type))
-                                .and_then(|a_variant_type| {
-                                    Some((a_variant_type, types.get(usize::from(*b_variant_type))?))
-                                })
-                                .is_some_and(|(a_variant_type, b_variant_type)| {
-                                    a_variant_type.eq(types, b_variant_type)
-                                })
-                        })
+                        .all(|(a_variant_type, b_variant_type)| a_variant_type == b_variant_type)
                     && a_generics.len() == b_generics.len()
                     && a_generics
                         .iter()
                         .zip(b_generics)
-                        .all(|(a_generic_type, b_generic_type)| {
-                            types
-                                .get(usize::from(*a_generic_type))
-                                .and_then(|a_generic_type| {
-                                    Some((a_generic_type, types.get(usize::from(*b_generic_type))?))
-                                })
-                                .is_some_and(|(a_generic_type, b_generic_type)| {
-                                    a_generic_type.eq(types, b_generic_type)
-                                })
-                        })
+                        .all(|(a_generic_type, b_generic_type)| a_generic_type == b_generic_type)
             }
             (_, _) => false,
         }
-    }
-
-    fn ne(&self, types: &[Self], other: &Self) -> bool {
-        !self.eq(types, other)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -306,10 +257,11 @@ impl Type {
                 Primitive::Boolean => "bool",
                 Primitive::Unit => "unit",
                 Primitive::String => "String",
+                Primitive::Never => "never",
             }
             .to_string(),
             Self::Integer(_) | Self::NegativeInteger(_) => "i64".to_string(),
-            Self::Any | Self::Error => "!!UNKNOWN TYPE!!".to_string(),
+            Self::Error => "!!UNKNOWN TYPE!!".to_string(),
             Self::Generic(name) | Self::Existential(name) => name.kind().clone(),
             Self::AnyOf { alternatives, .. } => {
                 let mut buffer = "ALTERNATIVE!(".to_string();
@@ -413,8 +365,10 @@ impl Type {
                 buffer.push(')');
 
                 if let Some(return_type) = types.get(usize::from(*return_type))
-                    // TODO: is it okay to use this span?
-                    && return_type.ne(types, &Self::Primitive(Spanned::new(Primitive::Unit, Span::new(0, 0, 0))))
+                    && !matches!(return_type,
+                        Self::Primitive(primitive)
+                            if matches!(primitive.kind(), Primitive::Unit)
+                    )
                 {
                     buffer.push_str(" -> ");
 
@@ -613,7 +567,6 @@ impl TypeChecker {
     fn new() -> Self {
         let mut me = Self {
             errors: vec![],
-            changed: true,
             type_map: HashMap::new(),
             types: vec![],
             fn_return_type: None,
@@ -625,8 +578,6 @@ impl TypeChecker {
         };
 
         me.push_type(Type::Error);
-
-        me.push_type(Type::Any);
 
         // TODO: is it okay to use this span?
         me.push_type(Type::Integer(Spanned::new(0, Span::new(0, 0, 0))));
@@ -653,11 +604,21 @@ impl TypeChecker {
     }
 
     fn push_type(&mut self, ty: Type) -> TypeIndex {
-        let type_index = TypeIndex(self.types.len());
+        // TODO: this is probably slow?  fix it if it becomes a problem
+        if let Some(type_index) = self
+            .types
+            .iter()
+            .rposition(|existing_type| existing_type.eq(&ty))
+            .map(TypeIndex)
+        {
+            type_index
+        } else {
+            let type_index = TypeIndex(self.types.len());
 
-        self.types.push(ty);
+            self.types.push(ty);
 
-        type_index
+            type_index
+        }
     }
 
     pub fn get_type(&self, span: Span) -> Option<&Type> {
@@ -814,12 +775,12 @@ impl TypeChecker {
         )
     }
 
-    fn type_any(&self) -> TypeIndex {
+    fn type_never(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
-                .position(|ty| matches!(ty, Type::Any))
-                .expect("the any type should be initialized before all type checking"),
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::Never)))
+                .expect("the never type should be initialized before all type checking"),
         )
     }
 
@@ -865,6 +826,10 @@ impl TypeChecker {
                             .push_type(Type::Primitive(Spanned::new(Primitive::Unit, name.span()))),
                         "String" => self.push_type(Type::Primitive(Spanned::new(
                             Primitive::String,
+                            name.span(),
+                        ))),
+                        "never" => self.push_type(Type::Primitive(Spanned::new(
+                            Primitive::Never,
                             name.span(),
                         ))),
                         _ => {
@@ -1208,7 +1173,7 @@ impl TypeChecker {
         type_index: TypeIndex,
     ) -> TypeIndex {
         match &self[type_index] {
-            Type::Any | Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Error | Type::Generic(_) => type_index,
+            Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Error | Type::Generic(_) => type_index,
             Type::Existential(name) => {
                 originals.iter().rposition(|type_index| {
                     matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
@@ -1394,7 +1359,6 @@ impl TypeChecker {
 
                 self.type_map.insert(ty.span(), self.type_error());
             }
-            Type::Any => unreachable!("normal type signatures are never Type::Any"),
             Type::Error => unreachable!("normal type signatures are never Type::Unknown"),
             Type::Primitive(_) | Type::Generic(_) | Type::Existential(_) => {
                 self.type_map.insert(ty.span(), type_index);
@@ -1674,7 +1638,8 @@ impl TypeChecker {
 
                     if let Err(error) = self.check(ast, names, *body, expected_return_type, context)
                     {
-                        self.errors.push(Spanned::new(error, ast[*body].span()));
+                        self.errors
+                            .push(Spanned::new(error, Self::expr_span(ast, *body)));
                     } else {
                         self.propagate(ast, names, *body, Some(self[ast[*body].span()]));
                     }
@@ -1722,7 +1687,11 @@ impl TypeChecker {
                 | Primitive::I64 => {
                     self.overwrite_with(ast, names, expr, type_index);
                 }
-                Primitive::F64 | Primitive::Boolean | Primitive::Unit | Primitive::String => {}
+                Primitive::F64
+                | Primitive::Boolean
+                | Primitive::Unit
+                | Primitive::String
+                | Primitive::Never => {}
             }
         }
     }
@@ -1887,8 +1856,6 @@ impl TypeChecker {
     ) -> TypeIndex {
         let span = ast[expr].span();
 
-        let is_unknown = self.type_is_unknown(span);
-
         let type_index = match ast[expr].kind() {
             Expr::BinaryNoLhs { .. }
             | Expr::CallNoCallee(_)
@@ -1987,10 +1954,10 @@ impl TypeChecker {
                     .check(ast, names, *condition, self.type_boolean(), context)
                     .is_err()
                 {
-                    let condition_span = ast[*condition].span();
-
-                    self.errors
-                        .push(Spanned::new(Error::ConditionNotBoolean, condition_span));
+                    self.errors.push(Spanned::new(
+                        Error::ConditionNotBoolean,
+                        Self::expr_span(ast, *condition),
+                    ));
                 }
 
                 let otherwise_type = self.infer(ast, names, *otherwise, context);
@@ -2001,9 +1968,8 @@ impl TypeChecker {
                         span,
                     }),
                     Err(error) => {
-                        let otherwise_span = ast[*otherwise].span();
-
-                        self.errors.push(Spanned::new(error, otherwise_span));
+                        self.errors
+                            .push(Spanned::new(error, Self::expr_span(ast, *otherwise)));
 
                         self.type_error()
                     }
@@ -2021,10 +1987,10 @@ impl TypeChecker {
                     .check(ast, names, *condition, self.type_boolean(), context)
                     .is_err()
                 {
-                    let condition_span = ast[*condition].span();
-
-                    self.errors
-                        .push(Spanned::new(Error::ConditionNotBoolean, condition_span));
+                    self.errors.push(Spanned::new(
+                        Error::ConditionNotBoolean,
+                        Self::expr_span(ast, *condition),
+                    ));
                 }
 
                 self.infer(ast, names, *when_true, context);
@@ -2045,16 +2011,27 @@ impl TypeChecker {
 
                     let annotation_ty = self[annotation.span()];
 
-                    if let Err(error) = self.check(ast, names, *value, annotation_ty, context) {
-                        let value_span = ast[*value].span();
+                    let inferred = self.infer(ast, names, *value, context);
 
-                        self.errors.push(Spanned::new(error, value_span));
+                    match self.check_inferred(inferred, annotation_ty, context) {
+                        Err(errored) => {
+                            self.errors.push(Spanned::new(
+                                self.type_mismatch_error(errored, annotation_ty),
+                                Self::expr_span(ast, *value),
+                            ));
 
-                        self.type_error()
-                    } else {
-                        self.type_map.insert(ast[*value].span(), annotation_ty);
+                            self.type_error()
+                        }
+                        Ok(checked) => {
+                            self.type_map.insert(ast[*value].span(), annotation_ty);
 
-                        annotation_ty
+                            if matches!(self[inferred], Type::Integer(_) | Type::NegativeInteger(_))
+                            {
+                                checked
+                            } else {
+                                inferred
+                            }
+                        }
                     }
                 } else {
                     self.infer(ast, names, *value, context)
@@ -2070,7 +2047,7 @@ impl TypeChecker {
                 match self.infer_call(
                     ast,
                     names,
-                    (ast[*callee].span(), callee_type_index, arguments.clone()),
+                    (ast[*callee].span(), callee_type_index, arguments.as_slice()),
                     context,
                 ) {
                     Ok(type_index) => type_index,
@@ -2160,15 +2137,17 @@ impl TypeChecker {
                         return self.type_error();
                     }
 
+                    let mut arguments_with_target = vec![*target];
+
+                    arguments_with_target.extend_from_slice(arguments.as_slice());
+
                     match self.infer_call(
                         ast,
                         names,
                         (
                             ast[*method].span(),
                             self[ast[*method].span()],
-                            iter::once(*target)
-                                .chain(arguments.iter().copied())
-                                .collect::<Vec<_>>(),
+                            arguments_with_target.as_slice(),
                         ),
                         context,
                     ) {
@@ -2189,8 +2168,10 @@ impl TypeChecker {
                         }
                     }
                 } else {
-                    self.errors
-                        .push(Spanned::new(Error::CannotHaveMethod, ast[*target].span()));
+                    self.errors.push(Spanned::new(
+                        Error::CannotHaveMethod,
+                        Self::expr_span(ast, *target),
+                    ));
 
                     self.type_error()
                 }
@@ -2208,16 +2189,17 @@ impl TypeChecker {
                         .expect("returns can only happen in functions"),
                     context,
                 ) {
-                    self.errors.push(Spanned::new(error, span));
+                    self.errors
+                        .push(Spanned::new(error, Self::expr_span(ast, *expr)));
                 }
 
-                self.type_any()
+                self.type_never()
             }
             Expr::AsUnit(expr) => {
                 self.infer(ast, names, *expr, context);
 
                 if let Expr::Return(_) = ast[*expr].kind() {
-                    self.type_any()
+                    self.type_never()
                 } else {
                     self.type_unit()
                 }
@@ -2263,7 +2245,10 @@ impl TypeChecker {
                                         });
                                     }
                                     Err(error) => {
-                                        self.errors.push(Spanned::new(error, ast[*field].span()));
+                                        self.errors.push(Spanned::new(
+                                            error,
+                                            Self::expr_span(ast, *field),
+                                        ));
                                     }
                                 }
                             }
@@ -2352,7 +2337,7 @@ impl TypeChecker {
                                                 type_index,
                                                 other_case_type_index,
                                             ),
-                                            ast[case.case()].span(),
+                                            Self::expr_span(ast, case.case()),
                                         );
 
                                         self.errors.push(error);
@@ -2380,7 +2365,7 @@ impl TypeChecker {
                             if !matches!(self[type_index], Type::Error) {
                                 let error = Spanned::new(
                                     self.type_mismatch_error(type_index, other_case_type_index),
-                                    ast[*fallback].span(),
+                                    Self::expr_span(ast, *fallback),
                                 );
 
                                 self.errors.push(error);
@@ -2401,10 +2386,6 @@ impl TypeChecker {
 
         self.type_map.insert(span, type_index);
 
-        if is_unknown && !self.type_is_unknown(span) {
-            self.changed = true;
-        }
-
         type_index
     }
 
@@ -2422,7 +2403,7 @@ impl TypeChecker {
 
                 Some(Err(self.type_error()))
             }
-            Type::Error | Type::Any => Some(Err(self.type_error())),
+            Type::Error => Some(Err(self.type_error())),
             Type::Existential(_) | Type::Generic(_) | Type::Fn { .. } | Type::Associations(_) => {
                 None
             }
@@ -2437,7 +2418,7 @@ impl TypeChecker {
         &mut self,
         ast: &Ast,
         names: &Names,
-        (callee_span, callee_type_index, arguments): (Span, TypeIndex, Vec<ExprIndex>),
+        (callee_span, callee_type_index, arguments): (Span, TypeIndex, &[ExprIndex]),
         context: &[(String, TypeIndex)],
     ) -> Result<TypeIndex, Spanned<Error>> {
         let functions = match &self[callee_type_index] {
@@ -2480,7 +2461,7 @@ impl TypeChecker {
                             if let Err(error) =
                                 self.check(ast, names, *argument, *parameter, context)
                             {
-                                return Err(Spanned::new(error, ast[*argument].span()));
+                                return Err(Spanned::new(error, Self::expr_span(ast, *argument)));
                             }
                         }
 
@@ -2560,9 +2541,8 @@ impl TypeChecker {
                 self.infer(ast, names, operand, context);
 
                 if let Err(error) = self.check(ast, names, operand, self.type_boolean(), context) {
-                    let span = ast[operand].span();
-
-                    self.errors.push(Spanned::new(error, span));
+                    self.errors
+                        .push(Spanned::new(error, Self::expr_span(ast, operand)));
 
                     self.type_error()
                 } else {
@@ -2578,13 +2558,11 @@ impl TypeChecker {
                         self.check(ast, names, operand, self.type_negative_integer(), context)
                     }) {
                     Err(_) => {
-                        let span = ast[operand].span();
-
                         self.errors.push(Spanned::new(
                             Error::CannotNegate(
                                 self[self[ast[operand].span()]].to_string(self.types.as_slice()),
                             ),
-                            span,
+                            Self::expr_span(ast, operand),
                         ));
 
                         self.type_error()
@@ -2649,8 +2627,6 @@ impl TypeChecker {
 
                     self.push_type(Type::Associations(valid_associations))
                 } else if let Some(Type::Sum { variants, .. }) = self.get_type(names[lhs_span]) {
-                    let rhs_span = ast[rhs].span();
-
                     if let Expr::Product { name, .. } = ast[rhs].kind() {
                         if let Some((variant_index, variant_type)) =
                             variants.iter().enumerate().find_map(|(i, variant)| {
@@ -2704,20 +2680,25 @@ impl TypeChecker {
                                     self.push_type(ty)
                                 }
                                 Err(error) => {
-                                    self.errors.push(Spanned::new(error, rhs_span));
+                                    self.errors
+                                        .push(Spanned::new(error, Self::expr_span(ast, rhs)));
 
                                     self.type_error()
                                 }
                             }
                         } else {
-                            self.errors
-                                .push(Spanned::new(Error::NonExistentSumVariant, rhs_span));
+                            self.errors.push(Spanned::new(
+                                Error::NonExistentSumVariant,
+                                Self::expr_span(ast, rhs),
+                            ));
 
                             self.type_error()
                         }
                     } else {
-                        self.errors
-                            .push(Spanned::new(Error::InvalidSumVariant, rhs_span));
+                        self.errors.push(Spanned::new(
+                            Error::InvalidSumVariant,
+                            Self::expr_span(ast, rhs),
+                        ));
 
                         self.type_error()
                     }
@@ -2727,8 +2708,6 @@ impl TypeChecker {
             }
             BinaryOp::Access => {
                 let lhs_type = self.infer(ast, names, lhs, context);
-
-                let lhs_span = ast[lhs].span();
 
                 if let Type::Product {
                     fields,
@@ -2751,15 +2730,17 @@ impl TypeChecker {
                             }
                         }
                     } else {
-                        self.errors
-                            .push(Spanned::new(Error::InvalidAccess, ast[rhs].span()));
+                        self.errors.push(Spanned::new(
+                            Error::InvalidAccess,
+                            Self::expr_span(ast, rhs),
+                        ));
 
                         self.type_error()
                     }
                 } else {
                     if !matches!(self[lhs_type], Type::Error) {
                         self.errors
-                            .push(Spanned::new(Error::CannotAccess, lhs_span));
+                            .push(Spanned::new(Error::CannotAccess, Self::expr_span(ast, lhs)));
                     }
 
                     self.type_error()
@@ -2775,22 +2756,19 @@ impl TypeChecker {
                     .or_else(|_| self.check(ast, names, lhs, self.type_integer(), context))
                 {
                     Err(_) => {
-                        let span = ast[lhs].span();
-
                         self.errors.push(Spanned::new(
                             Error::ArithmeticImpossible(
                                 self[self[ast[lhs].span()]].to_string(self.types.as_slice()),
                             ),
-                            span,
+                            Self::expr_span(ast, lhs),
                         ));
 
                         self.type_error()
                     }
                     Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
                         Err(error) => {
-                            let span = ast[rhs].span();
-
-                            self.errors.push(Spanned::new(error, span));
+                            self.errors
+                                .push(Spanned::new(error, Self::expr_span(ast, rhs)));
 
                             self.type_error()
                         }
@@ -2807,22 +2785,19 @@ impl TypeChecker {
                     .or_else(|_| self.check(ast, names, lhs, self.type_integer(), context))
                 {
                     Err(_) => {
-                        let span = ast[lhs].span();
-
                         self.errors.push(Spanned::new(
                             Error::CannotCompare(
                                 self[self[ast[lhs].span()]].to_string(self.types.as_slice()),
                             ),
-                            span,
+                            Self::expr_span(ast, lhs),
                         ));
 
                         self.type_error()
                     }
                     Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
                         Err(error) => {
-                            let span = ast[rhs].span();
-
-                            self.errors.push(Spanned::new(error, span));
+                            self.errors
+                                .push(Spanned::new(error, Self::expr_span(ast, rhs)));
 
                             self.type_error()
                         }
@@ -2833,17 +2808,15 @@ impl TypeChecker {
             BinaryOp::And | BinaryOp::Or => {
                 match self.check(ast, names, lhs, self.type_boolean(), context) {
                     Err(error) => {
-                        let span = ast[lhs].span();
-
-                        self.errors.push(Spanned::new(error, span));
+                        self.errors
+                            .push(Spanned::new(error, Self::expr_span(ast, lhs)));
 
                         self.type_error()
                     }
                     Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
                         Err(error) => {
-                            let span = ast[rhs].span();
-
-                            self.errors.push(Spanned::new(error, span));
+                            self.errors
+                                .push(Spanned::new(error, Self::expr_span(ast, rhs)));
 
                             self.type_error()
                         }
@@ -2856,9 +2829,8 @@ impl TypeChecker {
 
                 match self.check(ast, names, rhs, lhs_type, context) {
                     Err(error) => {
-                        let span = ast[rhs].span();
-
-                        self.errors.push(Spanned::new(error, span));
+                        self.errors
+                            .push(Spanned::new(error, Self::expr_span(ast, rhs)));
 
                         self.type_error()
                     }
@@ -3034,6 +3006,19 @@ impl TypeChecker {
         }
     }
 
+    fn expr_span(ast: &Ast, mut expr: ExprIndex) -> Span {
+        while let Expr::Block(exprs) = ast[expr].kind()
+            && !exprs.is_empty()
+        {
+            expr = exprs
+                .last()
+                .copied()
+                .expect("the while condition guarantees there is at least one expression");
+        }
+
+        ast[expr].span()
+    }
+
     fn check(
         &mut self,
         ast: &Ast,
@@ -3063,7 +3048,7 @@ impl TypeChecker {
         context: &mut Vec<(String, TypeIndex)>,
     ) -> Result<TypeIndex, TypeIndex> {
         match (&self[inferred], &self[should_be]) {
-            (Type::Any, _) => Ok(should_be),
+            (Type::Primitive(a), _) if matches!(a.kind(), Primitive::Never) => Ok(should_be),
             (Type::Error, _) | (_, Type::Error) => Ok(self.type_error()),
             (Type::Integer(a), Type::NegativeInteger(_)) => i64::try_from(*a.kind())
                 .map_err(|_| inferred)
@@ -3072,15 +3057,13 @@ impl TypeChecker {
                     let type_index =
                         self.push_type(Type::NegativeInteger(Spanned::new(a_converted, a_span)));
 
-                    self.changed = true;
-
                     self.type_map.insert(a_span, type_index);
 
                     type_index
                 }),
             (
                 Type::Integer(_) | Type::NegativeInteger(_),
-                Type::Any | Type::Integer(_) | Type::NegativeInteger(_),
+                Type::Integer(_) | Type::NegativeInteger(_),
             ) => Ok(inferred),
             (Type::Integer(value), Type::Primitive(b)) => {
                 let value_span = value.span();
@@ -3178,7 +3161,7 @@ impl TypeChecker {
                 }
             }
             (Type::Generic(a), Type::Generic(b)) => {
-                if a.kind() == b.kind() {
+                if a.kind() == b.kind() && a.span() == b.span() {
                     Ok(should_be)
                 } else {
                     Err(inferred)
@@ -3391,8 +3374,7 @@ impl TypeChecker {
             | Type::NegativeInteger(_)
             | Type::Primitive(_)
             | Type::Generic(_)
-            | Type::Error
-            | Type::Any => type_index,
+            | Type::Error => type_index,
             Type::Existential(name) => context
                 .iter()
                 .rfind(|(context_name, _)| context_name == name.kind())

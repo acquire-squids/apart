@@ -1,0 +1,21 @@
+funky main() {
+	let
+		a <- never = 97,
+	in {
+		print_i64(a);
+
+		print_f64(if true {
+			return_never()
+		} else {
+			20.26
+		});
+	};
+}
+
+funky return_never() -> never {
+	return 3.14;
+}
+
+funky return_never_2() -> never {
+	3.14
+}

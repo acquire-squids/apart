@@ -10,6 +10,7 @@ primitive f64;
 primitive bool;
 primitive unit;
 primitive String;
+primitive never;
 
 pub alias Option[T] = option~Option[T];
 pub alias Result[T, E] = result~Result[T, E];

@@ -388,6 +388,29 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        never_type,
+        "never_type.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::TypeMismatch {
+                expected: a_expected, got: a_got
+            }
+        ), apart::Error::TypeCheck(
+            apart::TypeCheckError::TypeMismatch {
+                expected: b_expected, got: b_got
+            }
+        ), apart::Error::TypeCheck(
+            apart::TypeCheckError::TypeMismatch {
+                expected: c_expected, got: c_got
+            }
+        )] if a_expected == "never"
+            && a_got == "i64"
+            && b_expected == "never"
+            && b_got == "f64"
+            && c_expected == "never"
+            && c_got == "f64"
+    );
+
+    apart::test_compilation_errors!(
         path_explicit_self,
         "path_explicit_self.txt",
         [apart::Error::NameResolve(

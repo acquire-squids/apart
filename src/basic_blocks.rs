@@ -1619,7 +1619,6 @@ impl Translator {
         {
             Some(
                 Type::Error
-                | Type::Any
                 | Type::Integer(_)
                 | Type::NegativeInteger(_)
                 | Type::Existential(_)
@@ -1728,7 +1727,6 @@ impl Translator {
 
         let type_span = match &types[types[ast[target].span()]] {
             Type::Error
-            | Type::Any
             | Type::Integer(_)
             | Type::NegativeInteger(_)
             | Type::Existential(_)
@@ -1931,7 +1929,6 @@ impl Translator {
             Type::Integer(_)
             | Type::NegativeInteger(_)
             | Type::Error
-            | Type::Any
             | Type::Fn { .. }
             | Type::Existential(_)
             | Type::Generic(_)
