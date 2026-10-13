@@ -135,7 +135,7 @@ const DESCRIPTION: &str = concat!(
 Description:
     Compile a program written in the \"apart\" language
 
-    -?, --help
+    -h, --help
         view this text
 
     -l, --list-targets
@@ -175,7 +175,7 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
 
     while let Some(argument) = arguments.peek() {
         match argument.as_str() {
-            "-?" | "--help" => {
+            "-h" | "--help" => {
                 print_usage();
 
                 return Err(ExitCode::SUCCESS);
