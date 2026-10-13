@@ -32,8 +32,6 @@ struct Parser<'s, 'p> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
     ExpectedExpr,
-    InvalidInteger,
-    InvalidFloat,
     BlockWithoutSemicolon,
     InvalidName,
     NameIsKeyword,
@@ -111,11 +109,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ExpectedExpr => write!(f, "expected an expression"),
-            Self::InvalidInteger => write!(
-                f,
-                "this integer is invalid because it doesn't fit within 64 bits unsigned"
-            ),
-            Self::InvalidFloat => write!(f, "this integer is not a valid f64"),
             Self::BlockWithoutSemicolon => write!(
                 f,
                 "if there is another expression here, a semicolon should be between it and the previous expression"
@@ -398,7 +391,6 @@ impl Reportable for Error {
         match self {
             Self::InvalidName
             | Self::LetWithoutName => vec!["a name can start with \"_\" or any ASCII letter, and may be followed by zero or more of \"_\" or any ASCII letters or any ASCII digits".to_string()],
-            Self::InvalidInteger => vec!["only u8, i8, u16, i16, u32, i32, u64, and i64 are supported".to_string()],
             Self::ExpectedExpr
             | Self::MatchWithoutValue => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
@@ -407,8 +399,7 @@ impl Reportable for Error {
             Self::ExpectedType => vec!["type signatures can start with \"funky\" or a name".to_string()],
             Self::ExpectedPattern => vec!["a pattern can start with \"{\", \"true\", \"false\", decimal digits, \"root\", \"super\", or a name".to_string()],
             Self::MatchWithoutFallback => vec!["I'd like to check exhaustiveness, but I don't have that yet".to_string()],
-            Self::InvalidFloat
-            | Self::BlockWithoutSemicolon
+            Self::BlockWithoutSemicolon
             | Self::NameIsKeyword
             | Self::LetInWithoutEqual
             | Self::LetInWithoutIn
@@ -575,9 +566,9 @@ impl IndexMut<ItemIndex> for &mut Ast {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Integer(u64),
-    NegativeInteger(i64),
-    Float(f64),
+    Integer(u32),
+    NegativeInteger(u32),
+    Float,
     Boolean(bool),
     Unit,
     Unary {
@@ -655,8 +646,8 @@ impl MatchCase {
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
-    Integer(u64),
-    NegativeInteger(i64),
+    Integer(u32),
+    NegativeInteger(u32),
     Boolean(bool),
     Unit,
     Product {
@@ -892,7 +883,7 @@ impl Ast {
         match self[expr].kind() {
             Expr::Integer(_)
             | Expr::NegativeInteger(_)
-            | Expr::Float(_)
+            | Expr::Float
             | Expr::Boolean(_)
             | Expr::Unit
             | Expr::Name(_)
@@ -2361,7 +2352,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                     Some((precedence::NOT, (Self::not, token.span())))
                 }
                 Token::Integer(_) => Some((precedence::PRIMARY, (Self::integer, token.span()))),
-                Token::Float(_) => Some((precedence::PRIMARY, (Self::float, token.span()))),
+                Token::Float => Some((precedence::PRIMARY, (Self::float, token.span()))),
                 Token::String => Some((precedence::PRIMARY, (Self::string_expr, token.span()))),
                 Token::Identifier => {
                     let span = token.span();
@@ -2577,6 +2568,7 @@ impl<'s, 'p> Parser<'s, 'p> {
         }
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn integer(
         &mut self,
         ast: &mut Ast,
@@ -2596,14 +2588,7 @@ impl<'s, 'p> Parser<'s, 'p> {
             unreachable!("non-integer passed to integer parse function");
         };
 
-        token
-            .span()
-            .lexeme(self.source)
-            .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
-            .map_or_else(
-                || Err(Spanned::new(Error::InvalidInteger, token.span())),
-                |num| Ok(ast.push_expr(Spanned::new(Expr::Integer(num), token.span()))),
-            )
+        Ok(ast.push_expr(Spanned::new(Expr::Integer(*radix), token.span())))
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -2633,6 +2618,7 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(Spanned::new(text, span)))
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn float(
         &mut self,
         ast: &mut Ast,
@@ -2648,32 +2634,11 @@ impl<'s, 'p> Parser<'s, 'p> {
             })
             .expect("`float` is only called when the next token is already checked");
 
-        let Token::Float(radix) = token.kind() else {
+        let Token::Float = token.kind() else {
             unreachable!("non-float passed to float parse function");
         };
 
-        match token
-            .span()
-            .lexeme(self.source)
-            .and_then(|lexeme| lexeme.split_once('.'))
-            .and_then(|(whole, fraction)| {
-                Some((
-                    i64::from_str_radix(whole, *radix).ok()?,
-                    i64::from_str_radix(fraction, *radix).ok()?,
-                ))
-            }) {
-            Some((whole, fraction)) => {
-                #[allow(clippy::cast_precision_loss)]
-                let power = 10.0f64.powf((fraction as f64).log10().floor() + 1.0);
-
-                #[allow(clippy::cast_precision_loss)]
-                let num =
-                    (whole as f64) + ((fraction as f64) / if power == 0.0 { 1.0 } else { power });
-
-                Ok(ast.push_expr(Spanned::new(Expr::Float(num), token.span())))
-            }
-            None => Err(Spanned::new(Error::InvalidFloat, token.span())),
-        }
+        Ok(ast.push_expr(Spanned::new(Expr::Float, token.span())))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
@@ -2713,28 +2678,11 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let expr = self.parse_expression(ast, precedence)?;
 
-        if let Expr::Integer(value) = ast[expr].kind() {
-            if let Ok(value) = i64::try_from(*value) {
-                Ok(ast.push_expr(Spanned::new(
-                    Expr::NegativeInteger(-value),
-                    span.combine_with(ast[expr].span())
-                        .expect("these spans are from the same source"),
-                )))
-            } else if *value
-                == 1 + u64::try_from(i64::MAX).expect("unsigned can always fit signed max")
-            {
-                Ok(ast.push_expr(Spanned::new(
-                    Expr::NegativeInteger(i64::MIN),
-                    span.combine_with(ast[expr].span())
-                        .expect("these spans are from the same source"),
-                )))
-            } else {
-                Err(Spanned::new(
-                    Error::InvalidInteger,
-                    span.combine_with(ast[expr].span())
-                        .expect("these spans are from the same source"),
-                ))
-            }
+        if let Expr::Integer(radix) = ast[expr].kind() {
+            Ok(ast.push_expr(Spanned::new(
+                Expr::NegativeInteger(*radix),
+                ast[expr].span(),
+            )))
         } else {
             Ok(ast.push_expr(Spanned::new(
                 Expr::Unary {
@@ -3305,14 +3253,7 @@ impl Parser<'_, '_> {
                     unreachable!("the match arm guard ensures only integers make it here");
                 };
 
-                token
-                    .span()
-                    .lexeme(self.source)
-                    .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
-                    .map_or_else(
-                        || Err(Spanned::new(Error::InvalidInteger, token.span())),
-                        |num| Ok(Spanned::new(Pattern::Integer(num), token.span())),
-                    )
+                Ok(Spanned::new(Pattern::Integer(*radix), token.span()))
             }
             Some(TokenTree::Token(token)) if matches!(token.kind(), Token::Minus) => {
                 let current_tree = self.current_tree;
@@ -3323,30 +3264,10 @@ impl Parser<'_, '_> {
                     && let Token::Integer(radix) = next_token.kind()
                     && self.in_token_tree(current_tree)
                 {
-                    let span = token
-                        .span()
-                        .combine_with(next_token.span())
-                        .expect("these spans are from the same source");
-
-                    let value = next_token
-                        .span()
-                        .lexeme(self.source)
-                        .and_then(|lexeme| u64::from_str_radix(lexeme, *radix).ok())
-                        .ok_or_else(|| Spanned::new(Error::InvalidInteger, span))?;
-
-                    i64::try_from(value).map_or_else(
-                        |_| {
-                            if value
-                                == 1 + u64::try_from(i64::MAX)
-                                    .expect("unsigned can always fit signed max")
-                            {
-                                Ok(Spanned::new(Pattern::NegativeInteger(i64::MIN), span))
-                            } else {
-                                Err(Spanned::new(Error::InvalidInteger, span))
-                            }
-                        },
-                        |value| Ok(Spanned::new(Pattern::NegativeInteger(-value), span)),
-                    )
+                    Ok(Spanned::new(
+                        Pattern::NegativeInteger(*radix),
+                        next_token.span(),
+                    ))
                 } else {
                     self.current_tree = current_tree;
                     self.at = at;

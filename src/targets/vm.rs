@@ -633,7 +633,7 @@ fn backpatch_value(
                 Ok(TypeId::U16 | TypeId::I16 | TypeId::NativeFn) => {
                     *ip += 3;
                 }
-                Ok(TypeId::U32 | TypeId::I32) => {
+                Ok(TypeId::U32 | TypeId::I32 | TypeId::F32) => {
                     *ip += 5;
                 }
                 Ok(TypeId::U64 | TypeId::I64 | TypeId::F64) => {
@@ -885,7 +885,7 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                 Ok(TypeId::U16 | TypeId::I16 | TypeId::NativeFn) => {
                     *ip += 3;
                 }
-                Ok(TypeId::U32 | TypeId::I32) => {
+                Ok(TypeId::U32 | TypeId::I32 | TypeId::F32) => {
                     *ip += 5;
                 }
                 Ok(TypeId::U64 | TypeId::I64 | TypeId::F64 | TypeId::FnU32) => {
@@ -1025,6 +1025,7 @@ crate::int_enum! {
     I32 => 0x10,
     U64 => 0x11,
     String => 0x12,
+    F32 => 0x13,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1037,6 +1038,7 @@ pub enum CopyableValue {
     I32(i32),
     U64(u64),
     I64(i64),
+    F32(f32),
     F64(f64),
     Boolean(bool),
     Unit,
@@ -1375,6 +1377,13 @@ impl Assemble for IrValue {
             }
             Self::I64(value) => {
                 let mut bytes = vec![u8::from(TypeId::I64)];
+
+                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+
+                bytes
+            }
+            Self::F32(value) => {
+                let mut bytes = vec![u8::from(TypeId::F32)];
 
                 bytes.extend_from_slice(value.to_le_bytes().as_slice());
 
@@ -2228,6 +2237,13 @@ where
                 disassemble_number_from!(
                     bytes, instructive ;
                     i64,
+                )
+                .expect("the range is the same length as the expected array"),
+            ),
+            Ok(TypeId::F32) => Self::F32(
+                disassemble_number_from!(
+                    bytes, instructive ;
+                    f32,
                 )
                 .expect("the range is the same length as the expected array"),
             ),

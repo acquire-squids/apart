@@ -15,7 +15,12 @@ pub mod modules {
     pub const MODULE_STRING: u64 = 1;
 }
 
-pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
+pub fn translate(
+    sources: &[(usize, &str)],
+    ast: &Ast,
+    names: &Names,
+    types: &TypeChecker,
+) -> BasicBlocks {
     let mut translator = Translator::new();
 
     if let Some(root) = ast.roots().iter().find(|root| {
@@ -43,10 +48,10 @@ pub fn translate(ast: &Ast, names: &Names, types: &TypeChecker) -> BasicBlocks {
             false
         }
     }) {
-        translator.translate_function(ast, names, types, *root);
+        translator.translate_function(sources, ast, names, types, *root);
     }
 
-    translator.translate_items(ast, names, types, ast.roots(), false);
+    translator.translate_items(sources, ast, names, types, ast.roots(), false);
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -233,6 +238,7 @@ pub enum Value {
     I32(i32),
     U64(u64),
     I64(i64),
+    F32(f32),
     F64(f64),
     Boolean(bool),
     Unit,
@@ -435,6 +441,7 @@ impl Translator {
 
     fn translate_items(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -450,14 +457,14 @@ impl Translator {
                 | Item::Directive { .. }
                 | Item::Alias { .. } => {}
                 Item::Mod { contents, .. } => {
-                    self.translate_items(ast, names, types, contents.as_slice(), true);
+                    self.translate_items(sources, ast, names, types, contents.as_slice(), true);
                 }
                 Item::Teach { body, .. } => {
-                    self.translate_items(ast, names, types, body.as_slice(), true);
+                    self.translate_items(sources, ast, names, types, body.as_slice(), true);
                 }
                 Item::Fn { name, .. } => {
                     if name.kind() != "main" || allow_main {
-                        self.translate_function(ast, names, types, *item);
+                        self.translate_function(sources, ast, names, types, *item);
                     }
                 }
             }
@@ -466,6 +473,7 @@ impl Translator {
 
     fn translate_function(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -516,7 +524,7 @@ impl Translator {
 
             self.last_in_fn = true;
 
-            self.translate_expr(ast, names, types, *body);
+            self.translate_expr(sources, ast, names, types, *body);
 
             self.last_in_fn = last_in_fn;
 
@@ -527,7 +535,14 @@ impl Translator {
 
 impl Translator {
     #[allow(clippy::too_many_lines)]
-    fn translate_expr(&mut self, ast: &Ast, names: &Names, types: &TypeChecker, expr: ExprIndex) {
+    fn translate_expr(
+        &mut self,
+        sources: &[(usize, &str)],
+        ast: &Ast,
+        names: &Names,
+        types: &TypeChecker,
+        expr: ExprIndex,
+    ) {
         match ast[expr].kind() {
             Expr::BinaryNoLhs { .. }
             | Expr::CallNoCallee(_)
@@ -540,37 +555,46 @@ impl Translator {
                     "type checking guarantees these path elements aren't used as expressions"
                 );
             }
-            Expr::Integer(value) => {
+            Expr::Integer(radix) => {
                 self.values.push(
                     if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
+                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .expect("the span is from this source");
+
                         match primitive.kind() {
                             Primitive::U8 => Value::U8(
-                                u8::try_from(*value)
+                                u8::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::I8 => Value::I8(
-                                i8::try_from(*value)
+                                i8::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::U16 => Value::U16(
-                                u16::try_from(*value)
+                                u16::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::I16 => Value::I16(
-                                i16::try_from(*value)
+                                i16::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::U32 => Value::U32(
-                                u32::try_from(*value)
+                                u32::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::I32 => Value::I32(
-                                i32::try_from(*value)
+                                i32::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
-                            Primitive::U64 => Value::U64(*value),
+                            Primitive::U64 => Value::U64(
+                                u64::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
                             Primitive::I64 => Value::I64(
-                                i64::try_from(*value)
+                                i64::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             _ => unreachable!("type checking guarantees integers are integers"),
@@ -584,23 +608,32 @@ impl Translator {
                     self.emit_return();
                 }
             }
-            Expr::NegativeInteger(value) => {
+            Expr::NegativeInteger(radix) => {
                 self.values.push(
                     if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
+                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .expect("the span is from this source");
+
                         match primitive.kind() {
                             Primitive::I8 => Value::I8(
-                                i8::try_from(*value)
+                                i8::from_str_radix(format!("-{lexeme}").as_str(), *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::I16 => Value::I16(
-                                i16::try_from(*value)
+                                i16::from_str_radix(format!("-{lexeme}").as_str(), *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
                             Primitive::I32 => Value::I32(
-                                i32::try_from(*value)
+                                i32::from_str_radix(format!("-{lexeme}").as_str(), *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
-                            Primitive::I64 => Value::I64(*value),
+                            Primitive::I64 => Value::I64(
+                                i64::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
                             _ => unreachable!("type checking guarantees integers are integers"),
                         }
                     } else {
@@ -612,8 +645,32 @@ impl Translator {
                     self.emit_return();
                 }
             }
-            Expr::Float(value) => {
-                self.values.push(Value::F64(*value));
+            Expr::Float => {
+                self.values.push(
+                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
+                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .expect("the span is from this source");
+
+                        match primitive.kind() {
+                            Primitive::F32 => Value::F32(
+                                lexeme
+                                    .parse::<f32>()
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::F64 => Value::F64(
+                                lexeme
+                                    .parse::<f64>()
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            _ => unreachable!("type checking guarantees floats are floats"),
+                        }
+                    } else {
+                        unreachable!("type checking guarantees floats are primitives")
+                    },
+                );
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -637,7 +694,7 @@ impl Translator {
                 self.translate_name(ast, names, expr);
             }
             Expr::Unary { op, .. } => {
-                self.translate_unary(ast, names, types, expr, *op);
+                self.translate_unary(sources, ast, names, types, expr, *op);
             }
             Expr::Block(exprs) if exprs.is_empty() => {
                 self.values.push(Value::Unit);
@@ -647,63 +704,69 @@ impl Translator {
                 }
             }
             Expr::Block(exprs) => {
-                self.translate_block(ast, names, types, exprs.as_slice());
+                self.translate_block(sources, ast, names, types, exprs.as_slice());
             }
             Expr::Group(_) => {
                 ast.for_children_exprs(expr, |ast, expr| {
-                    self.translate_expr(ast, names, types, expr);
+                    self.translate_expr(sources, ast, names, types, expr);
                 });
             }
             Expr::Let { name, value, .. } => {
-                self.translate_assign_name(ast, names, types, (name.span(), *value));
+                self.translate_assign_name(sources, ast, names, types, (name.span(), *value));
             }
             Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
             } => {
-                self.translate_assign(ast, names, types, (*lhs, *rhs));
+                self.translate_assign(sources, ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 lhs,
                 rhs,
             } => {
-                self.translate_path_access(ast, names, types, (*lhs, *rhs));
+                self.translate_path_access(sources, ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
             } => {
-                self.translate_access(ast, names, types, (*lhs, *rhs));
+                self.translate_access(sources, ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
             } => {
-                self.translate_and(ast, names, types, (*lhs, *rhs));
+                self.translate_and(sources, ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
             } => {
-                self.translate_or(ast, names, types, (*lhs, *rhs));
+                self.translate_or(sources, ast, names, types, (*lhs, *rhs));
             }
             Expr::Binary { op, .. } => {
-                self.translate_binary(ast, names, types, expr, *op);
+                self.translate_binary(sources, ast, names, types, expr, *op);
             }
             Expr::If {
                 condition,
                 when_true,
                 otherwise,
             } => {
-                self.translate_if(ast, names, types, (*condition, *when_true, *otherwise));
+                self.translate_if(
+                    sources,
+                    ast,
+                    names,
+                    types,
+                    (*condition, *when_true, *otherwise),
+                );
             }
             Expr::Call { callee, arguments } => {
-                self.translate_call(ast, names, types, (*callee, arguments.as_slice()));
+                self.translate_call(sources, ast, names, types, (*callee, arguments.as_slice()));
             }
             Expr::MethodCall {
                 target,
@@ -711,6 +774,7 @@ impl Translator {
                 arguments,
             } => {
                 self.translate_method_call(
+                    sources,
                     ast,
                     names,
                     types,
@@ -721,14 +785,14 @@ impl Translator {
                 condition,
                 when_true,
             } => {
-                self.translate_while(ast, names, types, (*condition, *when_true));
+                self.translate_while(sources, ast, names, types, (*condition, *when_true));
             }
             Expr::Return(value) => {
                 let last_in_fn = self.last_in_fn;
 
                 self.last_in_fn = false;
 
-                self.translate_expr(ast, names, types, *value);
+                self.translate_expr(sources, ast, names, types, *value);
 
                 self.last_in_fn = last_in_fn;
 
@@ -741,7 +805,7 @@ impl Translator {
 
                 self.last_in_fn = false;
 
-                self.translate_expr(ast, names, types, *value);
+                self.translate_expr(sources, ast, names, types, *value);
 
                 self.values.pop();
 
@@ -754,14 +818,20 @@ impl Translator {
                 }
             }
             Expr::Product { fields, .. } => {
-                self.translate_product(ast, names, types, expr, fields.as_slice());
+                self.translate_product(sources, ast, names, types, expr, fields.as_slice());
             }
             Expr::Match {
                 expr,
                 cases,
                 fallback,
             } => {
-                self.translate_match(ast, names, types, (*expr, cases.as_slice(), *fallback));
+                self.translate_match(
+                    sources,
+                    ast,
+                    names,
+                    types,
+                    (*expr, cases.as_slice(), *fallback),
+                );
             }
             Expr::String(text) => {
                 self.values.push(Value::String(text.clone()));
@@ -834,6 +904,7 @@ impl Translator {
 
     fn translate_block(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -846,7 +917,7 @@ impl Translator {
         self.push_instruction(Instruction::ScopeStart);
 
         for expr in exprs.iter().rev().skip(1).rev() {
-            self.translate_expr(ast, names, types, *expr);
+            self.translate_expr(sources, ast, names, types, *expr);
 
             self.values
                 .pop()
@@ -856,6 +927,7 @@ impl Translator {
         self.last_in_fn = last_in_fn;
 
         self.translate_expr(
+            sources,
             ast,
             names,
             types,
@@ -869,6 +941,7 @@ impl Translator {
 
     fn translate_unary(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -880,7 +953,7 @@ impl Translator {
         self.last_in_fn = false;
 
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(ast, names, types, expr);
+            self.translate_expr(sources, ast, names, types, expr);
         });
 
         let operand = self
@@ -907,6 +980,7 @@ impl Translator {
 
     fn translate_binary(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -918,7 +992,7 @@ impl Translator {
         self.last_in_fn = false;
 
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(ast, names, types, expr);
+            self.translate_expr(sources, ast, names, types, expr);
         });
 
         let rhs = self
@@ -951,6 +1025,7 @@ impl Translator {
 
     fn translate_assign(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -962,14 +1037,14 @@ impl Translator {
             Expr::Name(_) => {
                 let lhs_span = ast[lhs].span();
 
-                self.translate_assign_name(ast, names, types, (lhs_span, value));
+                self.translate_assign_name(sources, ast, names, types, (lhs_span, value));
             }
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
             } => {
-                self.translate_assign_access(ast, names, types, (*lhs, *rhs, value));
+                self.translate_assign_access(sources, ast, names, types, (*lhs, *rhs, value));
             }
             _ => {
                 unreachable!("for now, only names and accesses can be assigned to");
@@ -979,12 +1054,13 @@ impl Translator {
 
     fn translate_assign_name(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
         (span, value): (Span, ExprIndex),
     ) {
-        self.translate_expr(ast, names, types, value);
+        self.translate_expr(sources, ast, names, types, value);
 
         let value = self
             .values
@@ -1048,6 +1124,7 @@ impl Translator {
 
     fn translate_and(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1057,7 +1134,7 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, types, lhs);
+        self.translate_expr(sources, ast, names, types, lhs);
 
         let address = self.assign_if_not_address();
 
@@ -1075,7 +1152,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(ast, names, types, rhs);
+        self.translate_expr(sources, ast, names, types, rhs);
 
         let address = Address {
             block_index: address.block_index,
@@ -1127,6 +1204,7 @@ impl Translator {
 
     fn translate_or(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1136,7 +1214,7 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, types, lhs);
+        self.translate_expr(sources, ast, names, types, lhs);
 
         let address = self.assign_if_not_address();
 
@@ -1154,7 +1232,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(ast, names, types, rhs);
+        self.translate_expr(sources, ast, names, types, rhs);
 
         let address = Address {
             block_index: address.block_index,
@@ -1206,6 +1284,7 @@ impl Translator {
 
     fn translate_if(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1215,7 +1294,7 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, types, condition);
+        self.translate_expr(sources, ast, names, types, condition);
 
         let condition = self
             .values
@@ -1243,7 +1322,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(ast, names, types, when_true);
+        self.translate_expr(sources, ast, names, types, when_true);
 
         let address = Address {
             block_index: address.block_index,
@@ -1273,7 +1352,7 @@ impl Translator {
             *otherwise = otherwise_block;
         }
 
-        self.translate_expr(ast, names, types, otherwise);
+        self.translate_expr(sources, ast, names, types, otherwise);
 
         let address = Address {
             block_index: address.block_index,
@@ -1311,6 +1390,7 @@ impl Translator {
 
     fn translate_call(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1320,7 +1400,7 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, types, callee);
+        self.translate_expr(sources, ast, names, types, callee);
 
         let callee = self
             .values
@@ -1331,7 +1411,7 @@ impl Translator {
             .iter()
             .copied()
             .map(|argument| {
-                self.translate_expr(ast, names, types, argument);
+                self.translate_expr(sources, ast, names, types, argument);
 
                 self.values
                     .pop()
@@ -1364,6 +1444,7 @@ impl Translator {
 
     fn translate_while(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1375,7 +1456,7 @@ impl Translator {
 
         let condition_block = self.next_block();
 
-        self.translate_expr(ast, names, types, condition);
+        self.translate_expr(sources, ast, names, types, condition);
 
         let condition = self
             .values
@@ -1396,7 +1477,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(ast, names, types, when_true);
+        self.translate_expr(sources, ast, names, types, when_true);
 
         let when_true_block = self
             .current_block
@@ -1432,6 +1513,7 @@ impl Translator {
 
     fn translate_product(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1460,7 +1542,7 @@ impl Translator {
                 unreachable!("type checking guarantees all fields are present and not duplicated");
             };
 
-            self.translate_expr(ast, names, types, *value);
+            self.translate_expr(sources, ast, names, types, *value);
 
             values.push(self.values.pop().expect("all expressions produce a value"));
         }
@@ -1476,6 +1558,7 @@ impl Translator {
 
     fn translate_access(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1487,7 +1570,7 @@ impl Translator {
 
         let field_index = Self::find_field_index(ast, types, (lhs, rhs));
 
-        self.translate_expr(ast, names, types, lhs);
+        self.translate_expr(sources, ast, names, types, lhs);
 
         let lhs = self
             .values
@@ -1540,6 +1623,7 @@ impl Translator {
 
     fn translate_assign_access(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1551,14 +1635,14 @@ impl Translator {
 
         let field_index = Self::find_field_index(ast, types, (lhs, rhs));
 
-        self.translate_expr(ast, names, types, lhs);
+        self.translate_expr(sources, ast, names, types, lhs);
 
         let lhs = self
             .values
             .pop()
             .expect("every expression produces a value");
 
-        self.translate_expr(ast, names, types, value);
+        self.translate_expr(sources, ast, names, types, value);
 
         let value = self
             .values
@@ -1585,6 +1669,7 @@ impl Translator {
     #[allow(clippy::too_many_lines)]
     fn translate_path_access(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1621,6 +1706,7 @@ impl Translator {
                 Type::Error
                 | Type::Integer(_)
                 | Type::NegativeInteger(_)
+                | Type::Float(_)
                 | Type::Existential(_)
                 | Type::Generic(_)
                 | Type::Fn { .. }
@@ -1691,7 +1777,7 @@ impl Translator {
                     _ => unreachable!("for now, only products can be variants"),
                 };
 
-                self.translate_expr(ast, names, types, rhs);
+                self.translate_expr(sources, ast, names, types, rhs);
 
                 let Some(Value::Compound(fields)) = self.values.pop() else {
                     unreachable!("type checking guarantees the right operand is a product literal");
@@ -1703,7 +1789,7 @@ impl Translator {
                 });
             }
             _ => {
-                self.translate_expr(ast, names, types, rhs);
+                self.translate_expr(sources, ast, names, types, rhs);
             }
         }
 
@@ -1716,6 +1802,7 @@ impl Translator {
 
     fn translate_method_call(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1729,6 +1816,7 @@ impl Translator {
             Type::Error
             | Type::Integer(_)
             | Type::NegativeInteger(_)
+            | Type::Float(_)
             | Type::Existential(_)
             | Type::Generic(_)
             | Type::Fn { .. }
@@ -1772,7 +1860,7 @@ impl Translator {
         let arguments = iter::once(target)
             .chain(arguments.iter().copied())
             .map(|argument| {
-                self.translate_expr(ast, names, types, argument);
+                self.translate_expr(sources, ast, names, types, argument);
 
                 self.values
                     .pop()
@@ -1805,6 +1893,7 @@ impl Translator {
 
     fn translate_match(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         types: &TypeChecker,
@@ -1814,7 +1903,7 @@ impl Translator {
 
         self.last_in_fn = false;
 
-        self.translate_expr(ast, names, types, expr);
+        self.translate_expr(sources, ast, names, types, expr);
 
         let expr_address = self.assign_if_not_address();
 
@@ -1830,11 +1919,12 @@ impl Translator {
         let mut address_version = address.version;
 
         for case in cases {
-            let backpatch_these = self.translate_pattern(types, expr_address, case.pattern());
+            let backpatch_these =
+                self.translate_pattern(sources, types, expr_address, case.pattern());
 
             self.push_instruction(Instruction::ScopeStart);
 
-            self.translate_expr(ast, names, types, case.case());
+            self.translate_expr(sources, ast, names, types, case.case());
 
             let case_value = self
                 .values
@@ -1872,7 +1962,7 @@ impl Translator {
             }
         }
 
-        self.translate_expr(ast, names, types, fallback);
+        self.translate_expr(sources, ast, names, types, fallback);
 
         let fallback_value = self
             .values
@@ -1921,6 +2011,7 @@ impl Translator {
     #[allow(clippy::too_many_lines)]
     fn translate_pattern(
         &mut self,
+        sources: &[(usize, &str)],
         types: &TypeChecker,
         match_against: Address,
         pattern: &Spanned<Pattern>,
@@ -1928,6 +2019,7 @@ impl Translator {
         match &types[types[pattern.span()]] {
             Type::Integer(_)
             | Type::NegativeInteger(_)
+            | Type::Float(_)
             | Type::Error
             | Type::Fn { .. }
             | Type::Existential(_)
@@ -1938,48 +2030,76 @@ impl Translator {
             ),
             Type::Primitive(primitive) => {
                 let value = match (primitive.kind(), pattern.kind()) {
-                    (Primitive::U8, Pattern::Integer(value)) => Value::U8(
-                        u8::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I8, Pattern::Integer(value)) => Value::I8(
-                        i8::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::U16, Pattern::Integer(value)) => Value::U16(
-                        u16::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I16, Pattern::Integer(value)) => Value::I16(
-                        i16::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::U32, Pattern::Integer(value)) => Value::U32(
-                        u32::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I32, Pattern::Integer(value)) => Value::I32(
-                        i32::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::U64, Pattern::Integer(value)) => Value::U64(*value),
-                    (Primitive::I64, Pattern::Integer(value)) => Value::I64(
-                        i64::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I8, Pattern::NegativeInteger(value)) => Value::I8(
-                        i8::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I16, Pattern::NegativeInteger(value)) => Value::I16(
-                        i16::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I32, Pattern::NegativeInteger(value)) => Value::I32(
-                        i32::try_from(*value)
-                            .expect("type checking guarantees the conversion is valid"),
-                    ),
-                    (Primitive::I64, Pattern::NegativeInteger(value)) => Value::I64(*value),
+                    (_, Pattern::Integer(radix)) => {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == pattern.span().source_id())
+                            .and_then(|(_, source)| pattern.span().lexeme(source))
+                            .expect("the span is from this source");
+
+                        match primitive.kind() {
+                            Primitive::U8 => Value::U8(
+                                u8::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I8 => Value::I8(
+                                i8::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U16 => Value::U16(
+                                u16::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I16 => Value::I16(
+                                i16::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U32 => Value::U32(
+                                u32::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I32 => Value::I32(
+                                i32::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::U64 => Value::U64(
+                                u64::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I64 => Value::I64(
+                                i64::from_str_radix(lexeme, *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            _ => unreachable!("type checking guarantees integers are integers"),
+                        }
+                    }
+                    (_, Pattern::NegativeInteger(radix)) => {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == pattern.span().source_id())
+                            .and_then(|(_, source)| pattern.span().lexeme(source))
+                            .expect("the span is from this source");
+
+                        match primitive.kind() {
+                            Primitive::I8 => Value::I8(
+                                i8::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I16 => Value::I16(
+                                i16::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I32 => Value::I32(
+                                i32::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            Primitive::I64 => Value::I64(
+                                i64::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                    .expect("type checking guarantees the conversion is valid"),
+                            ),
+                            _ => unreachable!("type checking guarantees integers are integers"),
+                        }
+                    }
                     (Primitive::Boolean, Pattern::Boolean(value)) => Value::Boolean(*value),
                     (Primitive::Unit, Pattern::Unit) => Value::Unit,
                     (Primitive::String, Pattern::String(text)) => Value::String(text.clone()),
@@ -2042,6 +2162,7 @@ impl Translator {
 
                         if let Some(field) = field {
                             to_backpatch.append(&mut self.translate_pattern(
+                                sources,
                                 types,
                                 field_address,
                                 field,
@@ -2145,6 +2266,7 @@ impl Translator {
 
                         if let Some(field) = field {
                             to_backpatch.append(&mut self.translate_pattern(
+                                sources,
                                 types,
                                 field_address,
                                 field,

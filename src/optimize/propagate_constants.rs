@@ -148,6 +148,7 @@ fn clone_constant(
         | Value::I32(_)
         | Value::U64(_)
         | Value::I64(_)
+        | Value::F32(_)
         | Value::F64(_)
         | Value::Boolean(_)
         | Value::Unit

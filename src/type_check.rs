@@ -9,7 +9,11 @@ use crate::{
 
 use std::{collections::HashMap, error, fmt, ops::Index};
 
-pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<Error>>> {
+pub fn check_types(
+    sources: &[(usize, &str)],
+    ast: &Ast,
+    names: &Names,
+) -> Result<TypeChecker, Vec<Spanned<Error>>> {
     let mut type_checker = TypeChecker::new();
 
     type_checker.initialize_primitives(ast);
@@ -20,23 +24,9 @@ pub fn check_types(ast: &Ast, names: &Names) -> Result<TypeChecker, Vec<Spanned<
 
     type_checker.associate_items(ast, names, ast.roots());
 
-    type_checker.type_check_functions(ast, names, ast.roots(), [].as_slice());
+    type_checker.type_check_functions(sources, ast, names, ast.roots(), [].as_slice());
 
-    let type_i64 = (&type_checker)[type_checker.type_i64()].clone();
-    let default_integer = (&type_checker)[type_checker.type_u64()].clone();
-
-    for ty in &mut type_checker.types {
-        match ty {
-            Type::Integer(value) => match i64::try_from(*value.kind()) {
-                Ok(_) => *ty = type_i64.clone(),
-                Err(_) => *ty = default_integer.clone(),
-            },
-            Type::NegativeInteger(_) => {
-                *ty = type_i64.clone();
-            }
-            _ => {}
-        }
-    }
+    type_checker.replace_default_numeric_types(sources);
 
     type_checker.check_for_main(ast);
 
@@ -69,6 +59,7 @@ pub enum Primitive {
     I32,
     U64,
     I64,
+    F32,
     F64,
     Boolean,
     Unit,
@@ -79,8 +70,9 @@ pub enum Primitive {
 #[derive(Debug, Clone)]
 pub enum Type {
     Primitive(Spanned<Primitive>),
-    Integer(Spanned<u64>),
-    NegativeInteger(Spanned<i64>),
+    Integer(Spanned<u32>),
+    NegativeInteger(Spanned<u32>),
+    Float(Span),
     AnyOf {
         alternatives: Vec<TypeIndex>,
         span: Span,
@@ -253,6 +245,7 @@ impl Type {
                 Primitive::I32 => "i32",
                 Primitive::U64 => "u64",
                 Primitive::I64 => "i64",
+                Primitive::F32 => "f32",
                 Primitive::F64 => "f64",
                 Primitive::Boolean => "bool",
                 Primitive::Unit => "unit",
@@ -261,7 +254,8 @@ impl Type {
             }
             .to_string(),
             Self::Integer(_) | Self::NegativeInteger(_) => "i64".to_string(),
-            Self::Error => "!!UNKNOWN TYPE!!".to_string(),
+            Self::Float(_) => "f64".to_string(),
+            Self::Error => "UNKNOWN TYPE!".to_string(),
             Self::Generic(name) | Self::Existential(name) => name.kind().clone(),
             Self::AnyOf { alternatives, .. } => {
                 let mut buffer = "ALTERNATIVE!(".to_string();
@@ -414,12 +408,15 @@ pub enum Error {
     ModuleAsExpr,
     TypeAsExpr,
     AmbiguousFunction,
-    TypeMustBeKnown,
     ProductPatternMissingField(String),
     CannotNegate(String),
     PrivateField,
     PrivateFunction,
     PrivateMethod,
+    UnknownInteger,
+    UnknownFloat,
+    InvalidInteger,
+    InvalidFloat,
 }
 
 impl fmt::Display for Error {
@@ -492,7 +489,6 @@ impl fmt::Display for Error {
                 f,
                 "there are multiple functions with this name and matching parameters"
             ),
-            Self::TypeMustBeKnown => write!(f, "the type must be known by this point"),
             Self::ProductPatternMissingField(name) => {
                 write!(f, "this pattern is missing its required field \"{name}\"")
             }
@@ -509,13 +505,35 @@ impl fmt::Display for Error {
                 f,
                 "this method is private and can't be called outside of the module that defined it"
             ),
+            Self::UnknownInteger => write!(f, "the type of this integer is unknown"),
+            Self::UnknownFloat => write!(f, "the type of this float is unknown"),
+            Self::InvalidInteger => write!(
+                f,
+                "this integer does not fit into an i64 or a u64 and is thus invalid"
+            ),
+            Self::InvalidFloat => write!(
+                f,
+                "this float does not parse into an f64 or an f32 and is thus invalid"
+            ),
         }
     }
 }
 
 impl error::Error for Error {}
 
-impl Reportable for Error {}
+impl Reportable for Error {
+    fn notes(&self) -> Vec<String> {
+        match self {
+            Self::UnknownInteger => {
+                vec!["try using the integer somewhere that has an integer annotation".to_string()]
+            }
+            Self::UnknownFloat => {
+                vec!["try using the float somewhere that has a float annotation".to_string()]
+            }
+            _ => vec![],
+        }
+    }
+}
 
 impl Index<Span> for &TypeChecker {
     type Output = TypeIndex;
@@ -582,6 +600,7 @@ impl TypeChecker {
         // TODO: is it okay to use this span?
         me.push_type(Type::Integer(Spanned::new(0, Span::new(0, 0, 0))));
         me.push_type(Type::NegativeInteger(Spanned::new(0, Span::new(0, 0, 0))));
+        me.push_type(Type::Float(Span::new(0, 0, 0)));
 
         me
     }
@@ -739,6 +758,26 @@ impl TypeChecker {
     }
 
     #[allow(dead_code)]
+    fn type_float(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Float(_)))
+                .expect("the float type should be initialized before all type checking"),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn type_f32(&self) -> TypeIndex {
+        TypeIndex(
+            self.types
+                .iter()
+                .position(|ty| matches!(ty, Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::F32)))
+                .expect("the f32 type should be initialized before all type checking"),
+        )
+    }
+
+    #[allow(dead_code)]
     fn type_f64(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -748,6 +787,7 @@ impl TypeChecker {
         )
     }
 
+    #[allow(dead_code)]
     fn type_boolean(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -757,6 +797,7 @@ impl TypeChecker {
         )
     }
 
+    #[allow(dead_code)]
     fn type_unit(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -766,6 +807,7 @@ impl TypeChecker {
         )
     }
 
+    #[allow(dead_code)]
     fn type_string(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -775,6 +817,7 @@ impl TypeChecker {
         )
     }
 
+    #[allow(dead_code)]
     fn type_never(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -784,6 +827,7 @@ impl TypeChecker {
         )
     }
 
+    #[allow(dead_code)]
     fn type_error(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -816,6 +860,8 @@ impl TypeChecker {
                             .push_type(Type::Primitive(Spanned::new(Primitive::U64, name.span()))),
                         "i64" => self
                             .push_type(Type::Primitive(Spanned::new(Primitive::I64, name.span()))),
+                        "f32" => self
+                            .push_type(Type::Primitive(Spanned::new(Primitive::F32, name.span()))),
                         "f64" => self
                             .push_type(Type::Primitive(Spanned::new(Primitive::F64, name.span()))),
                         "bool" => self.push_type(Type::Primitive(Spanned::new(
@@ -1173,7 +1219,7 @@ impl TypeChecker {
         type_index: TypeIndex,
     ) -> TypeIndex {
         match &self[type_index] {
-            Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Error | Type::Generic(_) => type_index,
+            Type::Primitive(_) | Type::Integer(_) | Type::NegativeInteger(_) | Type::Float(_) | Type::Error | Type::Generic(_) => type_index,
             Type::Existential(name) => {
                 originals.iter().rposition(|type_index| {
                     matches!(&self[*type_index], Type::Existential(original) if original.kind() == name.kind())
@@ -1346,6 +1392,9 @@ impl TypeChecker {
         match &self[type_index] {
             Type::Integer(_) | Type::NegativeInteger(_) => {
                 unreachable!("normal type signatures are never integer literals")
+            }
+            Type::Float(_) => {
+                unreachable!("normal type signatures are never float literals")
             }
             Type::Primitive(_) if !checked_generics.is_empty() => {
                 self.errors
@@ -1544,6 +1593,7 @@ impl TypeChecker {
 impl TypeChecker {
     fn type_check_functions(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         items: &[ItemIndex],
@@ -1584,7 +1634,7 @@ impl TypeChecker {
                             .is(),
                     );
 
-                    self.type_check_functions(ast, names, contents.as_slice(), context);
+                    self.type_check_functions(sources, ast, names, contents.as_slice(), context);
 
                     self.current_module.pop();
                 }
@@ -1602,7 +1652,7 @@ impl TypeChecker {
                         context.push((generic_name, generic));
                     }
 
-                    self.type_check_functions(ast, names, body.as_slice(), context);
+                    self.type_check_functions(sources, ast, names, body.as_slice(), context);
                 }
                 Item::Fn {
                     name,
@@ -1636,7 +1686,8 @@ impl TypeChecker {
 
                     self.fn_return_type = Some(expected_return_type);
 
-                    if let Err(error) = self.check(ast, names, *body, expected_return_type, context)
+                    if let Err(error) =
+                        self.check(sources, ast, names, *body, expected_return_type, context)
                     {
                         self.errors
                             .push(Spanned::new(error, Self::expr_span(ast, *body)));
@@ -1653,7 +1704,9 @@ impl TypeChecker {
     fn type_is_unknown(&self, span: Span) -> bool {
         matches!(
             self.get_type(span),
-            None | Some(Type::Integer(_) | Type::NegativeInteger(_) | Type::AnyOf { .. })
+            None | Some(
+                Type::Integer(_) | Type::NegativeInteger(_) | Type::Float(_) | Type::AnyOf { .. }
+            )
         )
     }
 
@@ -1684,14 +1737,33 @@ impl TypeChecker {
                 | Primitive::U32
                 | Primitive::I32
                 | Primitive::U64
-                | Primitive::I64 => {
+                | Primitive::I64
+                    if matches!(
+                        self.get_type(ast[expr].span()),
+                        Some(Type::Integer(_) | Type::NegativeInteger(_))
+                    ) =>
+                {
                     self.overwrite_with(ast, names, expr, type_index);
                 }
-                Primitive::F64
-                | Primitive::Boolean
+                Primitive::F32 | Primitive::F64
+                    if matches!(self.get_type(ast[expr].span()), Some(Type::Float(_))) =>
+                {
+                    self.overwrite_with(ast, names, expr, type_index);
+                }
+                Primitive::Boolean
                 | Primitive::Unit
                 | Primitive::String
-                | Primitive::Never => {}
+                | Primitive::Never
+                | Primitive::U8
+                | Primitive::I8
+                | Primitive::U16
+                | Primitive::I16
+                | Primitive::U32
+                | Primitive::I32
+                | Primitive::U64
+                | Primitive::I64
+                | Primitive::F32
+                | Primitive::F64 => {}
             }
         }
     }
@@ -1718,12 +1790,11 @@ impl TypeChecker {
                     unreachable!("these won't exist since parsing succeeded");
                 }
                 Expr::PathElement(_)
-                | Expr::Float(_)
                 | Expr::Boolean(_)
                 | Expr::Unit
                 | Expr::Return(_)
                 | Expr::String(_) => {}
-                Expr::Name(_) | Expr::Integer(_) | Expr::NegativeInteger(_) => {
+                Expr::Name(_) | Expr::Integer(_) | Expr::NegativeInteger(_) | Expr::Float => {
                     self.propagate_conditionally_overwrite(ast, names, expr, type_index);
                 }
                 Expr::Group(expr) => {
@@ -1847,8 +1918,95 @@ impl TypeChecker {
     }
 
     #[allow(clippy::too_many_lines)]
+    fn replace_default_numeric_types(&mut self, sources: &[(usize, &str)]) {
+        let type_integer = self.type_integer();
+        let type_negative_integer = self.type_negative_integer();
+        let type_float = self.type_float();
+
+        let default_integer = self[self.type_i64()].clone();
+        let default_integer_unsigned = self[self.type_i64()].clone();
+        let default_float = self[self.type_f64()].clone();
+
+        for (i, ty) in self.types.iter_mut().enumerate() {
+            if TypeIndex(i) != type_integer
+                && TypeIndex(i) != type_negative_integer
+                && TypeIndex(i) != type_float
+            {
+                match ty {
+                    Type::Integer(radix) => {
+                        let (radix_span, radix) = (radix.span(), *radix.kind());
+
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == radix_span.source_id())
+                            .and_then(|(_, source)| radix_span.lexeme(source))
+                            .expect("the span is from this source");
+
+                        match i64::from_str_radix(lexeme, radix) {
+                            Ok(_) => {
+                                *ty = default_integer.clone();
+                            }
+                            Err(_) => match u64::from_str_radix(lexeme, radix) {
+                                Ok(_) => {
+                                    *ty = default_integer_unsigned.clone();
+                                }
+                                Err(_) => {
+                                    self.errors
+                                        .push(Spanned::new(Error::InvalidInteger, radix_span));
+                                }
+                            },
+                        }
+                    }
+                    Type::NegativeInteger(radix) => {
+                        let (radix_span, radix) = (radix.span(), *radix.kind());
+
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == radix_span.source_id())
+                            .and_then(|(_, source)| radix_span.lexeme(source))
+                            .expect("the span is from this source");
+
+                        match i64::from_str_radix(lexeme, radix) {
+                            Ok(_) => {
+                                *ty = default_integer.clone();
+                            }
+                            Err(_) => {
+                                self.errors
+                                    .push(Spanned::new(Error::InvalidInteger, radix_span));
+                            }
+                        }
+                    }
+                    Type::Float(span) => {
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == span.source_id())
+                            .and_then(|(_, source)| span.lexeme(source))
+                            .expect("the span is from this source");
+
+                        match lexeme.parse::<f64>() {
+                            Ok(_) => {
+                                *ty = default_float.clone();
+                            }
+                            Err(_) => match lexeme.parse::<f32>() {
+                                Ok(_) => {
+                                    *ty = default_float.clone();
+                                }
+                                Err(_) => {
+                                    self.errors.push(Spanned::new(Error::InvalidFloat, *span));
+                                }
+                            },
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn infer(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         expr: ExprIndex,
@@ -1873,21 +2031,27 @@ impl TypeChecker {
 
                 self.type_error()
             }
-            Expr::Integer(value) => {
+            Expr::Integer(radix) => {
                 if self.get_type(span).is_some() {
                     self[span]
                 } else {
-                    self.push_type(Type::Integer(Spanned::new(*value, span)))
+                    self.push_type(Type::Integer(Spanned::new(*radix, span)))
                 }
             }
-            Expr::NegativeInteger(value) => {
+            Expr::NegativeInteger(radix) => {
                 if self.get_type(span).is_some() {
                     self[span]
                 } else {
-                    self.push_type(Type::NegativeInteger(Spanned::new(*value, span)))
+                    self.push_type(Type::NegativeInteger(Spanned::new(*radix, span)))
                 }
             }
-            Expr::Float(_) => self.type_f64(),
+            Expr::Float => {
+                if self.get_type(span).is_some() {
+                    self[span]
+                } else {
+                    self.push_type(Type::Float(span))
+                }
+            }
             Expr::Boolean(_) => self.type_boolean(),
             Expr::Unit => self.type_unit(),
             Expr::Name(_) => {
@@ -1915,23 +2079,24 @@ impl TypeChecker {
 
                 let context = &mut context;
 
-                self.infer_unary(ast, names, (*op, *operand), context)
+                self.infer_unary(sources, ast, names, (*op, *operand), context)
             }
             Expr::Binary { op, lhs, rhs } => {
                 let mut context = context.to_vec();
 
                 let context = &mut context;
 
-                self.infer_binary(ast, names, (*op, *lhs, *rhs), context)
+                self.infer_binary(sources, ast, names, (*op, *lhs, *rhs), context)
             }
-            Expr::Group(expr) => self.infer(ast, names, *expr, context),
+            Expr::Group(expr) => self.infer(sources, ast, names, *expr, context),
             Expr::Block(exprs) if exprs.is_empty() => self.type_unit(),
             Expr::Block(exprs) => {
                 for expr in exprs.iter().take(exprs.len() - 1) {
-                    self.infer(ast, names, *expr, context);
+                    self.infer(sources, ast, names, *expr, context);
                 }
 
                 self.infer(
+                    sources,
                     ast,
                     names,
                     exprs
@@ -1951,7 +2116,14 @@ impl TypeChecker {
                 let context = &mut context;
 
                 if self
-                    .check(ast, names, *condition, self.type_boolean(), context)
+                    .check(
+                        sources,
+                        ast,
+                        names,
+                        *condition,
+                        self.type_boolean(),
+                        context,
+                    )
                     .is_err()
                 {
                     self.errors.push(Spanned::new(
@@ -1960,9 +2132,9 @@ impl TypeChecker {
                     ));
                 }
 
-                let otherwise_type = self.infer(ast, names, *otherwise, context);
+                let otherwise_type = self.infer(sources, ast, names, *otherwise, context);
 
-                match self.check(ast, names, *when_true, otherwise_type, context) {
+                match self.check(sources, ast, names, *when_true, otherwise_type, context) {
                     Ok(when_true_type) => self.push_type(Type::AnyOf {
                         alternatives: vec![when_true_type, otherwise_type],
                         span,
@@ -1984,7 +2156,14 @@ impl TypeChecker {
                 let context = &mut context;
 
                 if self
-                    .check(ast, names, *condition, self.type_boolean(), context)
+                    .check(
+                        sources,
+                        ast,
+                        names,
+                        *condition,
+                        self.type_boolean(),
+                        context,
+                    )
                     .is_err()
                 {
                     self.errors.push(Spanned::new(
@@ -1993,7 +2172,7 @@ impl TypeChecker {
                     ));
                 }
 
-                self.infer(ast, names, *when_true, context);
+                self.infer(sources, ast, names, *when_true, context);
 
                 self.type_unit()
             }
@@ -2011,9 +2190,9 @@ impl TypeChecker {
 
                     let annotation_ty = self[annotation.span()];
 
-                    let inferred = self.infer(ast, names, *value, context);
+                    let inferred = self.infer(sources, ast, names, *value, context);
 
-                    match self.check_inferred(inferred, annotation_ty, context) {
+                    match self.check_inferred(sources, inferred, annotation_ty, context) {
                         Err(errored) => {
                             self.errors.push(Spanned::new(
                                 self.type_mismatch_error(errored, annotation_ty),
@@ -2025,8 +2204,10 @@ impl TypeChecker {
                         Ok(checked) => {
                             self.type_map.insert(ast[*value].span(), annotation_ty);
 
-                            if matches!(self[inferred], Type::Integer(_) | Type::NegativeInteger(_))
-                            {
+                            if matches!(
+                                self[inferred],
+                                Type::Integer(_) | Type::NegativeInteger(_) | Type::Float(_)
+                            ) {
                                 checked
                             } else {
                                 inferred
@@ -2034,7 +2215,7 @@ impl TypeChecker {
                         }
                     }
                 } else {
-                    self.infer(ast, names, *value, context)
+                    self.infer(sources, ast, names, *value, context)
                 };
 
                 self.type_map.insert(name.span(), type_index);
@@ -2042,9 +2223,10 @@ impl TypeChecker {
                 type_index
             }
             Expr::Call { callee, arguments } => {
-                let callee_type_index = self.infer(ast, names, *callee, context);
+                let callee_type_index = self.infer(sources, ast, names, *callee, context);
 
                 match self.infer_call(
+                    sources,
                     ast,
                     names,
                     (ast[*callee].span(), callee_type_index, arguments.as_slice()),
@@ -2065,7 +2247,7 @@ impl TypeChecker {
                 method,
                 arguments,
             } => {
-                let target_type_index = self.infer(ast, names, *target, context);
+                let target_type_index = self.infer(sources, ast, names, *target, context);
 
                 let type_span = self.get_type_span_or_error(target_type_index);
 
@@ -2096,6 +2278,7 @@ impl TypeChecker {
                             .enumerate()
                             .filter_map(|(index, associated_name)| {
                                 self.check_inferred(
+                                    sources,
                                     self[type_span],
                                     associated_name.for_type,
                                     context,
@@ -2142,6 +2325,7 @@ impl TypeChecker {
                     arguments_with_target.extend_from_slice(arguments.as_slice());
 
                     match self.infer_call(
+                        sources,
                         ast,
                         names,
                         (
@@ -2182,6 +2366,7 @@ impl TypeChecker {
                 let context = &mut context;
 
                 if let Err(error) = self.check(
+                    sources,
                     ast,
                     names,
                     *expr,
@@ -2196,7 +2381,7 @@ impl TypeChecker {
                 self.type_never()
             }
             Expr::AsUnit(expr) => {
-                self.infer(ast, names, *expr, context);
+                self.infer(sources, ast, names, *expr, context);
 
                 if let Expr::Return(_) = ast[*expr].kind() {
                     self.type_never()
@@ -2230,7 +2415,7 @@ impl TypeChecker {
                                 self.errors.push(error);
                             }
                             Ok(field_type) => {
-                                match self.check(ast, names, *field, field_type, context) {
+                                match self.check(sources, ast, names, *field, field_type, context) {
                                     Ok(ty) => {
                                         checked_fields.push(Field {
                                             name: field_name.kind().clone(),
@@ -2294,7 +2479,7 @@ impl TypeChecker {
                 expr,
                 fallback,
             } => {
-                let expr_type_index = self.infer(ast, names, *expr, context);
+                let expr_type_index = self.infer(sources, ast, names, *expr, context);
 
                 let mut match_type_index = vec![];
 
@@ -2304,9 +2489,13 @@ impl TypeChecker {
 
                         let context = &mut context;
 
-                        if let Err(type_index) =
-                            self.check_pattern(names, case.pattern(), expr_type_index, context)
-                            && !matches!(self[type_index], Type::Error)
+                        if let Err(type_index) = self.check_pattern(
+                            sources,
+                            names,
+                            case.pattern(),
+                            expr_type_index,
+                            context,
+                        ) && !matches!(self[type_index], Type::Error)
                         {
                             let error = self.type_mismatch_error(type_index, expr_type_index);
 
@@ -2319,10 +2508,11 @@ impl TypeChecker {
 
                         let context = &mut context;
 
-                        let case_type_index = self.infer(ast, names, case.case(), context);
+                        let case_type_index = self.infer(sources, ast, names, case.case(), context);
 
                         for other_case_type_index in match_type_index.clone() {
                             match self.check_inferred(
+                                sources,
                                 case_type_index,
                                 other_case_type_index,
                                 context,
@@ -2354,10 +2544,15 @@ impl TypeChecker {
 
                 let context = &mut context;
 
-                let fallback_type_index = self.infer(ast, names, *fallback, context);
+                let fallback_type_index = self.infer(sources, ast, names, *fallback, context);
 
                 for other_case_type_index in match_type_index.clone() {
-                    match self.check_inferred(fallback_type_index, other_case_type_index, context) {
+                    match self.check_inferred(
+                        sources,
+                        fallback_type_index,
+                        other_case_type_index,
+                        context,
+                    ) {
                         Ok(type_index) => {
                             match_type_index.push(type_index);
                         }
@@ -2391,16 +2586,7 @@ impl TypeChecker {
 
     fn get_type_span_or_error(&mut self, type_index: TypeIndex) -> Option<Result<Span, TypeIndex>> {
         match &self[type_index] {
-            Type::Integer(value) => {
-                self.errors
-                    .push(Spanned::new(Error::TypeMustBeKnown, value.span()));
-
-                Some(Err(self.type_error()))
-            }
-            Type::NegativeInteger(value) => {
-                self.errors
-                    .push(Spanned::new(Error::TypeMustBeKnown, value.span()));
-
+            Type::Integer(_) | Type::NegativeInteger(_) | Type::Float(_) => {
                 Some(Err(self.type_error()))
             }
             Type::Error => Some(Err(self.type_error())),
@@ -2416,6 +2602,7 @@ impl TypeChecker {
 
     fn infer_call(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         (callee_span, callee_type_index, arguments): (Span, TypeIndex, &[ExprIndex]),
@@ -2459,7 +2646,7 @@ impl TypeChecker {
 
                         for (argument, parameter) in arguments.iter().zip(&parameters) {
                             if let Err(error) =
-                                self.check(ast, names, *argument, *parameter, context)
+                                self.check(sources, ast, names, *argument, *parameter, context)
                             {
                                 return Err(Spanned::new(error, Self::expr_span(ast, *argument)));
                             }
@@ -2531,6 +2718,7 @@ impl TypeChecker {
 
     fn infer_unary(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         (op, operand): (UnaryOp, ExprIndex),
@@ -2538,9 +2726,11 @@ impl TypeChecker {
     ) -> TypeIndex {
         match op {
             UnaryOp::Not => {
-                self.infer(ast, names, operand, context);
+                self.infer(sources, ast, names, operand, context);
 
-                if let Err(error) = self.check(ast, names, operand, self.type_boolean(), context) {
+                if let Err(error) =
+                    self.check(sources, ast, names, operand, self.type_boolean(), context)
+                {
                     self.errors
                         .push(Spanned::new(error, Self::expr_span(ast, operand)));
 
@@ -2550,12 +2740,19 @@ impl TypeChecker {
                 }
             }
             UnaryOp::Negate => {
-                self.infer(ast, names, operand, context);
+                self.infer(sources, ast, names, operand, context);
 
                 match self
-                    .check(ast, names, operand, self.type_f64(), context)
+                    .check(sources, ast, names, operand, self.type_float(), context)
                     .or_else(|_| {
-                        self.check(ast, names, operand, self.type_negative_integer(), context)
+                        self.check(
+                            sources,
+                            ast,
+                            names,
+                            operand,
+                            self.type_negative_integer(),
+                            context,
+                        )
                     }) {
                     Err(_) => {
                         self.errors.push(Spanned::new(
@@ -2576,6 +2773,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn infer_binary(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         (op, lhs, rhs): (BinaryOp, ExprIndex, ExprIndex),
@@ -2615,13 +2813,18 @@ impl TypeChecker {
                         .into_iter()
                         .enumerate()
                         .filter_map(|(index, associated_name)| {
-                            self.check_inferred(self[type_span], associated_name.for_type, context)
-                                .ok()
-                                .map(|_| Association {
-                                    resolved_index: index,
-                                    type_index: self[associated_name.definition.span()],
-                                    span: associated_name.definition.span(),
-                                })
+                            self.check_inferred(
+                                sources,
+                                self[type_span],
+                                associated_name.for_type,
+                                context,
+                            )
+                            .ok()
+                            .map(|_| Association {
+                                resolved_index: index,
+                                type_index: self[associated_name.definition.span()],
+                                span: associated_name.definition.span(),
+                            })
                         })
                         .collect::<Vec<_>>();
 
@@ -2645,7 +2848,7 @@ impl TypeChecker {
 
                             let context = &mut context;
 
-                            match self.check(ast, names, rhs, variant_type, context) {
+                            match self.check(sources, ast, names, rhs, variant_type, context) {
                                 Ok(type_index) => {
                                     let Type::Sum {
                                         name,
@@ -2703,11 +2906,11 @@ impl TypeChecker {
                         self.type_error()
                     }
                 } else {
-                    self.infer(ast, names, rhs, context)
+                    self.infer(sources, ast, names, rhs, context)
                 }
             }
             BinaryOp::Access => {
-                let lhs_type = self.infer(ast, names, lhs, context);
+                let lhs_type = self.infer(sources, ast, names, lhs, context);
 
                 if let Type::Product {
                     fields,
@@ -2752,8 +2955,8 @@ impl TypeChecker {
             | BinaryOp::Add
             | BinaryOp::Subtract => {
                 match self
-                    .check(ast, names, lhs, self.type_f64(), context)
-                    .or_else(|_| self.check(ast, names, lhs, self.type_integer(), context))
+                    .check(sources, ast, names, lhs, self.type_float(), context)
+                    .or_else(|_| self.check(sources, ast, names, lhs, self.type_integer(), context))
                 {
                     Err(_) => {
                         self.errors.push(Spanned::new(
@@ -2765,7 +2968,7 @@ impl TypeChecker {
 
                         self.type_error()
                     }
-                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(sources, ast, names, rhs, lhs_type, context) {
                         Err(error) => {
                             self.errors
                                 .push(Spanned::new(error, Self::expr_span(ast, rhs)));
@@ -2781,8 +2984,8 @@ impl TypeChecker {
             | BinaryOp::LessOrEqual
             | BinaryOp::GreaterOrEqual => {
                 match self
-                    .check(ast, names, lhs, self.type_f64(), context)
-                    .or_else(|_| self.check(ast, names, lhs, self.type_integer(), context))
+                    .check(sources, ast, names, lhs, self.type_float(), context)
+                    .or_else(|_| self.check(sources, ast, names, lhs, self.type_integer(), context))
                 {
                     Err(_) => {
                         self.errors.push(Spanned::new(
@@ -2794,7 +2997,7 @@ impl TypeChecker {
 
                         self.type_error()
                     }
-                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(sources, ast, names, rhs, lhs_type, context) {
                         Err(error) => {
                             self.errors
                                 .push(Spanned::new(error, Self::expr_span(ast, rhs)));
@@ -2806,14 +3009,14 @@ impl TypeChecker {
                 }
             }
             BinaryOp::And | BinaryOp::Or => {
-                match self.check(ast, names, lhs, self.type_boolean(), context) {
+                match self.check(sources, ast, names, lhs, self.type_boolean(), context) {
                     Err(error) => {
                         self.errors
                             .push(Spanned::new(error, Self::expr_span(ast, lhs)));
 
                         self.type_error()
                     }
-                    Ok(lhs_type) => match self.check(ast, names, rhs, lhs_type, context) {
+                    Ok(lhs_type) => match self.check(sources, ast, names, rhs, lhs_type, context) {
                         Err(error) => {
                             self.errors
                                 .push(Spanned::new(error, Self::expr_span(ast, rhs)));
@@ -2825,9 +3028,9 @@ impl TypeChecker {
                 }
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                let lhs_type = self.infer(ast, names, lhs, context);
+                let lhs_type = self.infer(sources, ast, names, lhs, context);
 
-                match self.check(ast, names, rhs, lhs_type, context) {
+                match self.check(sources, ast, names, rhs, lhs_type, context) {
                     Err(error) => {
                         self.errors
                             .push(Spanned::new(error, Self::expr_span(ast, rhs)));
@@ -2838,9 +3041,9 @@ impl TypeChecker {
                 }
             }
             BinaryOp::Assign => {
-                let lhs_type = self.infer(ast, names, lhs, context);
+                let lhs_type = self.infer(sources, ast, names, lhs, context);
 
-                match self.check(ast, names, rhs, lhs_type, context) {
+                match self.check(sources, ast, names, rhs, lhs_type, context) {
                     Err(error) => {
                         let span = ast[rhs].span();
 
@@ -2863,7 +3066,7 @@ impl TypeChecker {
                                 rhs,
                             } => {
                                 if self
-                                    .check_inferred(lhs_type, self.type_error(), context)
+                                    .check_inferred(sources, lhs_type, self.type_error(), context)
                                     .is_err()
                                 {
                                     return self.type_error();
@@ -2905,7 +3108,12 @@ impl TypeChecker {
                                     }
                                 };
 
-                                match self.check_inferred(field_type_index, rhs_type, context) {
+                                match self.check_inferred(
+                                    sources,
+                                    field_type_index,
+                                    rhs_type,
+                                    context,
+                                ) {
                                     Err(type_index) => {
                                         let error = Spanned::new(
                                             self.type_mismatch_error(type_index, rhs_type),
@@ -3021,15 +3229,16 @@ impl TypeChecker {
 
     fn check(
         &mut self,
+        sources: &[(usize, &str)],
         ast: &Ast,
         names: &Names,
         expr: ExprIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
     ) -> Result<TypeIndex, Error> {
-        let expr_type_index = self.infer(ast, names, expr, context);
+        let expr_type_index = self.infer(sources, ast, names, expr, context);
 
-        self.check_inferred(expr_type_index, should_be, context)
+        self.check_inferred(sources, expr_type_index, should_be, context)
             .inspect(|type_index| {
                 self.overwrite_with(ast, names, expr, *type_index);
             })
@@ -3043,6 +3252,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn check_inferred(
         &mut self,
+        sources: &[(usize, &str)],
         inferred: TypeIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
@@ -3050,91 +3260,124 @@ impl TypeChecker {
         match (&self[inferred], &self[should_be]) {
             (Type::Primitive(a), _) if matches!(a.kind(), Primitive::Never) => Ok(should_be),
             (Type::Error, _) | (_, Type::Error) => Ok(self.type_error()),
-            (Type::Integer(a), Type::NegativeInteger(_)) => i64::try_from(*a.kind())
-                .map_err(|_| inferred)
-                .map(|a_converted| (a_converted, a.span()))
-                .map(|(a_converted, a_span)| {
-                    let type_index =
-                        self.push_type(Type::NegativeInteger(Spanned::new(a_converted, a_span)));
+            (Type::Integer(a), Type::NegativeInteger(_)) => {
+                let (a_radix, a_span) = (*a.kind(), a.span());
 
-                    self.type_map.insert(a_span, type_index);
+                let type_index =
+                    self.push_type(Type::NegativeInteger(Spanned::new(a_radix, a_span)));
 
-                    type_index
-                }),
-            (
+                self.type_map.insert(a_span, type_index);
+
+                Ok(type_index)
+            }
+            (Type::Float(_), Type::Float(_))
+            | (
                 Type::Integer(_) | Type::NegativeInteger(_),
                 Type::Integer(_) | Type::NegativeInteger(_),
             ) => Ok(inferred),
-            (Type::Integer(value), Type::Primitive(b)) => {
-                let value_span = value.span();
+            (Type::Integer(radix), Type::Primitive(b)) => {
+                let (radix_span, radix) = (radix.span(), *radix.kind());
+
+                let lexeme = sources
+                    .iter()
+                    .find(|(source_id, _)| *source_id == radix_span.source_id())
+                    .and_then(|(_, source)| radix_span.lexeme(source))
+                    .expect("the span is from this source");
 
                 match b.kind() {
-                    Primitive::U8 if u8::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::U16 if u16::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::U32 if u32::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::U64 => Ok(should_be),
-                    Primitive::I64 if i64::try_from(*value.kind()).is_ok() => Ok(should_be),
+                    Primitive::U8 if u8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I8 if i8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U16 if u16::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I16 if i16::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U32 if u32::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I32 if i32::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U64 if u64::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I64 if i64::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
                     _ => Err(inferred),
                 }
                 .inspect(|type_index| {
-                    self.type_map.insert(value_span, *type_index);
+                    self.type_map.insert(radix_span, *type_index);
                 })
             }
-            (Type::Primitive(a), Type::Integer(value)) => {
-                let value_span = value.span();
+            (Type::Primitive(a), Type::Integer(_)) => match a.kind() {
+                Primitive::U8
+                | Primitive::I8
+                | Primitive::U16
+                | Primitive::I16
+                | Primitive::U32
+                | Primitive::I32
+                | Primitive::U64
+                | Primitive::I64 => Ok(inferred),
+                _ => Err(inferred),
+            },
+            (Type::NegativeInteger(radix), Type::Primitive(b)) => {
+                let (radix_span, radix) = (radix.span(), *radix.kind());
 
-                match a.kind() {
-                    Primitive::U8 if u8::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::U16 if u16::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::U32 if u32::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::U64 => Ok(inferred),
-                    Primitive::I64 if i64::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    _ => Err(inferred),
-                }
-                .inspect(|type_index| {
-                    self.type_map.insert(value_span, *type_index);
-                })
-            }
-            (Type::NegativeInteger(value), Type::Primitive(b)) => {
-                let value_span = value.span();
+                let lexeme = sources
+                    .iter()
+                    .find(|(source_id, _)| *source_id == radix_span.source_id())
+                    .and_then(|(_, source)| radix_span.lexeme(source))
+                    .expect("the span is from this source");
 
                 match b.kind() {
-                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(should_be),
-                    Primitive::I64 => Ok(should_be),
+                    Primitive::I8
+                        if i8::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() =>
+                    {
+                        Ok(should_be)
+                    }
+                    Primitive::I16
+                        if i16::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() =>
+                    {
+                        Ok(should_be)
+                    }
+                    Primitive::I32
+                        if i32::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() =>
+                    {
+                        Ok(should_be)
+                    }
+                    Primitive::I64
+                        if i64::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() =>
+                    {
+                        Ok(should_be)
+                    }
                     _ => Err(inferred),
                 }
                 .inspect(|type_index| {
-                    self.type_map.insert(value_span, *type_index);
+                    self.type_map.insert(radix_span, *type_index);
                 })
             }
-            (Type::Primitive(a), Type::NegativeInteger(value)) => {
-                let value_span = value.span();
+            (Type::Primitive(a), Type::NegativeInteger(_)) => match a.kind() {
+                Primitive::I8 | Primitive::I16 | Primitive::I32 | Primitive::I64 => Ok(inferred),
+                _ => Err(inferred),
+            },
+            (Type::Float(span), Type::Primitive(b)) => {
+                let span = *span;
 
-                match a.kind() {
-                    Primitive::I8 if i8::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I16 if i16::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I32 if i32::try_from(*value.kind()).is_ok() => Ok(inferred),
-                    Primitive::I64 => Ok(inferred),
+                let lexeme = sources
+                    .iter()
+                    .find(|(source_id, _)| *source_id == span.source_id())
+                    .and_then(|(_, source)| span.lexeme(source))
+                    .expect("the span is from this source");
+
+                match b.kind() {
+                    Primitive::F32 if lexeme.parse::<f32>().is_ok() => Ok(should_be),
+                    Primitive::F64 if lexeme.parse::<f64>().is_ok() => Ok(should_be),
                     _ => Err(inferred),
                 }
                 .inspect(|type_index| {
-                    self.type_map.insert(value_span, *type_index);
+                    self.type_map.insert(span, *type_index);
                 })
             }
+            (Type::Primitive(a), Type::Float(_)) => match a.kind() {
+                Primitive::F32 | Primitive::F64 => Ok(inferred),
+                _ => Err(inferred),
+            },
             (_, Type::AnyOf { alternatives, span }) => {
                 let alternatives = alternatives.clone();
                 let span = *span;
 
                 for alternative in alternatives {
-                    self.check_inferred(inferred, alternative, context)?;
+                    self.check_inferred(sources, alternative, inferred, context)?;
                 }
 
                 self.type_map.insert(span, inferred);
@@ -3146,7 +3389,7 @@ impl TypeChecker {
                 let span = *span;
 
                 for alternative in alternatives {
-                    self.check_inferred(should_be, alternative, context)?;
+                    self.check_inferred(sources, alternative, should_be, context)?;
                 }
 
                 self.type_map.insert(span, should_be);
@@ -3200,7 +3443,7 @@ impl TypeChecker {
                 for (inferred_parameter, parameter) in
                     inferred_parameters.into_iter().zip(&mut parameters)
                 {
-                    match self.check_inferred(inferred_parameter, *parameter, context) {
+                    match self.check_inferred(sources, inferred_parameter, *parameter, context) {
                         Ok(type_index) => {
                             *parameter = type_index;
                         }
@@ -3211,7 +3454,7 @@ impl TypeChecker {
                     }
                 }
 
-                match self.check_inferred(inferred_return_type, return_type, context) {
+                match self.check_inferred(sources, inferred_return_type, return_type, context) {
                     Ok(type_index) => {
                         return_type = type_index;
                     }
@@ -3259,6 +3502,7 @@ impl TypeChecker {
 
                 for (inferred_field, field) in inferred_fields.into_iter().zip(&mut fields) {
                     match self.check_inferred(
+                        sources,
                         inferred_field.type_index(),
                         field.type_index(),
                         context,
@@ -3275,7 +3519,7 @@ impl TypeChecker {
 
                 for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
                 {
-                    match self.check_inferred(inferred_generic, *generic, context) {
+                    match self.check_inferred(sources, inferred_generic, *generic, context) {
                         Ok(type_index) => {
                             *generic = type_index;
                         }
@@ -3326,7 +3570,7 @@ impl TypeChecker {
 
                 for (inferred_variant, variant) in inferred_variants.into_iter().zip(&mut variants)
                 {
-                    match self.check_inferred(inferred_variant, *variant, context) {
+                    match self.check_inferred(sources, inferred_variant, *variant, context) {
                         Ok(type_index) => {
                             *variant = type_index;
                         }
@@ -3339,7 +3583,7 @@ impl TypeChecker {
 
                 for (inferred_generic, generic) in inferred_generics.into_iter().zip(&mut generics)
                 {
-                    match self.check_inferred(inferred_generic, *generic, context) {
+                    match self.check_inferred(sources, inferred_generic, *generic, context) {
                         Ok(type_index) => {
                             *generic = type_index;
                         }
@@ -3372,6 +3616,7 @@ impl TypeChecker {
         match &self[type_index] {
             Type::Integer(_)
             | Type::NegativeInteger(_)
+            | Type::Float(_)
             | Type::Primitive(_)
             | Type::Generic(_)
             | Type::Error => type_index,
@@ -3478,6 +3723,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn check_pattern(
         &mut self,
+        sources: &[(usize, &str)],
         names: &Names,
         pattern: &Spanned<Pattern>,
         should_be: TypeIndex,
@@ -3490,32 +3736,50 @@ impl TypeChecker {
             (Pattern::NegativeInteger(value), Type::Integer(_) | Type::NegativeInteger(_)) => {
                 Ok(self.push_type(Type::NegativeInteger(Spanned::new(*value, pattern.span()))))
             }
-            (Pattern::Integer(value), Type::Primitive(b)) => match b.kind() {
-                Primitive::U8 if u8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U16 if u16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U32 if u32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::U64 => Ok(should_be),
-                Primitive::I64 if i64::try_from(*value).is_ok() => Ok(should_be),
-                _ => Err(self.push_type(Type::Integer(Spanned::new(*value, pattern.span())))),
-            }
-            .inspect(|type_index| {
-                self.type_map.insert(pattern.span(), *type_index);
-            }),
-            (Pattern::NegativeInteger(value), Type::Primitive(b)) => match b.kind() {
-                Primitive::I8 if i8::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I16 if i16::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I32 if i32::try_from(*value).is_ok() => Ok(should_be),
-                Primitive::I64 => Ok(should_be),
-                _ => {
-                    Err(self.push_type(Type::NegativeInteger(Spanned::new(*value, pattern.span()))))
+            (Pattern::Integer(radix), Type::Primitive(b)) => {
+                let radix = *radix;
+
+                let lexeme = sources
+                    .iter()
+                    .find(|(source_id, _)| *source_id == pattern.span().source_id())
+                    .and_then(|(_, source)| pattern.span().lexeme(source))
+                    .expect("the span is from this source");
+
+                match b.kind() {
+                    Primitive::U8 if u8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I8 if i8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U16 if u16::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I16 if i16::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U32 if u32::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I32 if i32::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::U64 if u64::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    Primitive::I64 if i64::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
+                    _ => Err(should_be),
                 }
-            }
-            .inspect(|type_index| {
-                self.type_map.insert(pattern.span(), *type_index);
-            }),
+                .inspect(|type_index| {
+                    self.type_map.insert(pattern.span(), *type_index);
+                })
+            },
+            (Pattern::NegativeInteger(radix), Type::Primitive(b)) => {
+                let radix = *radix;
+
+                let lexeme = sources
+                    .iter()
+                    .find(|(source_id, _)| *source_id == pattern.span().source_id())
+                    .and_then(|(_, source)| pattern.span().lexeme(source))
+                    .expect("the span is from this source");
+
+                match b.kind() {
+                    Primitive::I8 if i8::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() => Ok(should_be),
+                    Primitive::I16 if i16::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() => Ok(should_be),
+                    Primitive::I32 if i32::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() => Ok(should_be),
+                    Primitive::I64 if i64::from_str_radix(format!("-{lexeme}").as_str(), radix).is_ok() => Ok(should_be),
+                    _ => Err(should_be),
+                }
+                .inspect(|type_index| {
+                    self.type_map.insert(pattern.span(), *type_index);
+                })
+            },
             (Pattern::String(text), Type::Primitive(primitive)) if matches!(primitive.kind(), Primitive::String) => {
                 Ok(self.type_string())
             }
@@ -3592,7 +3856,7 @@ impl TypeChecker {
                                 let visibility = should_be_field.visibility();
 
                                 if let Some(field) = field {
-                                    match self.check_pattern(names, field, should_be_type_index, context) {
+                                    match self.check_pattern(sources, names, field, should_be_type_index, context) {
                                         Ok(type_index) => {
                                             checked_fields
                                                 .push(Field {
@@ -3723,7 +3987,7 @@ impl TypeChecker {
                     return Err(self.type_error());
                 };
 
-                let type_index = self.check_pattern(names, pattern, variant_type, context)?;
+                let type_index = self.check_pattern(sources, names, pattern, variant_type, context)?;
 
                 let Type::Sum {
                     name,

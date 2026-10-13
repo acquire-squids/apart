@@ -185,15 +185,18 @@ pub fn compile<'a>(
             .collect::<Vec<_>>(),
     })?;
 
-    let types = type_check::check_types(&ast, &names).map_err(|errors| Compiled {
-        sources_with_core: sources_with_core.clone(),
-        result: errors
-            .into_iter()
-            .map(|error| error.transmute(Error::TypeCheck))
-            .collect::<Vec<_>>(),
-    })?;
+    let types =
+        type_check::check_types(sources_with_core.as_slice(), &ast, &names).map_err(|errors| {
+            Compiled {
+                sources_with_core: sources_with_core.clone(),
+                result: errors
+                    .into_iter()
+                    .map(|error| error.transmute(Error::TypeCheck))
+                    .collect::<Vec<_>>(),
+            }
+        })?;
 
-    let basic_blocks = basic_blocks::translate(&ast, &names, &types);
+    let basic_blocks = basic_blocks::translate(sources_with_core.as_slice(), &ast, &names, &types);
 
     if cfg!(feature = "print_blocks") {
         print!("{basic_blocks}");

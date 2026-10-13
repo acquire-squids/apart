@@ -181,7 +181,7 @@ fn interpret(ast: &Ast, target: Target, expr: ExprIndex) -> Result<Value, Spanne
         Expr::String(value) => Ok(Value::String(value.clone())),
         Expr::Integer(_)
         | Expr::NegativeInteger(_)
-        | Expr::Float(_)
+        | Expr::Float
         | Expr::Unit
         | Expr::BinaryNoLhs { .. }
         | Expr::Block(_)

@@ -13,7 +13,7 @@ pub struct Lexer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Token {
     Integer(u32),
-    Float(u32),
+    Float,
     OpenParenthesis,
     CloseParenthesis,
     OpenSquareBracket,
@@ -124,6 +124,7 @@ impl Lexer {
         }
 
         if self.ahead() == Some('.')
+            && radix == 10
             && let Some(n) = self.peek_char(1)
             && n.is_digit(radix)
         {
@@ -137,7 +138,7 @@ impl Lexer {
             }
 
             Spanned::new(
-                Token::Float(radix),
+                Token::Float,
                 Span::new(self.source_id(), self.start(), self.at()),
             )
         } else {

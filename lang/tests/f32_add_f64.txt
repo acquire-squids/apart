@@ -1,0 +1,9 @@
+funky main() {
+	let
+		a <- f32 = 123.0,
+		b <- f64 = 0.456,
+	in {
+		print_f32(a + b);
+		print_f32(b + a);
+	};
+}

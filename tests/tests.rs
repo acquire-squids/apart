@@ -23,6 +23,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
 
+            apart::$test_macro!(f32, "f32.txt", "123.456\n");
+
             apart::$test_macro!(forward_alias, "forward_alias.txt", "true\n");
 
             apart::$test_macro!(fn_parameter, "fn_parameter.txt", "21\n");
@@ -281,6 +283,21 @@ mod compilation_error {
         [apart::Error::NameResolve(
             apart::NameResolveError::PathDoesNotExist
         )]
+    );
+
+    apart::test_compilation_errors!(
+        f32_add_f64,
+        "f32_add_f64.txt",
+        [
+            apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+                expected: a_expected,
+                got: a_got
+            }),
+            apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+                expected: b_expected,
+                got: b_got
+            })
+        ] if a_expected == "f32" && a_got == "f64" && b_expected == "f64" && b_got == "f32"
     );
 
     apart::test_compilation_errors!(

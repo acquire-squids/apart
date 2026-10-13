@@ -230,6 +230,9 @@ impl Vm {
                         CopyableValue::I64(value) => {
                             self.assign(to, CopyableValue::I64(-value));
                         }
+                        CopyableValue::F32(value) => {
+                            self.assign(to, CopyableValue::F32(-value));
+                        }
                         CopyableValue::F64(value) => {
                             self.assign(to, CopyableValue::F64(-value));
                         }
@@ -400,6 +403,23 @@ impl Vm {
                                     ),
                                 },
                             ),
+                            (CopyableValue::F32(lhs), CopyableValue::F32(rhs)) => self.assign(
+                                to,
+                                match op {
+                                    BinaryOp::Multiply => CopyableValue::F32(lhs * rhs),
+                                    BinaryOp::Divide => CopyableValue::F32(lhs / rhs),
+                                    BinaryOp::Remainder => CopyableValue::F32(lhs % rhs),
+                                    BinaryOp::Add => CopyableValue::F32(lhs + rhs),
+                                    BinaryOp::Subtract => CopyableValue::F32(lhs - rhs),
+                                    BinaryOp::Less => CopyableValue::Boolean(lhs < rhs),
+                                    BinaryOp::Greater => CopyableValue::Boolean(lhs > rhs),
+                                    BinaryOp::LessOrEqual => CopyableValue::Boolean(lhs <= rhs),
+                                    BinaryOp::GreaterOrEqual => CopyableValue::Boolean(lhs >= rhs),
+                                    _ => unreachable!(
+                                        "only these opcodes get past the initial match arm"
+                                    ),
+                                },
+                            ),
                             (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => self.assign(
                                 to,
                                 match op {
@@ -426,6 +446,7 @@ impl Vm {
                                 | CopyableValue::I32(_)
                                 | CopyableValue::U64(_)
                                 | CopyableValue::I64(_)
+                                | CopyableValue::F32(_)
                                 | CopyableValue::F64(_)
                                 | CopyableValue::Boolean(_)
                                 | CopyableValue::Unit
@@ -440,6 +461,7 @@ impl Vm {
                                 | CopyableValue::I32(_)
                                 | CopyableValue::U64(_)
                                 | CopyableValue::I64(_)
+                                | CopyableValue::F32(_)
                                 | CopyableValue::F64(_)
                                 | CopyableValue::Boolean(_)
                                 | CopyableValue::Unit
@@ -901,6 +923,15 @@ impl Vm {
 
                 CopyableValue::Unit
             }
+            NativeFn::PrintF32 => {
+                let CopyableValue::F32(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                writeln!(out, "{value:?}").expect("failed to write to output");
+
+                CopyableValue::Unit
+            }
             NativeFn::PrintF64 => {
                 let CopyableValue::F64(value) = &call_arguments[0] else {
                     panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
@@ -1128,6 +1159,7 @@ impl Vm {
             (CopyableValue::I32(lhs), CopyableValue::I32(rhs)) => lhs == rhs,
             (CopyableValue::U64(lhs), CopyableValue::U64(rhs)) => lhs == rhs,
             (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => lhs == rhs,
+            (CopyableValue::F32(lhs), CopyableValue::F32(rhs)) => lhs == rhs,
             (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => lhs == rhs,
             (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => lhs == rhs,
             (CopyableValue::Unit, CopyableValue::Unit) => lhs == rhs,
