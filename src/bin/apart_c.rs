@@ -47,20 +47,29 @@ fn main() -> ExitCode {
                             |compiled| {
                                 let output_path = Path::new(options.output.as_str());
 
-                                if let Err(error) = fs::write(
-                                    output_path,
-                                    match options.target {
-                                        Target::Vm => apart::targets::vm::compile(&compiled),
+                                match options.target {
+                                    Target::Vm => {
+                                        if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
+                                            eprintln!("failed to write compiled output to \"{}\"; see next_line", options.output);
+
+                                            eprintln!("{error}");
+
+                                            return ExitCode::FAILURE;
+                                        }
+
+                                        if let Err(error) = fs::write(
+                                            output_path, apart::targets::vm::compile(&compiled)
+                                        ) {
+                                            eprintln!(
+                                                "failed to write compiled output to \"{}\"; see next line",
+                                                options.output
+                                            );
+
+                                            eprintln!("{error}");
+
+                                            return ExitCode::FAILURE;
+                                        }
                                     },
-                                ) {
-                                    eprintln!(
-                                        "failed to write compiled output to \"{}\"; see next line",
-                                        options.output
-                                    );
-
-                                    eprintln!("{error}");
-
-                                    return ExitCode::FAILURE;
                                 }
 
                                 ExitCode::SUCCESS
