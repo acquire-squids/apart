@@ -58,10 +58,10 @@ where
 {
     let registers = vec![
         const { CopyableValue::Never };
-        bytes[..8]
-            .as_array::<8>()
-            .map(|array| u64::from_le_bytes(*array))
-            .and_then(|max_registers| usize::try_from(max_registers).ok())
+        bytes[..2]
+            .as_array::<2>()
+            .map(|array| u16::from_le_bytes(*array))
+            .map(usize::from)
             .expect("maximum registers is unknown")
     ];
 
@@ -643,7 +643,7 @@ impl Vm {
     fn assign(&mut self, to: Location, value: CopyableValue) {
         match to {
             Location::Register(offset) => {
-                let offset = self.fp + usize::from(offset);
+                let offset = self.fp + usize::from(u16::from(offset));
 
                 self.registers[offset] = value;
 
@@ -710,8 +710,8 @@ impl Vm {
             }
             ValueOrLocation::At(Location::Register(offset)) => {
                 Ok(self.call_frames.last().map_or_else(
-                    || self.registers[usize::from(offset)],
-                    |frame| self.registers[frame.fp + usize::from(offset)],
+                    || self.registers[usize::from(u16::from(offset))],
+                    |frame| self.registers[frame.fp + usize::from(u16::from(offset))],
                 ))
             }
             ValueOrLocation::Value(value @ CopyableValue::ValueIndex(value_index)) => {

@@ -19,8 +19,9 @@ pub fn compile(compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
     let mut bytecode = vec![];
 
     bytecode.extend_from_slice(
-        u64::try_from(compiled.result().main_max_register_count())
-            .expect("128-bit usize not allowed!  sorry!")
+        compiled
+            .result()
+            .main_max_register_count()
             .to_le_bytes()
             .as_slice(),
     );
@@ -265,7 +266,7 @@ fn backpatch(
 ) -> bool {
     let mut changed = false;
 
-    let mut ip = 8;
+    let mut ip = 2;
 
     while let Some(byte) = bytecode.get(ip).copied() {
         match OpCode::try_from(byte) {
@@ -465,12 +466,6 @@ fn move_through_location(bytecode: &[u8], ip: &mut usize) {
         Ok(ValueAt::RegisterU16) => {
             *ip += 3;
         }
-        Ok(ValueAt::RegisterU32) => {
-            *ip += 5;
-        }
-        Ok(ValueAt::RegisterU64) => {
-            *ip += 9;
-        }
         Ok(ValueAt::Value) => {
             panic!("tried to move through a value as a location");
         }
@@ -648,12 +643,7 @@ fn backpatch_value(
                 }
             }
         }
-        Ok(
-            ValueAt::RegisterU8
-            | ValueAt::RegisterU16
-            | ValueAt::RegisterU32
-            | ValueAt::RegisterU64,
-        ) => {
+        Ok(ValueAt::RegisterU8 | ValueAt::RegisterU16) => {
             move_through_location(bytecode, ip);
         }
         Err(error) => {
@@ -672,7 +662,7 @@ fn find_labels(
     address_to_label.clear();
 
     let mut label_index = 0;
-    let mut ip = 8;
+    let mut ip = 2;
 
     while let Some(byte) = bytecode.get(ip).copied() {
         match OpCode::try_from(byte) {
@@ -878,12 +868,7 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                 }
             }
         }
-        Ok(
-            ValueAt::RegisterU8
-            | ValueAt::RegisterU16
-            | ValueAt::RegisterU32
-            | ValueAt::RegisterU64,
-        ) => {
+        Ok(ValueAt::RegisterU8 | ValueAt::RegisterU16) => {
             move_through_location(bytecode, ip);
         }
         Err(error) => {
@@ -927,8 +912,6 @@ crate::int_enum! {
     Value => 0x00,
     RegisterU8 => 0x01,
     RegisterU16 => 0x02,
-    RegisterU32 => 0x03,
-    RegisterU64 => 0x04,
 }
 
 crate::int_enum! {
@@ -1238,22 +1221,16 @@ impl Assemble for Location {
             Self::Register(index) => {
                 let mut bytes = vec![];
 
-                let register = usize::from(*index);
+                let register = u16::from(*index);
 
                 if let Ok(register) = u8::try_from(register).map(u8::to_le_bytes) {
                     bytes.push(u8::from(ValueAt::RegisterU8));
                     bytes.extend_from_slice(register.as_slice());
-                } else if let Ok(register) = u16::try_from(register).map(u16::to_le_bytes) {
+                } else {
+                    let register = register.to_le_bytes();
+
                     bytes.push(u8::from(ValueAt::RegisterU16));
                     bytes.extend_from_slice(register.as_slice());
-                } else if let Ok(register) = u32::try_from(register).map(u32::to_le_bytes) {
-                    bytes.push(u8::from(ValueAt::RegisterU32));
-                    bytes.extend_from_slice(register.as_slice());
-                } else if let Ok(register) = u64::try_from(register).map(u64::to_le_bytes) {
-                    bytes.push(u8::from(ValueAt::RegisterU64));
-                    bytes.extend_from_slice(register.as_slice());
-                } else {
-                    panic!("128-bit location not allowed!  sorry!");
                 }
 
                 bytes
@@ -1493,7 +1470,7 @@ pub trait Instructive: Sized {
 
     #[allow(clippy::too_many_lines)]
     fn read(&mut self, bytes: &[u8]) {
-        *self.ip_mut() = 8;
+        *self.ip_mut() = 2;
 
         let mut block_addresses = HashMap::new();
 
@@ -2013,12 +1990,9 @@ where
 
                 Self::Value(CopyableValue::from_bytes(bytes, instructive))
             }
-            Ok(
-                ValueAt::RegisterU8
-                | ValueAt::RegisterU16
-                | ValueAt::RegisterU32
-                | ValueAt::RegisterU64,
-            ) => Self::At(Location::from_bytes(bytes, instructive)),
+            Ok(ValueAt::RegisterU8 | ValueAt::RegisterU16) => {
+                Self::At(Location::from_bytes(bytes, instructive))
+            }
             Err(error) => panic!("invalid value op {error:#X}"),
         }
     }
@@ -2030,12 +2004,9 @@ where
 {
     fn from_bytes(bytes: &[u8], instructive: &mut T) -> Self {
         match ValueAt::try_from(bytes[*instructive.ip_mut()]) {
-            Ok(
-                ValueAt::RegisterU8
-                | ValueAt::RegisterU16
-                | ValueAt::RegisterU32
-                | ValueAt::RegisterU64,
-            ) => Self::Register(Register::from_bytes(bytes, instructive)),
+            Ok(ValueAt::RegisterU8 | ValueAt::RegisterU16) => {
+                Self::Register(Register::from_bytes(bytes, instructive))
+            }
             Ok(ValueAt::Value) => panic!("got a value where a location was expected"),
             Err(error) => panic!("invalid location op {error:#X}"),
         }
@@ -2057,30 +2028,16 @@ where
             Ok(ValueAt::RegisterU8) => Self(
                 disassemble_number_and_convert!(
                     bytes, instructive ;
-                    u8, usize,
+                    u8, u16,
                 )
-                .expect("128-bit register not allowed!  sorry!"),
+                .expect("register indices must fit within a u16"),
             ),
             Ok(ValueAt::RegisterU16) => Self(
-                disassemble_number_and_convert!(
+                disassemble_number_from!(
                     bytes, instructive ;
-                    u16, usize,
+                    u16,
                 )
-                .expect("128-bit register not allowed!  sorry!"),
-            ),
-            Ok(ValueAt::RegisterU32) => Self(
-                disassemble_number_and_convert!(
-                    bytes, instructive ;
-                    u32, usize,
-                )
-                .expect("128-bit register not allowed!  sorry!"),
-            ),
-            Ok(ValueAt::RegisterU64) => Self(
-                disassemble_number_and_convert!(
-                    bytes, instructive ;
-                    u64, usize,
-                )
-                .expect("128-bit register not allowed!  sorry!"),
+                .expect("register indices must fit within a u16"),
             ),
             Ok(ValueAt::Value) => panic!("got a value where a register was expected"),
             Err(error) => panic!("invalid register op {error:#X}"),

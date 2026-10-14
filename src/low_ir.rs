@@ -28,22 +28,21 @@ pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
 
     Ir {
         blocks,
-        main_max_register_count: compiled
-            .result()
-            .blocks()
-            .first()
-            .map_or(0, IrBlock::max_register_count),
+        main_max_register_count: compiled.result().blocks().first().map_or(0, |block| {
+            u16::try_from(block.max_register_count())
+                .expect("register allocations guarantees the registers don't exceed the maximum")
+        }),
     }
 }
 
 pub struct Ir<T> {
     blocks: Vec<Block<T>>,
-    main_max_register_count: usize,
+    main_max_register_count: u16,
 }
 
 impl<T> Ir<T> {
     #[must_use]
-    pub const fn new(blocks: Vec<Block<T>>, main_max_register_count: usize) -> Self {
+    pub const fn new(blocks: Vec<Block<T>>, main_max_register_count: u16) -> Self {
         Self {
             blocks,
             main_max_register_count,
@@ -64,7 +63,7 @@ impl<T> Ir<T> {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn main_max_register_count(&self) -> usize {
+    pub const fn main_max_register_count(&self) -> u16 {
         self.main_max_register_count
     }
 }
@@ -205,9 +204,9 @@ pub enum Location {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Register(pub usize);
+pub struct Register(pub u16);
 
-impl From<Register> for usize {
+impl From<Register> for u16 {
     fn from(value: Register) -> Self {
         value.0
     }
@@ -471,7 +470,10 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
 #[must_use]
 fn lower_value_to_location(value: &IrValue) -> Location {
     match value {
-        IrValue::Register(offset) => Location::Register(Register(*offset)),
+        IrValue::Register(offset) => Location::Register(Register(
+            u16::try_from(*offset)
+                .expect("register allocation guarantees the registers don't exceed the maximum"),
+        )),
         _ => unreachable!("only registers can be locations"),
     }
 }

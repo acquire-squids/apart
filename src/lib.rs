@@ -13,6 +13,7 @@ mod type_check;
 pub mod vm;
 
 pub use {
+    allocate_registers::Error as AllocateRegistersError,
     expand_macros::Error as MacroExpansionError,
     low_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, UnaryOp,
@@ -70,6 +71,7 @@ pub enum Error {
     ExpandMacros(MacroExpansionError),
     NameResolve(NameResolveError),
     TypeCheck(TypeCheckError),
+    AllocateRegisters(AllocateRegistersError),
 }
 
 impl fmt::Display for Error {
@@ -80,6 +82,7 @@ impl fmt::Display for Error {
             Self::ExpandMacros(error) => write!(f, "{error}"),
             Self::NameResolve(error) => write!(f, "{error}"),
             Self::TypeCheck(error) => write!(f, "{error}"),
+            Self::AllocateRegisters(error) => write!(f, "{error}"),
         }
     }
 }
@@ -224,7 +227,30 @@ pub fn compile<'a>(
         }
     }
 
-    allocate_registers::allocate(options, &mut ssa);
+    if let Err(errors) = allocate_registers::allocate(options, &mut ssa) {
+        // TODO: it'd be nice to have a span for the register allocation error somehow
+        let span = sources_with_core.get(1).map_or_else(
+            || {
+                Span::new(
+                    *sources_with_core
+                        .first()
+                        .map(|(source_id, (_, _))| source_id)
+                        .expect("there is always at least the core"),
+                    0,
+                    0,
+                )
+            },
+            |(source_id, (_, _))| Span::new(*source_id, 0, 0),
+        );
+
+        return Err(Compiled {
+            sources_with_core,
+            result: errors
+                .into_iter()
+                .map(|error| Spanned::new(Error::AllocateRegisters(error), span))
+                .collect::<Vec<_>>(),
+        });
+    }
 
     if cfg!(feature = "print_allocated") {
         print!("{ssa}");

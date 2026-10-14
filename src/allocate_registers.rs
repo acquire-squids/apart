@@ -4,9 +4,11 @@ use crate::{
     ssa::{BlockTerminator, Ssa},
 };
 
-use std::collections::HashMap;
+use std::{collections::HashMap, error, fmt};
 
-pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) {
+pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) -> Result<(), Vec<Error>> {
+    let mut errors = vec![];
+
     ssa.for_functions(|ssa, blocks| {
         let mut addresses = HashMap::new();
 
@@ -48,10 +50,39 @@ pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) {
             .first()
             .and_then(|block_index| ssa.get_block_mut(*block_index))
         {
-            *block.max_register_count_mut() = allocator.max_register_count;
+            if allocator.max_register_count > usize::from(u16::MAX) {
+                errors.push(Error::TooManyRegisters(allocator.max_register_count));
+            } else {
+                *block.max_register_count_mut() = allocator.max_register_count;
+            }
         }
     });
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Error {
+    TooManyRegisters(usize),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyRegisters(got) => write!(
+                f,
+                "a function tried to use more than the maximum amount of {} registers (got {got})",
+                u16::MAX
+            ),
+        }
+    }
+}
+
+impl error::Error for Error {}
 
 struct RegisterAllocator {
     register_count: usize,
