@@ -1,5 +1,5 @@
 use crate::{
-    Reportable, Span, Spanned,
+    ApartOptions, Reportable, Span, Spanned,
     name_resolve::{Definition, ModuleId, Names, ROOT_MODULE},
     parse::{
         Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, Pattern, TypeSignature,
@@ -10,7 +10,8 @@ use crate::{
 use std::{collections::HashMap, error, fmt, ops::Index};
 
 pub fn check_types(
-    sources: &[(usize, &str)],
+    _: &ApartOptions,
+    sources: &[(usize, (&str, &str))],
     ast: &Ast,
     names: &Names,
 ) -> Result<TypeChecker, Vec<Spanned<Error>>> {
@@ -1593,7 +1594,7 @@ impl TypeChecker {
 impl TypeChecker {
     fn type_check_functions(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         items: &[ItemIndex],
@@ -1793,7 +1794,8 @@ impl TypeChecker {
                 | Expr::Boolean(_)
                 | Expr::Unit
                 | Expr::Return(_)
-                | Expr::String(_) => {}
+                | Expr::String(_)
+                | Expr::Never => {}
                 Expr::Name(_) | Expr::Integer(_) | Expr::NegativeInteger(_) | Expr::Float => {
                     self.propagate_conditionally_overwrite(ast, names, expr, type_index);
                 }
@@ -1918,7 +1920,7 @@ impl TypeChecker {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn replace_default_numeric_types(&mut self, sources: &[(usize, &str)]) {
+    fn replace_default_numeric_types(&mut self, sources: &[(usize, (&str, &str))]) {
         let type_integer = self.type_integer();
         let type_negative_integer = self.type_negative_integer();
         let type_float = self.type_float();
@@ -1939,7 +1941,7 @@ impl TypeChecker {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == radix_span.source_id())
-                            .and_then(|(_, source)| radix_span.lexeme(source))
+                            .and_then(|(_, (_, source))| radix_span.lexeme(source))
                             .expect("the span is from this source");
 
                         match i64::from_str_radix(lexeme, radix) {
@@ -1963,7 +1965,7 @@ impl TypeChecker {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == radix_span.source_id())
-                            .and_then(|(_, source)| radix_span.lexeme(source))
+                            .and_then(|(_, (_, source))| radix_span.lexeme(source))
                             .expect("the span is from this source");
 
                         match i64::from_str_radix(lexeme, radix) {
@@ -1980,7 +1982,7 @@ impl TypeChecker {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == span.source_id())
-                            .and_then(|(_, source)| span.lexeme(source))
+                            .and_then(|(_, (_, source))| span.lexeme(source))
                             .expect("the span is from this source");
 
                         match lexeme.parse::<f64>() {
@@ -2006,7 +2008,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn infer(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         expr: ExprIndex,
@@ -2054,6 +2056,7 @@ impl TypeChecker {
             }
             Expr::Boolean(_) => self.type_boolean(),
             Expr::Unit => self.type_unit(),
+            Expr::Never => self.type_never(),
             Expr::Name(_) => {
                 let mut context = context.to_vec();
 
@@ -2220,7 +2223,7 @@ impl TypeChecker {
 
                 self.type_map.insert(name.span(), type_index);
 
-                type_index
+                self.type_unit()
             }
             Expr::Call { callee, arguments } => {
                 let callee_type_index = self.infer(sources, ast, names, *callee, context);
@@ -2602,7 +2605,7 @@ impl TypeChecker {
 
     fn infer_call(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         (callee_span, callee_type_index, arguments): (Span, TypeIndex, &[ExprIndex]),
@@ -2718,7 +2721,7 @@ impl TypeChecker {
 
     fn infer_unary(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         (op, operand): (UnaryOp, ExprIndex),
@@ -2773,7 +2776,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn infer_binary(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         (op, lhs, rhs): (BinaryOp, ExprIndex, ExprIndex),
@@ -2782,19 +2785,25 @@ impl TypeChecker {
         match op {
             BinaryOp::PathAccess => {
                 let lhs = match ast[lhs].kind() {
-                    Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => lhs,
+                    Expr::Name(_) | Expr::PathElement(_) => lhs,
                     Expr::Binary {
                         op: BinaryOp::PathAccess,
                         rhs,
                         ..
                     } => match ast[*rhs].kind() {
-                        Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => *rhs,
+                        Expr::Name(_) | Expr::PathElement(_) => *rhs,
                         _ => {
-                            unreachable!("name resolution verifies the path is correct");
+                            unreachable!(
+                                "name resolution verifies the path is correct {:?}",
+                                ast[*rhs].kind()
+                            );
                         }
                     },
                     _ => {
-                        unreachable!("name resolution verifies the path is correct");
+                        unreachable!(
+                            "name resolution verifies the path is correct {:?}",
+                            ast[lhs].kind()
+                        );
                     }
                 };
 
@@ -3152,7 +3161,7 @@ impl TypeChecker {
                             _ => {}
                         }
 
-                        rhs_type
+                        self.type_unit()
                     }
                 }
             }
@@ -3229,7 +3238,7 @@ impl TypeChecker {
 
     fn check(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         ast: &Ast,
         names: &Names,
         expr: ExprIndex,
@@ -3252,7 +3261,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn check_inferred(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         inferred: TypeIndex,
         should_be: TypeIndex,
         context: &mut Vec<(String, TypeIndex)>,
@@ -3281,7 +3290,7 @@ impl TypeChecker {
                 let lexeme = sources
                     .iter()
                     .find(|(source_id, _)| *source_id == radix_span.source_id())
-                    .and_then(|(_, source)| radix_span.lexeme(source))
+                    .and_then(|(_, (_, source))| radix_span.lexeme(source))
                     .expect("the span is from this source");
 
                 match b.kind() {
@@ -3316,7 +3325,7 @@ impl TypeChecker {
                 let lexeme = sources
                     .iter()
                     .find(|(source_id, _)| *source_id == radix_span.source_id())
-                    .and_then(|(_, source)| radix_span.lexeme(source))
+                    .and_then(|(_, (_, source))| radix_span.lexeme(source))
                     .expect("the span is from this source");
 
                 match b.kind() {
@@ -3356,7 +3365,7 @@ impl TypeChecker {
                 let lexeme = sources
                     .iter()
                     .find(|(source_id, _)| *source_id == span.source_id())
-                    .and_then(|(_, source)| span.lexeme(source))
+                    .and_then(|(_, (_, source))| span.lexeme(source))
                     .expect("the span is from this source");
 
                 match b.kind() {
@@ -3723,7 +3732,7 @@ impl TypeChecker {
     #[allow(clippy::too_many_lines)]
     fn check_pattern(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         names: &Names,
         pattern: &Spanned<Pattern>,
         should_be: TypeIndex,
@@ -3742,7 +3751,7 @@ impl TypeChecker {
                 let lexeme = sources
                     .iter()
                     .find(|(source_id, _)| *source_id == pattern.span().source_id())
-                    .and_then(|(_, source)| pattern.span().lexeme(source))
+                    .and_then(|(_, (_, source))| pattern.span().lexeme(source))
                     .expect("the span is from this source");
 
                 match b.kind() {
@@ -3766,7 +3775,7 @@ impl TypeChecker {
                 let lexeme = sources
                     .iter()
                     .find(|(source_id, _)| *source_id == pattern.span().source_id())
-                    .and_then(|(_, source)| pattern.span().lexeme(source))
+                    .and_then(|(_, (_, source))| pattern.span().lexeme(source))
                     .expect("the span is from this source");
 
                 match b.kind() {

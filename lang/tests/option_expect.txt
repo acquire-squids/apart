@@ -1,0 +1,10 @@
+funky main() {
+	let
+		a = Option~Some { value <- 97, },
+		b = Option~None {},
+	in {
+		print_u16(a.expect("a is fine!"));
+		print_f32(b.expect("b is not fine!"));
+		print_string("since a None was expected, this will never execute");
+	};
+}

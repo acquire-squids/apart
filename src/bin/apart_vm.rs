@@ -27,19 +27,16 @@ fn main() -> ExitCode {
                         eprintln!("error while reading \"{input_path}\": {error}");
                         ExitCode::FAILURE
                     }
-                    Ok(bytecode) => {
-                        run(bytecode.as_slice());
-
-                        ExitCode::SUCCESS
-                    }
+                    Ok(bytecode) => run(bytecode.as_slice()),
                 }
             }
         },
     )
 }
 
-fn run(bytecode: &[u8]) {
-    apart::vm::run(bytecode, &mut io::stdout().lock());
+fn run(bytecode: &[u8]) -> ExitCode {
+    apart::vm::run(bytecode, &mut io::stdout().lock())
+        .map_or(ExitCode::FAILURE, |()| ExitCode::SUCCESS)
 }
 
 fn print_usage() {

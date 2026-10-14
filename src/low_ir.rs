@@ -1,5 +1,5 @@
 use crate::{
-    Compiled,
+    ApartOptions, Compiled,
     basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue, modules},
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
     ssa::{Block as IrBlock, BlockTerminator, Ssa},
@@ -8,7 +8,7 @@ use crate::{
 use std::fmt;
 
 #[must_use]
-pub fn lower(compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
+pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
     let blocks = compiled
         .result()
         .blocks()
@@ -163,6 +163,11 @@ crate::int_enum! {
 
 #[derive(Debug)]
 pub enum Value {
+    Never,
+    DebugNever {
+        line_number: usize,
+        column: usize,
+    },
     U8(u8),
     I8(i8),
     U16(u16),
@@ -210,6 +215,10 @@ impl From<Register> for usize {
 
 #[derive(Debug)]
 pub enum Instruction<T> {
+    FnLabel {
+        file_name: String,
+        function_label: String,
+    },
     NoOp,
     Unary {
         op: UnaryOp,
@@ -283,6 +292,13 @@ fn lower_instruction(
 ) -> Instruction<Value> {
     match instruction {
         IrInstruction::NoOp | IrInstruction::ScopeStart => Instruction::NoOp,
+        IrInstruction::FnLabel {
+            file_name,
+            function_label,
+        } => Instruction::FnLabel {
+            file_name: file_name.clone(),
+            function_label: function_label.clone(),
+        },
         IrInstruction::PopN(count) => Instruction::PopN(*count),
         IrInstruction::Unary {
             op,
@@ -365,6 +381,14 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::CallArgument(_) | IrValue::Address(_) => {
             unreachable!("these are eliminated by register allocation {value:?}")
         }
+        IrValue::Never => ValueOrLocation::Value(Value::Never),
+        IrValue::DebugNever {
+            line_number,
+            column,
+        } => ValueOrLocation::Value(Value::DebugNever {
+            line_number: *line_number,
+            column: *column,
+        }),
         IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
         IrValue::I8(value) => ValueOrLocation::Value(Value::I8(*value)),
         IrValue::U16(value) => ValueOrLocation::Value(Value::U16(*value)),
@@ -376,7 +400,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
         IrValue::F32(value) => ValueOrLocation::Value(Value::F32(*value)),
         IrValue::F64(value) => ValueOrLocation::Value(Value::F64(*value)),
         IrValue::Boolean(value) => ValueOrLocation::Value(Value::Boolean(*value)),
-        IrValue::Unit | IrValue::Runtime => ValueOrLocation::Value(Value::Unit),
+        IrValue::Unit => ValueOrLocation::Value(Value::Unit),
         IrValue::String(text) => ValueOrLocation::Value(Value::String(text.clone())),
         IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn {
             block_index: *block_index,
@@ -395,7 +419,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
             let lexeme = compiled
                 .sources()
                 .get(source_index)
-                .and_then(|(_, source)| name.lexeme(source));
+                .and_then(|(_, (_, source))| name.lexeme(source));
 
             ValueOrLocation::Value(Value::NativeFn(match module_id {
                 module_id if *module_id == modules::MODULE_STRING => match lexeme {

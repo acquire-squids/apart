@@ -11,7 +11,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         if let Some(block) = ssa.get_block_mut(block_index) {
             for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                 match instruction {
-                    Instruction::NoOp
+                    Instruction::FnLabel { .. }
+                    | Instruction::NoOp
                     | Instruction::Assign { .. }
                     | Instruction::Push(_)
                     | Instruction::Call { .. }
@@ -19,10 +20,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     | Instruction::ScopeStart
                     | Instruction::PopN(_) => {}
                     Instruction::Unary { .. } => {
-                        fold_unary(usize::from(block_index), i, instruction, &mut changed);
+                        fold_unary(block_index, i, instruction, &mut changed);
                     }
                     Instruction::Binary { .. } => {
-                        fold_binary(usize::from(block_index), i, instruction, &mut changed);
+                        fold_binary(block_index, i, instruction, &mut changed);
                     }
                     Instruction::GetTag {
                         of: value,
@@ -66,14 +67,19 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     changed
 }
 
-fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut bool) {
+fn fold_unary(
+    block_index: BlockIndex,
+    i: usize,
+    instruction: &mut Instruction,
+    changed: &mut bool,
+) {
     if let Instruction::Unary { op, operand, .. } = instruction {
         match (op, operand) {
             (UnaryOp::Not, Value::Boolean(value)) => {
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(!*value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -85,7 +91,7 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
                 *instruction = Instruction::Assign {
                     value: Value::I64(-*value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -97,7 +103,7 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
                 *instruction = Instruction::Assign {
                     value: Value::F64(-*value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -111,7 +117,12 @@ fn fold_unary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut b
 }
 
 #[allow(clippy::too_many_lines)]
-fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut bool) {
+fn fold_binary(
+    block_index: BlockIndex,
+    i: usize,
+    instruction: &mut Instruction,
+    changed: &mut bool,
+) {
     if let Instruction::Binary { op, lhs, rhs, .. } = instruction {
         match (op, lhs, rhs) {
             (BinaryOp::Multiply, Value::I64(lhs), Value::I64(rhs))
@@ -120,7 +131,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::I64(value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -132,7 +143,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::F64(*lhs * *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -146,7 +157,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::I64(value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -158,7 +169,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::F64(*lhs / *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -172,7 +183,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::I64(value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -184,7 +195,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::F64(*lhs % *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -198,7 +209,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::I64(value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -210,7 +221,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::F64(*lhs + *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -224,7 +235,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::I64(value),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -236,7 +247,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::F64(*lhs - *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -248,7 +259,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs < *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -260,7 +271,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs < *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -272,7 +283,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs > *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -284,7 +295,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs > *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -296,7 +307,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs <= *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -308,7 +319,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs <= *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -320,7 +331,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs >= *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -332,7 +343,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs >= *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -344,7 +355,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs == rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -356,7 +367,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean((*lhs - *rhs).abs() < f64::EPSILON),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -368,7 +379,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs == rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -380,7 +391,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(true),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -392,7 +403,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs == rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -414,7 +425,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs_name == rhs_name && lhs_module_id == rhs_module_id),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -426,7 +437,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs != rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -438,7 +449,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean((*lhs - *rhs).abs() >= f64::EPSILON),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -450,7 +461,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs != rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -462,7 +473,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(false),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -474,7 +485,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs != rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -496,7 +507,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(lhs_name != rhs_name && lhs_module_id != rhs_module_id),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -508,7 +519,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs && *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),
@@ -520,7 +531,7 @@ fn fold_binary(b: usize, i: usize, instruction: &mut Instruction, changed: &mut 
                 *instruction = Instruction::Assign {
                     value: Value::Boolean(*lhs || *rhs),
                     to: Value::Address(Address {
-                        block_index: BlockIndex(b),
+                        block_index,
                         offset: i,
                         version: 0,
                     }),

@@ -1,10 +1,14 @@
-use crate::basic_blocks::{
-    Address, BasicBlocks, BlockIndex, BlockTerminator as BasicBlockTerminator, Instruction, Value,
+use crate::{
+    ApartOptions,
+    basic_blocks::{
+        Address, BasicBlocks, BlockIndex, BlockTerminator as BasicBlockTerminator, Instruction,
+        Value,
+    },
 };
 
 use std::{collections::HashSet, fmt};
 
-pub fn convert(basic_blocks: &BasicBlocks) -> Ssa {
+pub fn convert(_: &ApartOptions, basic_blocks: &BasicBlocks) -> Ssa {
     let mut ssa = Ssa { blocks: vec![] };
 
     for basic_block in basic_blocks.blocks() {
@@ -263,7 +267,10 @@ impl Ssa {
                 if let Some(block) = self.get_block(block_index) {
                     for instruction in block.instructions() {
                         match instruction {
-                            Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                            Instruction::FnLabel { .. }
+                            | Instruction::NoOp
+                            | Instruction::ScopeStart
+                            | Instruction::PopN(_) => {}
                             Instruction::Push(value) => {
                                 Self::value_uses_block(value, &mut frontier);
                             }
@@ -354,7 +361,10 @@ impl Ssa {
                 if let Some(block) = self.get_block(b) {
                     for instruction in block.instructions() {
                         match instruction {
-                            Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                            Instruction::FnLabel { .. }
+                            | Instruction::NoOp
+                            | Instruction::ScopeStart
+                            | Instruction::PopN(_) => {}
                             Instruction::Push(value) => {
                                 Self::value_uses_block(value, &mut frontier);
                             }
@@ -457,7 +467,10 @@ impl Ssa {
         if let Some(block) = self.get_block_mut(block_index) {
             for instruction in block.instructions_mut() {
                 match instruction {
-                    Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                    Instruction::FnLabel { .. }
+                    | Instruction::NoOp
+                    | Instruction::ScopeStart
+                    | Instruction::PopN(_) => {}
                     Instruction::Push(value) => {
                         Self::nested_values(value, &mut f);
                     }
@@ -537,7 +550,7 @@ impl Ssa {
             {
                 block.instructions.clear();
 
-                block.terminator = BlockTerminator::Return(Value::Runtime);
+                block.terminator = BlockTerminator::Return(Value::Never);
             }
         }
     }
@@ -549,7 +562,8 @@ impl Ssa {
             if let Some(block) = ssa.get_block_mut(block_index) {
                 for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                     match instruction {
-                        Instruction::NoOp
+                        Instruction::FnLabel { .. }
+                        | Instruction::NoOp
                         | Instruction::Push(_)
                         | Instruction::AccessAssign { .. }
                         | Instruction::ScopeStart
@@ -593,7 +607,10 @@ impl Ssa {
             if let Some(block) = ssa.get_block_mut(block_index) {
                 for instruction in block.instructions_mut() {
                     match instruction {
-                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                        Instruction::FnLabel { .. }
+                        | Instruction::NoOp
+                        | Instruction::ScopeStart
+                        | Instruction::PopN(_) => {}
                         Instruction::Push(value)
                         | Instruction::Unary { operand: value, .. }
                         | Instruction::Call { callee: value, .. }

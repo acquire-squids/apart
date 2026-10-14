@@ -3,177 +3,235 @@ macro_rules! output_tests {
         $module_name:ident, $test_macro:ident ;
     ) => {
         mod $module_name {
-            apart::$test_macro!(access_lhs_is_call, "access_lhs_is_call.txt", "true\n");
+            apart::$test_macro!(access_lhs_is_call, "access_lhs_is_call.txt", Ok("true\n"));
 
-            apart::$test_macro!(and, "and.txt", "true\nfalse\n");
+            apart::$test_macro!(and, "and.txt", Ok("true\nfalse\n"));
 
-            apart::$test_macro!(and_and_and_and_and, "and_and_and_and_and.txt", "true\n");
+            apart::$test_macro!(and_and_and_and_and, "and_and_and_and_and.txt", Ok("true\n"));
 
-            apart::$test_macro!(and_and_or, "and_and_or.txt", "true\n");
+            apart::$test_macro!(and_and_or, "and_and_or.txt", Ok("true\n"));
 
-            apart::$test_macro!(assign_to_fn_parameter, "assign_to_fn_parameter.txt", "{}\n");
+            apart::$test_macro!(
+                assign_to_fn_parameter,
+                "assign_to_fn_parameter.txt",
+                Ok("{}\n")
+            );
 
-            apart::$test_macro!(callee_is_access, "callee_is_access.txt", "true\n");
+            apart::$test_macro!(callee_is_access, "callee_is_access.txt", Ok("true\n"));
 
-            apart::$test_macro!(callee_is_call, "callee_is_call.txt", "true\n");
+            apart::$test_macro!(callee_is_call, "callee_is_call.txt", Ok("true\n"));
 
-            apart::$test_macro!(directive, "directive.txt", "vm\n");
+            apart::$test_macro!(directive, "directive.txt", Ok("vm\n"));
 
-            apart::$test_macro!(empty, "empty.txt", "");
+            apart::$test_macro!(empty, "empty.txt", Ok(""));
 
-            apart::$test_macro!(equality, "equality.txt", "true\nfalse\ntrue\nfalse\n");
+            apart::$test_macro!(equality, "equality.txt", Ok("true\nfalse\ntrue\nfalse\n"));
 
-            apart::$test_macro!(f32, "f32.txt", "123.456\n");
+            apart::$test_macro!(f32, "f32.txt", Ok("123.456\n"));
 
-            apart::$test_macro!(forward_alias, "forward_alias.txt", "true\n");
+            apart::$test_macro!(forward_alias, "forward_alias.txt", Ok("true\n"));
 
-            apart::$test_macro!(fn_parameter, "fn_parameter.txt", "21\n");
+            apart::$test_macro!(fn_parameter, "fn_parameter.txt", Ok("21\n"));
 
-            apart::$test_macro!(hello_bingus, "hello_bingus.txt", "Hello, Bingus!\n");
+            apart::$test_macro!(hello_bingus, "hello_bingus.txt", Ok("Hello, Bingus!\n"));
 
-            apart::$test_macro!(hello_world, "hello_world.txt", "Hello, world!\n");
+            apart::$test_macro!(hello_world, "hello_world.txt", Ok("Hello, world!\n"));
 
-            apart::$test_macro!(identity, "identity.txt", "21\n");
+            apart::$test_macro!(identity, "identity.txt", Ok("21\n"));
 
-            apart::$test_macro!(if_as_binary_lhs, "if_as_binary_lhs.txt", "-3\n",);
+            apart::$test_macro!(if_as_binary_lhs, "if_as_binary_lhs.txt", Ok("-3\n"),);
 
-            apart::$test_macro!(if_as_call_argument, "if_as_call_argument.txt", "21\n",);
+            apart::$test_macro!(if_as_call_argument, "if_as_call_argument.txt", Ok("21\n"),);
 
             apart::$test_macro!(
                 if_as_method_access,
                 "if_as_method_access.txt",
-                "true\nfalse\n",
+                Ok("true\nfalse\n"),
             );
 
-            apart::$test_macro!(if_condition_is_access, "if_condition_is_access.txt", "1\n",);
+            apart::$test_macro!(
+                if_condition_is_access,
+                "if_condition_is_access.txt",
+                Ok("1\n"),
+            );
 
-            apart::$test_macro!(if_else_if_else, "if_else_if_else.txt", "3\n2\n1\n1\n");
+            apart::$test_macro!(if_else_if_else, "if_else_if_else.txt", Ok("3\n2\n1\n1\n"));
 
-            apart::$test_macro!(is_some, "is_some.txt", "true\nfalse\n",);
+            apart::$test_macro!(is_some, "is_some.txt", Ok("true\nfalse\n"),);
 
             apart::$test_macro!(
                 iterative_fibonacci,
                 "iterative_fibonacci.txt",
-                "7540113804746346429\n"
+                Ok("7540113804746346429\n")
             );
 
             apart::$test_macro!(
                 method_specialization,
                 "method_specialization.txt",
-                "1\n0\n2\n3\n4\n",
+                Ok("1\n0\n2\n3\n4\n"),
             );
 
-            apart::$test_macro!(module_generics, "module_generics.txt", "3.0\n");
+            apart::$test_macro!(module_generics, "module_generics.txt", Ok("3.0\n"));
 
-            apart::$test_macro!(nested_generics, "nested_generics.txt", "3.14\n");
+            apart::$test_macro!(nested_generics, "nested_generics.txt", Ok("3.14\n"));
 
-            apart::$test_macro!(nested_options, "nested_options.txt", "",);
+            apart::$test_macro!(nested_options, "nested_options.txt", Ok(""),);
 
-            apart::$test_macro!(no_ranges, "no_ranges.txt", "true\ntrue\ntrue\nfalse\n",);
+            apart::$test_macro!(no_ranges, "no_ranges.txt", Ok("true\ntrue\ntrue\nfalse\n"),);
 
-            apart::$test_macro!(noppers, "noppers.txt", "80\n");
+            apart::$test_macro!(noppers, "noppers.txt", Ok("80\n"));
 
-            apart::$test_macro!(or, "or.txt", "true\nfalse\n");
+            apart::$test_macro!(
+                option_expect,
+                "option_expect.txt",
+                Err((
+                    "97\nb is not fine!\nVM panicked\n",
+                    apart::vm::Interrupt::Panic
+                ))
+            );
 
-            apart::$test_macro!(or_and_or_and_or, "or_and_or_and_or.txt", "true\n");
+            apart::$test_macro!(
+                option_unwrap,
+                "option_unwrap.txt",
+                Err((
+                    "97\ntried to unwrap a None value\nVM panicked\n",
+                    apart::vm::Interrupt::Panic
+                ))
+            );
 
-            apart::$test_macro!(path_super, "path_super.txt", "97\n");
+            apart::$test_macro!(or, "or.txt", Ok("true\nfalse\n"));
 
-            apart::$test_macro!(pattern_field_elision, "pattern_field_elision.txt", "true\n",);
+            apart::$test_macro!(or_and_or_and_or, "or_and_or_and_or.txt", Ok("true\n"));
 
-            apart::$test_macro!(product, "product.txt", "");
+            apart::$test_macro!(path_super, "path_super.txt", Ok("97\n"));
+
+            apart::$test_macro!(
+                pattern_field_elision,
+                "pattern_field_elision.txt",
+                Ok("true\n"),
+            );
+
+            apart::$test_macro!(product, "product.txt", Ok(""));
 
             apart::$test_macro!(
                 product_elide_name_field,
                 "product_elide_name_field.txt",
-                "-3\n"
+                Ok("-3\n")
             );
 
-            apart::$test_macro!(product_equality, "product_equality.txt", "true\nfalse\n");
+            apart::$test_macro!(
+                product_equality,
+                "product_equality.txt",
+                Ok("true\nfalse\n")
+            );
 
-            apart::$test_macro!(product_fn_parameter, "product_fn_parameter.txt", "{}\n");
+            apart::$test_macro!(product_fn_parameter, "product_fn_parameter.txt", Ok("{}\n"));
 
-            apart::$test_macro!(product_identity, "product_identity.txt", "3.14\n");
+            apart::$test_macro!(product_identity, "product_identity.txt", Ok("3.14\n"));
 
             apart::$test_macro!(
                 product_rearrange,
                 "product_rearrange.txt",
-                "1.0\n2.0\n3.0\n"
+                Ok("1.0\n2.0\n3.0\n")
             );
 
-            apart::$test_macro!(product_return_type, "product_return_type.txt", "{}\n");
+            apart::$test_macro!(product_return_type, "product_return_type.txt", Ok("{}\n"));
 
-            apart::$test_macro!(product_self, "product_self.txt", "38\n");
+            apart::$test_macro!(product_self, "product_self.txt", Ok("38\n"));
 
-            apart::$test_macro!(product_ssa_if_0, "product_ssa_if_0.txt", "21\n");
+            apart::$test_macro!(product_ssa_if_0, "product_ssa_if_0.txt", Ok("21\n"));
 
-            apart::$test_macro!(product_ssa_if_1, "product_ssa_if_1.txt", "19\n");
+            apart::$test_macro!(product_ssa_if_1, "product_ssa_if_1.txt", Ok("19\n"));
 
-            apart::$test_macro!(product_ssa_if_2, "product_ssa_if_2.txt", "38\n");
+            apart::$test_macro!(product_ssa_if_2, "product_ssa_if_2.txt", Ok("38\n"));
 
-            apart::$test_macro!(product_three_or_four, "product_three_or_four.txt", "3\n");
+            apart::$test_macro!(
+                product_three_or_four,
+                "product_three_or_four.txt",
+                Ok("3\n")
+            );
 
-            apart::$test_macro!(r#if, "if.txt", "21.0\n");
+            apart::$test_macro!(r#if, "if.txt", Ok("21.0\n"));
 
-            apart::$test_macro!(r#mod, "mod.txt", "97\n");
+            apart::$test_macro!(r#mod, "mod.txt", Ok("97\n"));
 
-            apart::$test_macro!(r#while, "while.txt", "{}\n{}\n{}\n");
+            apart::$test_macro!(r#while, "while.txt", Ok("{}\n{}\n{}\n"));
 
-            apart::$test_macro!(recursive_fibonacci, "recursive_fibonacci.txt", "6765\n");
+            apart::$test_macro!(recursive_fibonacci, "recursive_fibonacci.txt", Ok("6765\n"));
 
-            apart::$test_macro!(root_path, "root_path.txt", "97\n");
+            apart::$test_macro!(
+                result_expect,
+                "result_expect.txt",
+                Err((
+                    "97\nb is not fine!\nVM panicked\n",
+                    apart::vm::Interrupt::Panic
+                ))
+            );
+
+            apart::$test_macro!(
+                result_unwrap,
+                "result_unwrap.txt",
+                Err((
+                    "97\ntried to unwrap an Err value\nVM panicked\n",
+                    apart::vm::Interrupt::Panic
+                ))
+            );
+
+            apart::$test_macro!(root_path, "root_path.txt", Ok("97\n"));
+
+            apart::$test_macro!(speed_test, "speed_test.txt", Ok(""),);
 
             apart::$test_macro!(
                 sibling_module_inner_inner,
                 "sibling_module_inner_inner.txt",
-                "",
+                Ok(""),
             );
 
-            apart::$test_macro!(signed_min, "signed_min.txt", "-128\n",);
+            apart::$test_macro!(signed_min, "signed_min.txt", Ok("-128\n"),);
 
-            apart::$test_macro!(some_some_none, "some_some_none.txt", "true\n21\n",);
+            apart::$test_macro!(some_some_none, "some_some_none.txt", Ok("true\n21\n"),);
 
-            apart::$test_macro!(ssa_if_0, "ssa_if_0.txt", "21\n");
+            apart::$test_macro!(ssa_if_0, "ssa_if_0.txt", Ok("21\n"));
 
-            apart::$test_macro!(ssa_if_1, "ssa_if_1.txt", "19\n");
+            apart::$test_macro!(ssa_if_1, "ssa_if_1.txt", Ok("19\n"));
 
-            apart::$test_macro!(ssa_if_2, "ssa_if_2.txt", "38\n");
+            apart::$test_macro!(ssa_if_2, "ssa_if_2.txt", Ok("38\n"));
 
-            apart::$test_macro!(sum, "sum.txt", "false\ntrue\n");
+            apart::$test_macro!(sum, "sum.txt", Ok("false\ntrue\n"));
 
-            apart::$test_macro!(sum_equality_2, "sum_equality_2.txt", "false\n");
+            apart::$test_macro!(sum_equality_2, "sum_equality_2.txt", Ok("false\n"));
 
-            apart::$test_macro!(sum_equality_3, "sum_equality_3.txt", "false\n");
+            apart::$test_macro!(sum_equality_3, "sum_equality_3.txt", Ok("false\n"));
 
-            apart::$test_macro!(teach, "teach.txt", "97\n",);
+            apart::$test_macro!(teach, "teach.txt", Ok("97\n"),);
 
             apart::$test_macro!(
                 teach_generic_clarity,
                 "teach_generic_clarity.txt",
-                "97\n{}\n",
+                Ok("97\n{}\n"),
             );
 
             apart::$test_macro!(
                 teach_generic_clarity_method_access,
                 "teach_generic_clarity_method_access.txt",
-                "97\n{}\n",
+                Ok("97\n{}\n"),
             );
 
-            apart::$test_macro!(teach_method_access, "teach_method_access.txt", "97\n",);
+            apart::$test_macro!(teach_method_access, "teach_method_access.txt", Ok("97\n"),);
 
-            apart::$test_macro!(three_or_four, "three_or_four.txt", "3\n");
+            apart::$test_macro!(three_or_four, "three_or_four.txt", Ok("3\n"));
 
-            apart::$test_macro!(type_annotation, "type_annotation.txt", "21\n",);
+            apart::$test_macro!(type_annotation, "type_annotation.txt", Ok("21\n"),);
 
             apart::$test_macro!(
                 we_have_if_at_home,
                 "we_have_if_at_home.txt",
-                "true\nfalse\n",
+                Ok("true\nfalse\n"),
             );
 
-            apart::$test_macro!(you_stupid, "you_stupid.txt", "true\nfalse\n");
+            apart::$test_macro!(you_stupid, "you_stupid.txt", Ok("true\nfalse\n"));
 
-            apart::$test_macro!(zoo, "zoo.txt", "100002\n");
+            apart::$test_macro!(zoo, "zoo.txt", Ok("100002\n"));
         }
     };
 }
@@ -474,6 +532,26 @@ mod compilation_error {
         [apart::Error::NameResolve(
             apart::NameResolveError::SuperAtRoot
         )]
+    );
+
+    apart::test_compilation_errors!(
+        print_access_assign,
+        "print_access_assign.txt",
+        [
+            apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+                expected, got,
+            }),
+        ] if expected == "u32" && got == "unit"
+    );
+
+    apart::test_compilation_errors!(
+        print_assign,
+        "print_assign.txt",
+        [
+            apart::Error::TypeCheck(apart::TypeCheckError::TypeMismatch {
+                expected, got,
+            }),
+        ] if expected == "u32" && got == "unit"
     );
 
     apart::test_compilation_errors!(

@@ -1,0 +1,9 @@
+funky main() {
+	let
+		x = 10000,
+	in {
+		while x > 0 {
+			x = x - 1;
+		}
+	};
+}

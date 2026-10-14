@@ -1,11 +1,12 @@
 use crate::{
+    ApartOptions,
     basic_blocks::{Address, BlockIndex, Instruction, Value},
     ssa::{BlockTerminator, Ssa},
 };
 
 use std::collections::HashMap;
 
-pub fn allocate(ssa: &mut Ssa) {
+pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) {
     ssa.for_functions(|ssa, blocks| {
         let mut addresses = HashMap::new();
 
@@ -31,7 +32,13 @@ pub fn allocate(ssa: &mut Ssa) {
                 block.instructions_mut().retain(|instruction| {
                     !matches!(
                         instruction,
-                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(0)
+                        Instruction::NoOp
+                            | Instruction::ScopeStart
+                            | Instruction::PopN(0)
+                            | Instruction::Assign {
+                                value: Value::Never,
+                                ..
+                            }
                     )
                 });
             }
@@ -99,7 +106,7 @@ impl RegisterAllocator {
         if let Some(block) = ssa.get_block_mut(block_index) {
             for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                 match instruction {
-                    Instruction::NoOp => {}
+                    Instruction::FnLabel { .. } | Instruction::NoOp => {}
                     Instruction::ScopeStart => {
                         self.scope_register_counts.push(self.register_count);
                     }

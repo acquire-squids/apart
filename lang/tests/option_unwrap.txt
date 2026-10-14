@@ -1,0 +1,10 @@
+funky main() {
+	let
+		a = Option~Some { value <- 97, },
+		b = Option~None {},
+	in {
+		print_u16(a.unwrap());
+		print_f32(b.unwrap());
+		print_string("since a None was unwrapped, this will never execute");
+	};
+}

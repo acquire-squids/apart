@@ -1,0 +1,10 @@
+funky main() {
+	let
+		a = Result~Ok { value <- 97, },
+		b = Result~Err { error <- "pickle" },
+	in {
+		print_u16(a.unwrap());
+		print_f32(b.unwrap());
+		print_string("since an Err was unwrapped, this will never execute");
+	};
+}

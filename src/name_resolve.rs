@@ -1,5 +1,5 @@
 use crate::{
-    Reportable, Span, Spanned,
+    ApartOptions, Reportable, Span, Spanned,
     parse::{
         Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, PathElement, Pattern, TypeSignature,
         Visibility,
@@ -8,7 +8,7 @@ use crate::{
 
 use std::{collections::HashMap, error, fmt, mem, ops::Index};
 
-pub fn resolve_names(ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
+pub fn resolve_names(_: &ApartOptions, ast: &Ast) -> Result<Names, Vec<Spanned<Error>>> {
     let mut resolver = NameResolver::new();
 
     resolver.associate_types(ast, ast.roots());
@@ -1477,6 +1477,13 @@ impl NameResolver {
                     self.associated_with.pop();
 
                     self.associated_with.push(ROOT_MODULE.span);
+
+                    self.names.insert(
+                        span,
+                        self.associated_with
+                            .last()
+                            .map_or(ROOT_MODULE.span, |span| *span),
+                    );
                 } else {
                     self.errors
                         .push(Spanned::new(Error::RootDeeperThanPathStart, span));
@@ -1498,6 +1505,13 @@ impl NameResolver {
                         resolved_path
                             .last()
                             .map_or(ROOT_MODULE.span, |module| module.span),
+                    );
+
+                    self.names.insert(
+                        span,
+                        self.associated_with
+                            .last()
+                            .map_or(ROOT_MODULE.span, |span| *span),
                     );
                 }
             }

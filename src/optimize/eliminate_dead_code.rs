@@ -27,7 +27,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     for block in ssa.blocks_mut() {
         for instruction in block.instructions_mut() {
             match instruction {
-                Instruction::NoOp
+                Instruction::FnLabel { .. }
+                | Instruction::NoOp
                 | Instruction::Push(_)
                 | Instruction::AccessAssign { .. }
                 | Instruction::Call { .. }
@@ -144,7 +145,10 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<Address> {
     for block in ssa.blocks() {
         for instruction in block.instructions() {
             match instruction {
-                Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                Instruction::FnLabel { .. }
+                | Instruction::NoOp
+                | Instruction::ScopeStart
+                | Instruction::PopN(_) => {}
                 Instruction::Push(value)
                 | Instruction::Unary { operand: value, .. }
                 | Instruction::Assign { value, .. }

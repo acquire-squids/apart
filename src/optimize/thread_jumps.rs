@@ -3,6 +3,7 @@ use crate::{
     ssa::{Block, BlockTerminator, Ssa},
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn optimize(ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
@@ -14,15 +15,14 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 || block.instructions().iter().all(|instruction| {
                     matches!(
                         instruction,
-                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(0)
+                        Instruction::NoOp
+                            | Instruction::ScopeStart
+                            | Instruction::PopN(0)
+                            | Instruction::FnLabel { .. }
                     )
                 }))
         {
-            block_swaps[usize::from(*destination)] = Some((
-                BlockIndex(b),
-                ssa.get_block(BlockIndex(b))
-                    .map_or(0, Block::call_argument_count),
-            ));
+            block_swaps[usize::from(*destination)] = Some(BlockIndex(b));
 
             changed = true;
         }
@@ -33,7 +33,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             match block.terminator_mut() {
                 BlockTerminator::Return(_) => {}
                 BlockTerminator::Jump(destination) => {
-                    if let Some((destination_block, _)) = block_swaps
+                    if let Some(destination_block) = block_swaps
                         .get(usize::from(*destination))
                         .and_then(|swap| *swap)
                     {
@@ -45,14 +45,14 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     otherwise,
                     ..
                 } => {
-                    if let Some((when_true_block, _)) = block_swaps
+                    if let Some(when_true_block) = block_swaps
                         .get(usize::from(*when_true))
                         .and_then(|swap| *swap)
                     {
                         *when_true = when_true_block;
                     }
 
-                    if let Some((otherwise_block, _)) = block_swaps
+                    if let Some(otherwise_block) = block_swaps
                         .get(usize::from(*otherwise))
                         .and_then(|swap| *swap)
                     {
@@ -64,7 +64,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
         ssa.for_value(block_index, |value| match value {
             Value::Fn(block_index) => {
-                if let Some((fn_block, _)) = block_swaps
+                if let Some(fn_block) = block_swaps
                     .get(usize::from(*block_index))
                     .and_then(|swap| *swap)
                 {
@@ -72,7 +72,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 }
             }
             Value::Address(Address { block_index, .. }) => {
-                if let Some((address_block, _)) = block_swaps
+                if let Some(address_block) = block_swaps
                     .get(usize::from(*block_index))
                     .and_then(|swap| *swap)
                 {
@@ -83,18 +83,35 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         });
     });
 
-    for b in (0..(ssa.blocks().len())).rev() {
-        if let Some((swap_to, call_argument_count)) = block_swaps
-            .get(b)
+    for destination in (0..(ssa.blocks().len())).map(BlockIndex) {
+        if let Some(b) = block_swaps
+            .get(usize::from(destination))
             .and_then(|swap_to| *swap_to)
-            .map(|(block_index, call_argument_count)| {
-                (usize::from(block_index), call_argument_count)
-            })
+            && let Some(call_argument_count) = ssa.get_block(b).map(Block::call_argument_count)
         {
-            ssa.blocks_mut().swap(b, swap_to);
+            let fn_label = ssa
+                .get_block(b)
+                .and_then(|block| block.instructions().first())
+                .filter(|instruction| matches!(instruction, Instruction::FnLabel { .. }))
+                .cloned();
 
-            if let Some(block) = ssa.get_block_mut(BlockIndex(swap_to)) {
+            ssa.blocks_mut()
+                .swap(usize::from(destination), usize::from(b));
+
+            if let Some(block) = ssa.get_block_mut(b) {
                 *block.call_argument_count_mut() = call_argument_count;
+
+                if let Some(fn_label) = fn_label {
+                    block.instructions_mut().insert(0, fn_label);
+
+                    ssa.for_value(destination, |value| {
+                        if let Value::Address(address) = value
+                            && address.block_index == b
+                        {
+                            address.offset += 1;
+                        }
+                    });
+                }
             }
         }
     }

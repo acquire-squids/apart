@@ -102,6 +102,8 @@ pub enum Error {
     MatchWithoutValue,
     AliasWithoutEqual,
     AliasWithoutSemicolon,
+    UnknownExprDirective,
+    ExpectedConditionalItem,
 }
 
 impl fmt::Display for Error {
@@ -380,6 +382,14 @@ impl fmt::Display for Error {
             Self::AliasWithoutSemicolon => {
                 write!(f, "the alias should be terminated by a semicolon")
             }
+            Self::UnknownExprDirective => write!(
+                f,
+                "this is not a known compiler directive that's valid in expression position"
+            ),
+            Self::ExpectedConditionalItem => write!(
+                f,
+                "expected an item to conditionally enable after this compiler directive"
+            ),
         }
     }
 }
@@ -395,7 +405,8 @@ impl Reportable for Error {
             | Self::MatchWithoutValue => vec![
                 "an expression can start with \"(\", \"{\", \"if\", \"while\", \"let\", \"return\", \"!\", \"-\", \"true\", \"false\", \"root\", \"super\", \"Self\", a name, or a number".to_string()
             ],
-            Self::ExpectedItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", \"teach\", or \"#if\"".to_string()],
+            Self::ExpectedItem
+            | Self::ExpectedConditionalItem => vec!["items can start with \"funky\", \"product\", \"sum\", \"mod\", \"teach\", or \"#if\"".to_string()],
             Self::ExpectedType => vec!["type signatures can start with \"funky\" or a name".to_string()],
             Self::ExpectedPattern => vec!["a pattern can start with \"{\", \"true\", \"false\", decimal digits, \"root\", \"super\", or a name".to_string()],
             Self::MatchWithoutFallback => vec!["I'd like to check exhaustiveness, but I don't have that yet".to_string()],
@@ -461,7 +472,8 @@ impl Reportable for Error {
             | Self::BinaryWithoutRightOperand
             | Self::UnaryWithoutOperand
             | Self::AliasWithoutEqual
-            | Self::AliasWithoutSemicolon => vec![],
+            | Self::AliasWithoutSemicolon
+            | Self::UnknownExprDirective => vec![],
         }
     }
 }
@@ -566,6 +578,7 @@ impl IndexMut<ItemIndex> for &mut Ast {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
+    Never,
     Integer(u32),
     NegativeInteger(u32),
     Float,
@@ -895,7 +908,8 @@ impl Ast {
             | Expr::PathElement(_)
             | Expr::ProductNoName(_)
             | Expr::CallNoCallee(_)
-            | Expr::String(_) => {}
+            | Expr::String(_)
+            | Expr::Never => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
             }
@@ -1278,12 +1292,21 @@ impl Parser<'_, '_> {
             } else {
                 Err(Spanned::new(Error::ExpectedItem, token.span()))
             }
-        } else if let Some(hash) = self.match_next(Token::Hash)
-            && let Some(directive) = self.match_next(Token::Identifier)
-        {
-            self.parse_directive(ast, hash.span(), directive.span())
         } else {
-            Err(Spanned::new(Error::ExpectedItem, self.span_or_end()))
+            let current_tree = self.current_tree;
+            let at = self.at;
+
+            if let Some(hash) = self.match_next(Token::Hash)
+                && let Some(directive) = self.match_next(Token::Identifier)
+                && self.in_token_tree(current_tree)
+            {
+                self.parse_directive(ast, hash.span(), directive.span())
+            } else {
+                self.current_tree = current_tree;
+                self.at = at;
+
+                Err(Spanned::new(Error::ExpectedItem, self.span_or_end()))
+            }
         }
     }
 
@@ -1325,6 +1348,8 @@ impl Parser<'_, '_> {
         hash_span: Span,
         directive_span: Span,
     ) -> Result<ItemIndex, Spanned<Error>> {
+        let current_tree = self.current_tree;
+
         let name = Spanned::new(
             directive_span
                 .lexeme(self.source)
@@ -1337,20 +1362,24 @@ impl Parser<'_, '_> {
 
         let condition = self.parse_expression(ast, 0)?;
 
-        let item = self.parse_item(ast)?;
+        if self.in_token_tree(current_tree) {
+            let item = self.parse_item(ast)?;
 
-        let span = hash_span
-            .combine_with(ast[item].span())
-            .expect("these spans are from the same source");
+            let span = hash_span
+                .combine_with(ast[item].span())
+                .expect("these spans are from the same source");
 
-        Ok(ast.push_item(Spanned::new(
-            Item::Directive {
-                name,
-                condition,
-                item,
-            },
-            span,
-        )))
+            Ok(ast.push_item(Spanned::new(
+                Item::Directive {
+                    name,
+                    condition,
+                    item,
+                },
+                span,
+            )))
+        } else {
+            Err(Spanned::new(Error::ExpectedConditionalItem, name.span()))
+        }
     }
 
     fn parse_primitive(&mut self, ast: &mut Ast, span: Span) -> Result<ItemIndex, Spanned<Error>> {
@@ -2341,6 +2370,30 @@ impl<'s, 'p> Parser<'s, 'p> {
                 ..
             } => Some((precedence::PRIMARY, (Self::block, *span))),
             TokenTree::Token(token) => match token.kind() {
+                Token::Hash => {
+                    let current_tree = self.current_tree;
+                    let at = self.at;
+
+                    if let Some(hash) = self.match_next(Token::Hash)
+                        && self.in_token_tree(current_tree)
+                        && let Some(directive) = self.match_next(Token::Identifier)
+                    {
+                        Some((
+                            precedence::PRIMARY,
+                            (
+                                Self::directive_expr,
+                                hash.span()
+                                    .combine_with(directive.span())
+                                    .expect("these spans are from the same source"),
+                            ),
+                        ))
+                    } else {
+                        self.current_tree = current_tree;
+                        self.at = at;
+
+                        None
+                    }
+                }
                 Token::Minus => {
                     self.advance_token_tree()?;
 
@@ -2979,6 +3032,19 @@ impl<'s, 'p> Parser<'s, 'p> {
             },
             span,
         )))
+    }
+
+    fn directive_expr(
+        &mut self,
+        ast: &mut Ast,
+        _current_tree: TokenTreeIndex,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        match span.lexeme(self.source) {
+            Some("#never") if self.is_core => Ok(ast.push_expr(Spanned::new(Expr::Never, span))),
+            _ => Err(Spanned::new(Error::UnknownExprDirective, span)),
+        }
     }
 
     fn call_exprs(&mut self, ast: &mut Ast) -> Result<Vec<ExprIndex>, Spanned<Error>> {

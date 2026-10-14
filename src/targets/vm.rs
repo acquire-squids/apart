@@ -272,6 +272,13 @@ fn backpatch(
             Err(error) => {
                 panic!("unknown op {error:#X}");
             }
+            Ok(OpCode::FnLabel) => {
+                ip += 1;
+
+                move_through_string(bytecode.as_slice(), &mut ip);
+
+                move_through_string(bytecode.as_slice(), &mut ip);
+            }
             Ok(OpCode::Label) => {
                 ip += 1;
             }
@@ -624,7 +631,10 @@ fn backpatch_value(
                 Err(error) => {
                     panic!("tried to backpatch unknown value type {error:#X}");
                 }
-                Ok(TypeId::Unit) => {
+                Ok(TypeId::DebugNever) => {
+                    *ip += 17;
+                }
+                Ok(TypeId::Unit | TypeId::Never) => {
                     *ip += 1;
                 }
                 Ok(TypeId::U8 | TypeId::I8 | TypeId::Boolean) => {
@@ -642,14 +652,7 @@ fn backpatch_value(
                 Ok(TypeId::String) => {
                     *ip += 1;
 
-                    let length = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|length| usize::try_from(length).ok())
-                        .expect("string length was not a valid usize");
-
-                    *ip += 8 + length;
+                    move_through_string(bytecode.as_slice(), ip);
                 }
                 Ok(TypeId::FnU8) => {
                     *changed |= backpatch_fn!(
@@ -739,6 +742,13 @@ fn find_labels(
         match OpCode::try_from(byte) {
             Err(error) => {
                 panic!("unknown op {error:#X}");
+            }
+            Ok(OpCode::FnLabel) => {
+                ip += 1;
+
+                move_through_string(bytecode.as_slice(), &mut ip);
+
+                move_through_string(bytecode.as_slice(), &mut ip);
             }
             Ok(OpCode::Label) => {
                 if remove_labels {
@@ -866,6 +876,24 @@ fn find_labels(
     }
 }
 
+fn move_through_string(bytecode: &[u8], ip: &mut usize) {
+    const SIZE: usize = std::mem::size_of::<u64>();
+
+    let length = u64::from_le_bytes(
+        *bytecode[(*ip)..(*ip + SIZE)]
+            .as_array::<SIZE>()
+            .expect("128-bit jump destination not allowed!  sorry!"),
+    );
+
+    *ip += SIZE;
+
+    let length = usize::try_from(length).unwrap_or_else(|_| {
+        panic!("function label length was not a valid usize {length}");
+    });
+
+    *ip += length;
+}
+
 #[allow(clippy::too_many_lines)]
 fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
     match ValueAt::try_from(bytecode[*ip]) {
@@ -876,7 +904,10 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                 Err(error) => {
                     panic!("tried to move through unknown value type {error:#X}");
                 }
-                Ok(TypeId::Unit) => {
+                Ok(TypeId::DebugNever) => {
+                    *ip += 17;
+                }
+                Ok(TypeId::Unit | TypeId::Never) => {
                     *ip += 1;
                 }
                 Ok(TypeId::U8 | TypeId::I8 | TypeId::Boolean) => {
@@ -894,14 +925,7 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                 Ok(TypeId::String) => {
                     *ip += 1;
 
-                    let length = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|length| usize::try_from(length).ok())
-                        .expect("string length was not a valid usize");
-
-                    *ip += 8 + length;
+                    move_through_string(bytecode.as_slice(), ip);
                 }
                 Ok(TypeId::FnU8) => {
                     *ip += 6;
@@ -963,6 +987,7 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
 crate::int_enum! {
     pub OpCode as u8 ;
     Label => 0x10,
+    FnLabel => 0x11,
     Unary => 0x20,
     Binary => 0x40,
     Assign => 0x60,
@@ -1026,10 +1051,13 @@ crate::int_enum! {
     U64 => 0x11,
     String => 0x12,
     F32 => 0x13,
+    Never => 0x14,
+    DebugNever => 0x15,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CopyableValue {
+    Never,
     U8(u8),
     I8(i8),
     U16(u16),
@@ -1064,6 +1092,10 @@ pub enum Value {
     },
     MakeString(String),
     String(String),
+    DebugNever {
+        line_number: usize,
+        column: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1084,6 +1116,30 @@ impl Assemble for IrInstruction<IrValue> {
     fn to_bytes(&self, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
         match self {
             Self::NoOp => vec![],
+            Self::FnLabel {
+                file_name,
+                function_label,
+            } => {
+                let mut bytes = vec![u8::from(OpCode::FnLabel)];
+
+                bytes.extend(
+                    u64::try_from(file_name.len())
+                        .map(u64::to_le_bytes)
+                        .expect("128-bit file name length not allowed!  sorry!"),
+                );
+
+                bytes.extend_from_slice(file_name.as_bytes());
+
+                bytes.extend(
+                    u64::try_from(function_label.len())
+                        .map(u64::to_le_bytes)
+                        .expect("128-bit function label length not allowed!  sorry!"),
+                );
+
+                bytes.extend_from_slice(function_label.as_bytes());
+
+                bytes
+            }
             Self::Unary { op, operand, to } => {
                 let mut bytes = vec![u8::from(OpCode::Unary)];
 
@@ -1326,6 +1382,31 @@ impl Assemble for IrValue {
     #[allow(clippy::too_many_lines)]
     fn to_bytes(&self, compiled: &Compiled<'_, Ir<Self>>) -> Vec<u8> {
         match self {
+            Self::Never => {
+                vec![u8::from(TypeId::Never)]
+            }
+            Self::DebugNever {
+                line_number,
+                column,
+            } => {
+                let mut bytes = vec![u8::from(TypeId::DebugNever)];
+
+                bytes.extend_from_slice(
+                    u64::try_from(*line_number)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes.extend_from_slice(
+                    u64::try_from(*column)
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                bytes
+            }
             Self::U8(value) => {
                 let mut bytes = vec![u8::from(TypeId::U8)];
 
@@ -1538,6 +1619,42 @@ pub trait Instructive: Sized {
             let op_code = OpCode::from_bytes(bytes, self);
 
             match op_code {
+                OpCode::FnLabel => {
+                    let length = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("128-bit function file name length not allowed!  sorry!");
+
+                    let file_name = String::from_utf8(
+                        bytes[(*self.ip_mut())..{
+                            *self.ip_mut() += length;
+                            *self.ip_mut()
+                        }]
+                            .to_vec(),
+                    )
+                    .expect("a function file name was not valid utf-8!");
+
+                    let length = disassemble_number_and_convert!(
+                        bytes, self ;
+                        u64, usize,
+                    )
+                    .expect("128-bit function label length not allowed!  sorry!");
+
+                    let function_label = String::from_utf8(
+                        bytes[(*self.ip_mut())..{
+                            *self.ip_mut() += length;
+                            *self.ip_mut()
+                        }]
+                            .to_vec(),
+                    )
+                    .expect("a function label was not valid utf-8!");
+
+                    self.instructions_mut().push(IrInstruction::FnLabel {
+                        file_name,
+                        function_label,
+                    });
+                }
                 OpCode::Label => unreachable!("labels are eliminated before compilation ends"),
                 OpCode::Unary => {
                     let op = UnaryOp::from_bytes(bytes, self);
@@ -1936,7 +2053,7 @@ pub trait Instructive: Sized {
 
         for instruction in self.instructions_mut() {
             match instruction {
-                IrInstruction::NoOp | IrInstruction::PopN(_) => {}
+                IrInstruction::FnLabel { .. } | IrInstruction::NoOp | IrInstruction::PopN(_) => {}
                 IrInstruction::Unary { operand: value, .. }
                 | IrInstruction::Assign { value, .. }
                 | IrInstruction::Push(value)
@@ -2265,6 +2382,27 @@ where
                 .expect("a boolean could not be created from its byte"),
             ),
             Ok(TypeId::Unit) => Self::Unit,
+            Ok(TypeId::Never) => Self::Never,
+            Ok(TypeId::DebugNever) => {
+                let line_number = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("128-bit line numbers not allowed!  sorry!");
+
+                let column = disassemble_number_and_convert!(
+                    bytes, instructive ;
+                    u64, usize,
+                )
+                .expect("128-bit columns not allowed!  sorry!");
+
+                instructive.values_mut().push(Value::DebugNever {
+                    line_number,
+                    column,
+                });
+
+                Self::ValueIndex(ValueIndex(instructive.values_mut().len() - 1))
+            }
             Ok(TypeId::String) => {
                 let text = disassemble_number_and_convert!(
                     bytes, instructive ;

@@ -8,24 +8,27 @@ cargo run \
   --release \
   --bin apart_c \
   -- \
-    -O \
-    -o fib.apart \
+    --optimize \
+    --strip-debug-info \
+    --output fib.apart \
     lang/bench/fibonacci_bench.txt
 
 cargo run \
   --release \
   --bin apart_c \
   -- \
-    -O \
-    -o speed_test.apart \
+    --optimize \
+    --strip-debug-info \
+    --output speed_test.apart \
     lang/bench/speed_test.txt
 
 cargo run \
   --release \
   --bin apart_c \
   -- \
-    -O \
-    -o zoo.apart \
+    --optimize \
+    --strip-debug-info \
+    --output zoo.apart \
     lang/bench/zoo_bench.txt
 
 hyperfine \

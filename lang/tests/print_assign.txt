@@ -1,0 +1,7 @@
+funky main() {
+	let
+		a = 97,
+	in {
+		print_u32(a = 3);
+	};
+}

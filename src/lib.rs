@@ -37,15 +37,22 @@ pub enum Target {
     Vm,
 }
 
+#[derive(Debug, Clone)]
+pub struct ApartOptions {
+    pub optimize: bool,
+    pub strip_debug_info: bool,
+    pub target: Target,
+}
+
 pub struct Compiled<'a, T> {
-    sources_with_core: Vec<(usize, &'a str)>,
+    sources_with_core: Vec<(usize, (&'a str, &'a str))>,
     result: T,
 }
 
 impl<'a, T> Compiled<'a, T> {
     #[allow(dead_code)]
     #[must_use]
-    pub const fn sources(&self) -> &[(usize, &'a str)] {
+    pub const fn sources(&self) -> &[(usize, (&'a str, &'a str))] {
         self.sources_with_core.as_slice()
     }
 
@@ -85,9 +92,8 @@ impl Reportable for Error {}
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 pub fn compile<'a>(
-    sources: &[(usize, &'a str)],
-    target: Target,
-    optimized: bool,
+    options: &ApartOptions,
+    sources: &[(usize, (&'a str, &'a str))],
 ) -> Result<Compiled<'a, Ir<IrValue>>, Compiled<'a, Vec<Spanned<Error>>>> {
     let mut source_ids = sources
         .iter()
@@ -126,17 +132,17 @@ pub fn compile<'a>(
         )
         .expect("there wasn't a free source id");
 
-    let mut sources_with_core = vec![(core_source_id, CORE_SOURCE)];
+    let mut sources_with_core = vec![(core_source_id, (CORE_PATH, CORE_SOURCE))];
 
-    for (source_id, source) in sources {
-        sources_with_core.push((*source_id, source));
+    for (source_id, (file_name, source)) in sources {
+        sources_with_core.push((*source_id, (file_name, source)));
     }
 
     let mut ast = parse::Ast::new(core_source_id);
 
     let mut errors = vec![];
 
-    for (source_id, source) in sources {
+    for (source_id, (_, source)) in sources {
         let mut lexer = lex::Lexer::new(*source_id);
 
         lexer.push_source(source);
@@ -169,7 +175,7 @@ pub fn compile<'a>(
         });
     }
 
-    expand_macros::expand(&mut ast, target).map_err(|errors| Compiled {
+    expand_macros::expand(options, &mut ast).map_err(|errors| Compiled {
         sources_with_core: sources_with_core.clone(),
         result: errors
             .into_iter()
@@ -177,7 +183,7 @@ pub fn compile<'a>(
             .collect::<Vec<_>>(),
     })?;
 
-    let names = name_resolve::resolve_names(&ast).map_err(|errors| Compiled {
+    let names = name_resolve::resolve_names(options, &ast).map_err(|errors| Compiled {
         sources_with_core: sources_with_core.clone(),
         result: errors
             .into_iter()
@@ -185,38 +191,40 @@ pub fn compile<'a>(
             .collect::<Vec<_>>(),
     })?;
 
-    let types =
-        type_check::check_types(sources_with_core.as_slice(), &ast, &names).map_err(|errors| {
-            Compiled {
-                sources_with_core: sources_with_core.clone(),
-                result: errors
-                    .into_iter()
-                    .map(|error| error.transmute(Error::TypeCheck))
-                    .collect::<Vec<_>>(),
-            }
+    let types = type_check::check_types(options, sources_with_core.as_slice(), &ast, &names)
+        .map_err(|errors| Compiled {
+            sources_with_core: sources_with_core.clone(),
+            result: errors
+                .into_iter()
+                .map(|error| error.transmute(Error::TypeCheck))
+                .collect::<Vec<_>>(),
         })?;
 
-    let basic_blocks = basic_blocks::translate(sources_with_core.as_slice(), &ast, &names, &types);
+    let basic_blocks = basic_blocks::translate(
+        options,
+        sources_with_core.as_slice(),
+        (&ast, &names, &types),
+    );
 
     if cfg!(feature = "print_blocks") {
         print!("{basic_blocks}");
     }
 
-    let mut ssa = ssa::convert(&basic_blocks);
+    let mut ssa = ssa::convert(options, &basic_blocks);
 
     if cfg!(feature = "print_ssa") {
         print!("{ssa}");
     }
 
-    if optimized {
-        optimize::optimize(&mut ssa);
+    if options.optimize {
+        optimize::optimize(options, &mut ssa);
 
         if cfg!(feature = "print_optimized") {
             print!("{ssa}");
         }
     }
 
-    allocate_registers::allocate(&mut ssa);
+    allocate_registers::allocate(options, &mut ssa);
 
     if cfg!(feature = "print_allocated") {
         print!("{ssa}");
@@ -227,7 +235,7 @@ pub fn compile<'a>(
         result: ssa,
     };
 
-    let low_ir = low_ir::lower(&compiled);
+    let low_ir = low_ir::lower(options, &compiled);
 
     if cfg!(feature = "print_lowir") {
         print!("{low_ir}");
@@ -242,20 +250,34 @@ pub fn compile<'a>(
 #[macro_export]
 macro_rules! __test_vm_output_single_function {
     (
-        $source:ident, $test_file_name:literal, $expected_output:literal ;
-        $test_name:ident, $registers:literal, $optimized:literal $(,)?
+        $source:ident, $test_file_name:literal, $expected_output:expr ;
+        $test_name:ident, $optimized:literal $(,)?
     ) => {
         #[test]
         fn $test_name() {
             let mut out = vec![];
 
-            let result = $crate::compile([(0, SOURCE)].as_slice(), $crate::Target::Vm, $optimized)
-                .map(|compiled| $crate::targets::vm::compile(&compiled))
-                .map(|compiled| $crate::vm::run(compiled.as_slice(), &mut out))
-                .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"));
+            let result = $crate::compile(
+                &$crate::ApartOptions {
+                    optimize: $optimized,
+                    strip_debug_info: true,
+                    target: $crate::Target::Vm,
+                },
+                [(0, ($test_file_name, $source))].as_slice(),
+            )
+            .map(|compiled| $crate::targets::vm::compile(&compiled));
 
             match result {
-                Ok(output) => {
+                Ok(compiled) => {
+                    let output = $crate::vm::run(compiled.as_slice(), &mut out)
+                        .map(|()| str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"))
+                        .map_err(|status| {
+                            (
+                                str::from_utf8(out.as_slice()).expect("only utf-8!  sorry!"),
+                                status,
+                            )
+                        });
+
                     assert_eq!(output, $expected_output);
                 }
                 Err(compiled) => {
@@ -269,7 +291,7 @@ macro_rules! __test_vm_output_single_function {
                             .expect("the source must exist");
 
                         let report_data = reporting::ReportData::new(
-                            compiled.sources()[source_index].1,
+                            compiled.sources()[source_index].1.1,
                             "error",
                             $test_file_name,
                             "...",
@@ -298,7 +320,7 @@ pub use __test_vm_output_single_function as test_vm_output_single_function;
 #[macro_export]
 macro_rules! __test_vm_output {
     (
-        $test_name:ident, $test_file_name:literal, $expected_output:literal $(,)?
+        $test_name:ident, $test_file_name:literal, $expected_output:expr $(,)?
     ) => {
         #[cfg(test)]
         mod $test_name {
@@ -310,12 +332,12 @@ macro_rules! __test_vm_output {
 
             $crate::test_vm_output_single_function!(
                 SOURCE, $test_file_name, $expected_output ;
-                unoptimized, 32, false
+                unoptimized, false
             );
 
             $crate::test_vm_output_single_function!(
                 SOURCE, $test_file_name, $expected_output ;
-                optimized, 32, true
+                optimized, true
             );
         }
     };
@@ -338,8 +360,15 @@ macro_rules! __test_compilation_errors {
 
             #[test]
             fn compilation_error() {
-                let result = $crate::compile([(0, SOURCE)].as_slice(), $crate::Target::Vm, false)
-                    .map(|_| "ERRONEOUS SUCCESSFUL COMPILATION");
+                let result = $crate::compile(
+                    &$crate::ApartOptions {
+                        optimize: false,
+                        strip_debug_info: true,
+                        target: $crate::Target::Vm,
+                    },
+                    [(0, ($test_file_name, SOURCE))].as_slice()
+                )
+                .map(|_| "ERRONEOUS SUCCESSFUL COMPILATION");
 
                 let result = result.as_ref()
                     .map_err($crate::Compiled::result)

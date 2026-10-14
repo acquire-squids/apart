@@ -1,0 +1,19 @@
+funky main() {
+	let
+		a = Wrapper~wrap(97),
+	in {
+		print_u32(a.value = 3);
+	};
+}
+
+product Wrapper[T] {
+	value <- T,
+}
+
+teach[T] Wrapper[T] {
+	funky wrap(value <- T) -> Self {
+		Self {
+			value,
+		}
+	}
+}

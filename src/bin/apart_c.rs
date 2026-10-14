@@ -1,4 +1,4 @@
-use apart::{Ir, IrValue, Target};
+use apart::{ApartOptions, Ir, IrValue, Target};
 
 use std::{env, fs, iter, path::Path, process::ExitCode};
 
@@ -6,8 +6,8 @@ fn main() -> ExitCode {
     let mut arguments = env::args().peekable();
     arguments.next();
 
-    let options = match parse_options(&mut arguments) {
-        Ok(options) => options,
+    let (options, output) = match parse_options(&mut arguments) {
+        Ok((options, output)) => (options, output),
         Err(exit_code) => return exit_code,
     };
 
@@ -35,22 +35,19 @@ fn main() -> ExitCode {
                         ExitCode::FAILURE
                     }
                     Ok(source) => {
-                        let source_labels = [input_path];
+                        let sources = [(0, (input_path, source.as_str()))];
 
-                        let sources = [(0, source.as_str())];
-
-                        let source_labels = source_labels.as_slice();
                         let sources = sources.as_slice();
 
-                        compile(source_labels, sources, options.target, options.optimize).map_or(
+                        compile(&options, sources).map_or(
                             ExitCode::FAILURE,
                             |compiled| {
-                                let output_path = Path::new(options.output.as_str());
+                                let output_path = Path::new(output.as_str());
 
                                 match options.target {
                                     Target::Vm => {
                                         if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
-                                            eprintln!("failed to write compiled output to \"{}\"; see next_line", options.output);
+                                            eprintln!("failed to write compiled output to \"{output}\"; see next_line");
 
                                             eprintln!("{error}");
 
@@ -61,8 +58,7 @@ fn main() -> ExitCode {
                                             output_path, apart::targets::vm::compile(&compiled)
                                         ) {
                                             eprintln!(
-                                                "failed to write compiled output to \"{}\"; see next line",
-                                                options.output
+                                                "failed to write compiled output to \"{output}\"; see next line",
                                             );
 
                                             eprintln!("{error}");
@@ -83,12 +79,10 @@ fn main() -> ExitCode {
 }
 
 fn compile<'a>(
-    source_labels: &[&str],
-    sources: &[(usize, &'a str)],
-    target: Target,
-    optimize: bool,
+    options: &ApartOptions,
+    sources: &[(usize, (&'a str, &'a str))],
 ) -> Option<apart::Compiled<'a, Ir<IrValue>>> {
-    match apart::compile(sources, target, optimize) {
+    match apart::compile(options, sources) {
         Ok(compiled) => Some(compiled),
         Err(compiled) => {
             let sources = compiled.sources();
@@ -102,11 +96,12 @@ fn compile<'a>(
                     .expect("the source must exist");
 
                 let report_data = reporting::ReportData::new(
-                    sources[source_index].1,
+                    sources[source_index].1.1,
                     "error",
                     source_index
                         .checked_sub(1)
-                        .and_then(|source_index| source_labels.get(source_index))
+                        .and_then(|source_index| sources.get(source_index))
+                        .map(|(_, (file_name, _))| file_name)
                         .copied()
                         .unwrap_or("core"),
                     "...",
@@ -156,6 +151,9 @@ Description:
     -O, --optimize
         perform optimizations during compilation
 
+    -s, --strip-debug-info
+        compile without including location data for panics
+
     -T, --target TARGET_NAME
         compile for only the target TARGET_NAME
 "
@@ -169,15 +167,13 @@ const TARGETS: &str = concat!(
 "
 );
 
-struct ApartOptions {
-    output: String,
-    optimize: bool,
-    target: Target,
-}
+fn parse_options(
+    arguments: &mut iter::Peekable<env::Args>,
+) -> Result<(ApartOptions, String), ExitCode> {
+    let mut output = "main.apart".to_string();
 
-fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
     let mut options = ApartOptions {
-        output: "main.apart".to_string(),
+        strip_debug_info: false,
         optimize: false,
         target: Target::Vm,
     };
@@ -199,8 +195,8 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                     .next()
                     .expect("we just matched while peeking, it will exist");
 
-                if let Some(output) = arguments.next() {
-                    options.output = output;
+                if let Some(specified_output) = arguments.next() {
+                    output = specified_output;
                 } else {
                     eprintln!("expected the output path after {argument}");
 
@@ -211,6 +207,11 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                 arguments.next();
 
                 options.optimize = true;
+            }
+            "-s" | "--strip-debug-info" => {
+                arguments.next();
+
+                options.strip_debug_info = true;
             }
             "-T" | "--target" => {
                 arguments.next();
@@ -237,5 +238,5 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
         }
     }
 
-    Ok(options)
+    Ok((options, output))
 }

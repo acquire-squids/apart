@@ -36,7 +36,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     .and_then(|block| block.instructions().get(i))
                 {
                     match instruction {
-                        Instruction::NoOp | Instruction::ScopeStart | Instruction::PopN(_) => {}
+                        Instruction::FnLabel { .. }
+                        | Instruction::NoOp
+                        | Instruction::ScopeStart
+                        | Instruction::PopN(_) => {}
                         Instruction::Unary { operand: value, .. }
                         | Instruction::Assign { value, .. }
                         | Instruction::Push(value)
@@ -156,11 +159,12 @@ fn clone_constant(
         | Value::NativeFn { .. }
         | Value::CallArgument(_) => Some(value.clone()),
         Value::Address(address) => clone_constant_from_address(ssa, address, address_to_ip),
-        Value::Runtime
-        | Value::Register(_)
+        Value::Register(_)
         | Value::Compound(_)
         | Value::TaggedCompound { .. }
-        | Value::String(_) => None,
+        | Value::String(_)
+        | Value::Never
+        | Value::DebugNever { .. } => None,
     }
 }
 

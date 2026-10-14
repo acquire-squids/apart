@@ -1,5 +1,5 @@
 use crate::{
-    Span, Spanned,
+    ApartOptions, Span, Spanned,
     name_resolve::{ModuleId, Names, ROOT_MODULE},
     parse::{
         Ast, BinaryOp, Expr, ExprIndex, Item, ItemIndex, MatchCase, PathElement, Pattern, UnaryOp,
@@ -16,10 +16,9 @@ pub mod modules {
 }
 
 pub fn translate(
-    sources: &[(usize, &str)],
-    ast: &Ast,
-    names: &Names,
-    types: &TypeChecker,
+    options: &ApartOptions,
+    sources: &[(usize, (&str, &str))],
+    (ast, names, types): (&Ast, &Names, &TypeChecker),
 ) -> BasicBlocks {
     let mut translator = Translator::new();
 
@@ -35,7 +34,7 @@ pub fn translate(
         translator.label_function(ast, names, *root);
     }
 
-    translator.label_items(ast, names, ast.roots(), false);
+    translator.label_items((ast, names, types), ast.roots(), false);
 
     let function_count = translator.blocks.len();
 
@@ -48,10 +47,10 @@ pub fn translate(
             false
         }
     }) {
-        translator.translate_function(sources, ast, names, types, *root);
+        translator.translate_function(options, sources, (ast, names, types), *root);
     }
 
-    translator.translate_items(sources, ast, names, types, ast.roots(), false);
+    translator.translate_items(options, sources, (ast, names, types), ast.roots(), false);
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -195,15 +194,16 @@ impl BasicBlocks {
     }
 }
 
-struct Translator {
+struct Translator<'a> {
     blocks: Vec<Block>,
     current_block: Option<BlockIndex>,
     values: Vec<Value>,
     addresses: HashMap<Span, Addresslike>,
     last_in_fn: bool,
+    label: Vec<&'a str>,
 }
 
-impl Translator {
+impl Translator<'_> {
     fn new() -> Self {
         Self {
             blocks: vec![],
@@ -211,6 +211,7 @@ impl Translator {
             values: vec![],
             addresses: HashMap::new(),
             last_in_fn: false,
+            label: vec![],
         }
     }
 
@@ -230,6 +231,8 @@ enum Addresslike {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    Never,
+    DebugNever { line_number: usize, column: usize },
     U8(u8),
     I8(i8),
     U16(u16),
@@ -246,7 +249,6 @@ pub enum Value {
     Fn(BlockIndex),
     Address(Address),
     NativeFn { name: Span, module_id: ModuleId },
-    Runtime,
     CallArgument(usize),
     Register(usize),
     Compound(Vec<Self>),
@@ -255,6 +257,10 @@ pub enum Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
+    FnLabel {
+        file_name: String,
+        function_label: String,
+    },
     NoOp,
     Unary {
         op: UnaryOp,
@@ -313,7 +319,7 @@ pub struct Address {
     pub version: u64,
 }
 
-impl Translator {
+impl<'a> Translator<'a> {
     fn label_function(&mut self, ast: &Ast, names: &Names, f: ItemIndex) {
         match ast[f].kind() {
             Item::Fn { name, .. } => {
@@ -414,14 +420,19 @@ impl Translator {
             .len()
     }
 
-    fn label_items(&mut self, ast: &Ast, names: &Names, items: &[ItemIndex], allow_main: bool) {
+    fn label_items(
+        &mut self,
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
+        items: &[ItemIndex],
+        allow_main: bool,
+    ) {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod { contents, .. } => {
-                    self.label_items(ast, names, contents, true);
+                    self.label_items((ast, names, types), contents, true);
                 }
                 Item::Teach { body, .. } => {
-                    self.label_items(ast, names, body, true);
+                    self.label_items((ast, names, types), body, true);
                 }
                 Item::Fn { name, .. } | Item::NativeFn { name, .. }
                     if name.kind() != "main" || allow_main =>
@@ -441,10 +452,9 @@ impl Translator {
 
     fn translate_items(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &'a str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         items: &[ItemIndex],
         allow_main: bool,
     ) {
@@ -456,15 +466,57 @@ impl Translator {
                 | Item::Sum { .. }
                 | Item::Directive { .. }
                 | Item::Alias { .. } => {}
-                Item::Mod { contents, .. } => {
-                    self.translate_items(sources, ast, names, types, contents.as_slice(), true);
+                Item::Mod { name, contents, .. } => {
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == name.span().source_id())
+                        .and_then(|(_, (_, source))| name.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    self.translate_items(
+                        options,
+                        sources,
+                        (ast, names, types),
+                        contents.as_slice(),
+                        true,
+                    );
+
+                    self.label.pop();
                 }
-                Item::Teach { body, .. } => {
-                    self.translate_items(sources, ast, names, types, body.as_slice(), true);
+                Item::Teach { student, body, .. } => {
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == student.span().source_id())
+                        .and_then(|(_, (_, source))| student.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    self.translate_items(
+                        options,
+                        sources,
+                        (ast, names, types),
+                        body.as_slice(),
+                        true,
+                    );
+
+                    self.label.pop();
                 }
                 Item::Fn { name, .. } => {
                     if name.kind() != "main" || allow_main {
-                        self.translate_function(sources, ast, names, types, *item);
+                        let lexeme = sources
+                            .iter()
+                            .find(|(source_id, _)| *source_id == name.span().source_id())
+                            .and_then(|(_, (_, source))| name.span().lexeme(source))
+                            .expect("the span is from this source");
+
+                        self.label.push(lexeme);
+
+                        self.translate_function(options, sources, (ast, names, types), *item);
+
+                        self.label.pop();
                     }
                 }
             }
@@ -473,10 +525,9 @@ impl Translator {
 
     fn translate_function(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         item: ItemIndex,
     ) {
         if let Item::Fn {
@@ -498,6 +549,38 @@ impl Translator {
                 .copied()
         {
             self.switch_to_block(block_index);
+
+            if !options.strip_debug_info {
+                let file_name = sources
+                    .iter()
+                    .find_map(|(source_id, (file_name, _))| {
+                        if *source_id == name.span().source_id() {
+                            Some(file_name.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("the span is from this source");
+
+                let function_label =
+                    self.label
+                        .iter()
+                        .enumerate()
+                        .fold(String::new(), |mut accum, (i, text)| {
+                            if i != 0 {
+                                accum.push('~');
+                            }
+
+                            accum.push_str(text);
+
+                            accum
+                        });
+
+                self.push_instruction(Instruction::FnLabel {
+                    file_name,
+                    function_label,
+                });
+            }
 
             for (p, parameter) in parameters.iter().enumerate() {
                 self.addresses
@@ -524,7 +607,7 @@ impl Translator {
 
             self.last_in_fn = true;
 
-            self.translate_expr(sources, ast, names, types, *body);
+            self.translate_expr(options, sources, (ast, names, types), *body);
 
             self.last_in_fn = last_in_fn;
 
@@ -533,14 +616,13 @@ impl Translator {
     }
 }
 
-impl Translator {
+impl Translator<'_> {
     #[allow(clippy::too_many_lines)]
     fn translate_expr(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
     ) {
         match ast[expr].kind() {
@@ -561,7 +643,7 @@ impl Translator {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
-                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .and_then(|(_, (_, source))| ast[expr].span().lexeme(source))
                             .expect("the span is from this source");
 
                         match primitive.kind() {
@@ -614,7 +696,7 @@ impl Translator {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
-                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .and_then(|(_, (_, source))| ast[expr].span().lexeme(source))
                             .expect("the span is from this source");
 
                         match primitive.kind() {
@@ -651,7 +733,7 @@ impl Translator {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
-                            .and_then(|(_, source)| ast[expr].span().lexeme(source))
+                            .and_then(|(_, (_, source))| ast[expr].span().lexeme(source))
                             .expect("the span is from this source");
 
                         match primitive.kind() {
@@ -690,11 +772,36 @@ impl Translator {
                     self.emit_return();
                 }
             }
+            Expr::Never => {
+                let source_index = sources
+                    .iter()
+                    .position(|(source_id, (_, _))| *source_id == ast[expr].span().source_id())
+                    .expect("the source will exist");
+
+                let source = sources
+                    .get(source_index)
+                    .map(|(_, (_, source))| source)
+                    .copied()
+                    .unwrap_or_default();
+
+                if options.strip_debug_info {
+                    self.values.push(Value::Never);
+                } else {
+                    self.values.push(Value::DebugNever {
+                        line_number: ast[expr].span().line(source).unwrap_or(1),
+                        column: ast[expr].span().column(source).unwrap_or(1),
+                    });
+                }
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+            }
             Expr::Name(_) => {
-                self.translate_name(ast, names, expr);
+                self.translate_name((ast, names, types), expr);
             }
             Expr::Unary { op, .. } => {
-                self.translate_unary(sources, ast, names, types, expr, *op);
+                self.translate_unary(options, sources, (ast, names, types), expr, *op);
             }
             Expr::Block(exprs) if exprs.is_empty() => {
                 self.values.push(Value::Unit);
@@ -704,53 +811,58 @@ impl Translator {
                 }
             }
             Expr::Block(exprs) => {
-                self.translate_block(sources, ast, names, types, exprs.as_slice());
+                self.translate_block(options, sources, (ast, names, types), exprs.as_slice());
             }
             Expr::Group(_) => {
                 ast.for_children_exprs(expr, |ast, expr| {
-                    self.translate_expr(sources, ast, names, types, expr);
+                    self.translate_expr(options, sources, (ast, names, types), expr);
                 });
             }
             Expr::Let { name, value, .. } => {
-                self.translate_assign_name(sources, ast, names, types, (name.span(), *value));
+                self.translate_assign_name(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    (name.span(), *value),
+                );
             }
             Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
             } => {
-                self.translate_assign(sources, ast, names, types, (*lhs, *rhs));
+                self.translate_assign(options, sources, (ast, names, types), (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 lhs,
                 rhs,
             } => {
-                self.translate_path_access(sources, ast, names, types, (*lhs, *rhs));
+                self.translate_path_access(options, sources, (ast, names, types), (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
             } => {
-                self.translate_access(sources, ast, names, types, (*lhs, *rhs));
+                self.translate_access(options, sources, (ast, names, types), (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
             } => {
-                self.translate_and(sources, ast, names, types, (*lhs, *rhs));
+                self.translate_and(options, sources, (ast, names, types), (*lhs, *rhs));
             }
             Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
             } => {
-                self.translate_or(sources, ast, names, types, (*lhs, *rhs));
+                self.translate_or(options, sources, (ast, names, types), (*lhs, *rhs));
             }
             Expr::Binary { op, .. } => {
-                self.translate_binary(sources, ast, names, types, expr, *op);
+                self.translate_binary(options, sources, (ast, names, types), expr, *op);
             }
             Expr::If {
                 condition,
@@ -758,15 +870,19 @@ impl Translator {
                 otherwise,
             } => {
                 self.translate_if(
+                    options,
                     sources,
-                    ast,
-                    names,
-                    types,
+                    (ast, names, types),
                     (*condition, *when_true, *otherwise),
                 );
             }
             Expr::Call { callee, arguments } => {
-                self.translate_call(sources, ast, names, types, (*callee, arguments.as_slice()));
+                self.translate_call(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    (*callee, arguments.as_slice()),
+                );
             }
             Expr::MethodCall {
                 target,
@@ -774,10 +890,9 @@ impl Translator {
                 arguments,
             } => {
                 self.translate_method_call(
+                    options,
                     sources,
-                    ast,
-                    names,
-                    types,
+                    (ast, names, types),
                     (*target, *method, arguments.as_slice()),
                 );
             }
@@ -785,14 +900,19 @@ impl Translator {
                 condition,
                 when_true,
             } => {
-                self.translate_while(sources, ast, names, types, (*condition, *when_true));
+                self.translate_while(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    (*condition, *when_true),
+                );
             }
             Expr::Return(value) => {
                 let last_in_fn = self.last_in_fn;
 
                 self.last_in_fn = false;
 
-                self.translate_expr(sources, ast, names, types, *value);
+                self.translate_expr(options, sources, (ast, names, types), *value);
 
                 self.last_in_fn = last_in_fn;
 
@@ -805,7 +925,7 @@ impl Translator {
 
                 self.last_in_fn = false;
 
-                self.translate_expr(sources, ast, names, types, *value);
+                self.translate_expr(options, sources, (ast, names, types), *value);
 
                 self.values.pop();
 
@@ -818,7 +938,13 @@ impl Translator {
                 }
             }
             Expr::Product { fields, .. } => {
-                self.translate_product(sources, ast, names, types, expr, fields.as_slice());
+                self.translate_product(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    expr,
+                    fields.as_slice(),
+                );
             }
             Expr::Match {
                 expr,
@@ -826,10 +952,9 @@ impl Translator {
                 fallback,
             } => {
                 self.translate_match(
+                    options,
                     sources,
-                    ast,
-                    names,
-                    types,
+                    (ast, names, types),
                     (*expr, cases.as_slice(), *fallback),
                 );
             }
@@ -860,7 +985,7 @@ impl Translator {
         }
     }
 
-    fn translate_name(&mut self, ast: &Ast, names: &Names, expr: ExprIndex) {
+    fn translate_name(&mut self, (ast, names, _): (&Ast, &Names, &TypeChecker), expr: ExprIndex) {
         let name = self
             .addresses
             .get(&names[ast[expr].span()])
@@ -904,10 +1029,9 @@ impl Translator {
 
     fn translate_block(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         exprs: &[ExprIndex],
     ) {
         let last_in_fn = self.last_in_fn;
@@ -917,7 +1041,7 @@ impl Translator {
         self.push_instruction(Instruction::ScopeStart);
 
         for expr in exprs.iter().rev().skip(1).rev() {
-            self.translate_expr(sources, ast, names, types, *expr);
+            self.translate_expr(options, sources, (ast, names, types), *expr);
 
             self.values
                 .pop()
@@ -927,10 +1051,9 @@ impl Translator {
         self.last_in_fn = last_in_fn;
 
         self.translate_expr(
+            options,
             sources,
-            ast,
-            names,
-            types,
+            (ast, names, types),
             *exprs
                 .last()
                 .expect("`translate_block` in only called on blocks that aren't empty"),
@@ -941,10 +1064,9 @@ impl Translator {
 
     fn translate_unary(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         op: UnaryOp,
     ) {
@@ -953,7 +1075,7 @@ impl Translator {
         self.last_in_fn = false;
 
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(sources, ast, names, types, expr);
+            self.translate_expr(options, sources, (ast, names, types), expr);
         });
 
         let operand = self
@@ -980,10 +1102,9 @@ impl Translator {
 
     fn translate_binary(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         op: BinaryOp,
     ) {
@@ -992,7 +1113,7 @@ impl Translator {
         self.last_in_fn = false;
 
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(sources, ast, names, types, expr);
+            self.translate_expr(options, sources, (ast, names, types), expr);
         });
 
         let rhs = self
@@ -1025,10 +1146,9 @@ impl Translator {
 
     fn translate_assign(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let value = rhs;
@@ -1037,14 +1157,24 @@ impl Translator {
             Expr::Name(_) => {
                 let lhs_span = ast[lhs].span();
 
-                self.translate_assign_name(sources, ast, names, types, (lhs_span, value));
+                self.translate_assign_name(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    (lhs_span, value),
+                );
             }
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
             } => {
-                self.translate_assign_access(sources, ast, names, types, (*lhs, *rhs, value));
+                self.translate_assign_access(
+                    options,
+                    sources,
+                    (ast, names, types),
+                    (*lhs, *rhs, value),
+                );
             }
             _ => {
                 unreachable!("for now, only names and accesses can be assigned to");
@@ -1054,13 +1184,12 @@ impl Translator {
 
     fn translate_assign_name(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (span, value): (Span, ExprIndex),
     ) {
-        self.translate_expr(sources, ast, names, types, value);
+        self.translate_expr(options, sources, (ast, names, types), value);
 
         let value = self
             .values
@@ -1095,7 +1224,7 @@ impl Translator {
 
                 self.addresses.insert(span, Addresslike::Address(address));
 
-                self.values.push(Value::Address(address));
+                self.values.push(Value::Unit);
             }
             Some(Addresslike::CallArgument(index)) => {
                 let index = *index;
@@ -1105,7 +1234,7 @@ impl Translator {
                     to: Value::CallArgument(index),
                 });
 
-                self.values.push(Value::CallArgument(index));
+                self.values.push(Value::Unit);
             }
             None => {
                 let address = self.next_address();
@@ -1117,24 +1246,23 @@ impl Translator {
 
                 self.addresses.insert(span, Addresslike::Address(address));
 
-                self.values.push(Value::Address(address));
+                self.values.push(Value::Unit);
             }
         }
     }
 
     fn translate_and(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(sources, ast, names, types, lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs);
 
         let address = self.assign_if_not_address();
 
@@ -1152,7 +1280,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(sources, ast, names, types, rhs);
+        self.translate_expr(options, sources, (ast, names, types), rhs);
 
         let address = Address {
             block_index: address.block_index,
@@ -1204,17 +1332,16 @@ impl Translator {
 
     fn translate_or(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(sources, ast, names, types, lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs);
 
         let address = self.assign_if_not_address();
 
@@ -1232,7 +1359,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(sources, ast, names, types, rhs);
+        self.translate_expr(options, sources, (ast, names, types), rhs);
 
         let address = Address {
             block_index: address.block_index,
@@ -1284,17 +1411,16 @@ impl Translator {
 
     fn translate_if(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(sources, ast, names, types, condition);
+        self.translate_expr(options, sources, (ast, names, types), condition);
 
         let condition = self
             .values
@@ -1304,7 +1430,7 @@ impl Translator {
         let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
-            value: Value::Runtime,
+            value: Value::Never,
             to: Value::Address(address),
         });
 
@@ -1322,7 +1448,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(sources, ast, names, types, when_true);
+        self.translate_expr(options, sources, (ast, names, types), when_true);
 
         let address = Address {
             block_index: address.block_index,
@@ -1352,7 +1478,7 @@ impl Translator {
             *otherwise = otherwise_block;
         }
 
-        self.translate_expr(sources, ast, names, types, otherwise);
+        self.translate_expr(options, sources, (ast, names, types), otherwise);
 
         let address = Address {
             block_index: address.block_index,
@@ -1390,17 +1516,16 @@ impl Translator {
 
     fn translate_call(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (callee, arguments): (ExprIndex, &[ExprIndex]),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(sources, ast, names, types, callee);
+        self.translate_expr(options, sources, (ast, names, types), callee);
 
         let callee = self
             .values
@@ -1411,7 +1536,7 @@ impl Translator {
             .iter()
             .copied()
             .map(|argument| {
-                self.translate_expr(sources, ast, names, types, argument);
+                self.translate_expr(options, sources, (ast, names, types), argument);
 
                 self.values
                     .pop()
@@ -1444,10 +1569,9 @@ impl Translator {
 
     fn translate_while(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (condition, when_true): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
@@ -1456,7 +1580,7 @@ impl Translator {
 
         let condition_block = self.next_block();
 
-        self.translate_expr(sources, ast, names, types, condition);
+        self.translate_expr(options, sources, (ast, names, types), condition);
 
         let condition = self
             .values
@@ -1477,7 +1601,7 @@ impl Translator {
             });
         }
 
-        self.translate_expr(sources, ast, names, types, when_true);
+        self.translate_expr(options, sources, (ast, names, types), when_true);
 
         let when_true_block = self
             .current_block
@@ -1513,10 +1637,9 @@ impl Translator {
 
     fn translate_product(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         fields: &[(Spanned<String>, ExprIndex)],
     ) {
@@ -1542,7 +1665,7 @@ impl Translator {
                 unreachable!("type checking guarantees all fields are present and not duplicated");
             };
 
-            self.translate_expr(sources, ast, names, types, *value);
+            self.translate_expr(options, sources, (ast, names, types), *value);
 
             values.push(self.values.pop().expect("all expressions produce a value"));
         }
@@ -1558,19 +1681,18 @@ impl Translator {
 
     fn translate_access(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        let field_index = Self::find_field_index(ast, types, (lhs, rhs));
+        let field_index = Self::find_field_index((ast, names, types), (lhs, rhs));
 
-        self.translate_expr(sources, ast, names, types, lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs);
 
         let lhs = self
             .values
@@ -1595,8 +1717,7 @@ impl Translator {
     }
 
     fn find_field_index(
-        ast: &Ast,
-        types: &TypeChecker,
+        (ast, _, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) -> usize {
         let lhs_span = ast[lhs].span();
@@ -1623,33 +1744,30 @@ impl Translator {
 
     fn translate_assign_access(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs, value): (ExprIndex, ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        let field_index = Self::find_field_index(ast, types, (lhs, rhs));
+        let field_index = Self::find_field_index((ast, names, types), (lhs, rhs));
 
-        self.translate_expr(sources, ast, names, types, lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs);
 
         let lhs = self
             .values
             .pop()
             .expect("every expression produces a value");
 
-        self.translate_expr(sources, ast, names, types, value);
+        self.translate_expr(options, sources, (ast, names, types), value);
 
         let value = self
             .values
             .pop()
             .expect("every expression produces a value");
-
-        let address = self.next_address();
 
         self.push_instruction(Instruction::AccessAssign {
             index: field_index,
@@ -1657,7 +1775,7 @@ impl Translator {
             value,
         });
 
-        self.values.push(Value::Address(address));
+        self.values.push(Value::Unit);
 
         self.last_in_fn = last_in_fn;
 
@@ -1669,10 +1787,9 @@ impl Translator {
     #[allow(clippy::too_many_lines)]
     fn translate_path_access(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
@@ -1682,19 +1799,25 @@ impl Translator {
         let original_lhs = lhs;
 
         let lhs = match ast[lhs].kind() {
-            Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => lhs,
+            Expr::Name(_) | Expr::PathElement(_) => lhs,
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 rhs,
                 ..
             } => match ast[*rhs].kind() {
-                Expr::Name(_) | Expr::PathElement(PathElement::SelfType) => *rhs,
+                Expr::Name(_) | Expr::PathElement(_) => *rhs,
                 _ => {
-                    unreachable!("name resolution verifies the path is correct");
+                    unreachable!(
+                        "name resolution verifies the path is correct {:?}",
+                        ast[*rhs].kind()
+                    );
                 }
             },
             _ => {
-                unreachable!("name resolution verifies the path is correct");
+                unreachable!(
+                    "name resolution verifies the path is correct {:?}",
+                    ast[lhs].kind()
+                );
             }
         };
 
@@ -1777,7 +1900,7 @@ impl Translator {
                     _ => unreachable!("for now, only products can be variants"),
                 };
 
-                self.translate_expr(sources, ast, names, types, rhs);
+                self.translate_expr(options, sources, (ast, names, types), rhs);
 
                 let Some(Value::Compound(fields)) = self.values.pop() else {
                     unreachable!("type checking guarantees the right operand is a product literal");
@@ -1789,7 +1912,7 @@ impl Translator {
                 });
             }
             _ => {
-                self.translate_expr(sources, ast, names, types, rhs);
+                self.translate_expr(options, sources, (ast, names, types), rhs);
             }
         }
 
@@ -1802,10 +1925,9 @@ impl Translator {
 
     fn translate_method_call(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (target, method, arguments): (ExprIndex, ExprIndex, &[ExprIndex]),
     ) {
         let last_in_fn = self.last_in_fn;
@@ -1860,7 +1982,7 @@ impl Translator {
         let arguments = iter::once(target)
             .chain(arguments.iter().copied())
             .map(|argument| {
-                self.translate_expr(sources, ast, names, types, argument);
+                self.translate_expr(options, sources, (ast, names, types), argument);
 
                 self.values
                     .pop()
@@ -1893,24 +2015,23 @@ impl Translator {
 
     fn translate_match(
         &mut self,
-        sources: &[(usize, &str)],
-        ast: &Ast,
-        names: &Names,
-        types: &TypeChecker,
+        options: &ApartOptions,
+        sources: &[(usize, (&str, &str))],
+        (ast, names, types): (&Ast, &Names, &TypeChecker),
         (expr, cases, fallback): (ExprIndex, &[MatchCase], ExprIndex),
     ) {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(sources, ast, names, types, expr);
+        self.translate_expr(options, sources, (ast, names, types), expr);
 
         let expr_address = self.assign_if_not_address();
 
         let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
-            value: Value::Runtime,
+            value: Value::Never,
             to: Value::Address(address),
         });
 
@@ -1924,7 +2045,7 @@ impl Translator {
 
             self.push_instruction(Instruction::ScopeStart);
 
-            self.translate_expr(sources, ast, names, types, case.case());
+            self.translate_expr(options, sources, (ast, names, types), case.case());
 
             let case_value = self
                 .values
@@ -1962,7 +2083,7 @@ impl Translator {
             }
         }
 
-        self.translate_expr(sources, ast, names, types, fallback);
+        self.translate_expr(options, sources, (ast, names, types), fallback);
 
         let fallback_value = self
             .values
@@ -2011,7 +2132,7 @@ impl Translator {
     #[allow(clippy::too_many_lines)]
     fn translate_pattern(
         &mut self,
-        sources: &[(usize, &str)],
+        sources: &[(usize, (&str, &str))],
         types: &TypeChecker,
         match_against: Address,
         pattern: &Spanned<Pattern>,
@@ -2034,7 +2155,7 @@ impl Translator {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == pattern.span().source_id())
-                            .and_then(|(_, source)| pattern.span().lexeme(source))
+                            .and_then(|(_, (_, source))| pattern.span().lexeme(source))
                             .expect("the span is from this source");
 
                         match primitive.kind() {
@@ -2077,7 +2198,7 @@ impl Translator {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == pattern.span().source_id())
-                            .and_then(|(_, source)| pattern.span().lexeme(source))
+                            .and_then(|(_, (_, source))| pattern.span().lexeme(source))
                             .expect("the span is from this source");
 
                         match primitive.kind() {

@@ -47,6 +47,11 @@ pub mod string {
 	}
 }
 
+pub funky panic(message <- String) -> never {
+	print_string(message);
+	#never
+}
+
 pub mod option {
 	pub sum Option[T] {
 		Some {
@@ -67,6 +72,20 @@ pub mod option {
 			match self {
 				Self~None {} => true,
 				else => false,
+			}
+		}
+
+		pub funky unwrap(self <- Self) -> T {
+			match self {
+				Self~Some { value } => value,
+				else => root~panic("tried to unwrap a None value"),
+			}
+		}
+
+		pub funky expect(self <- Self, message <- String) -> T {
+			match self {
+				Self~Some { value } => value,
+				else => root~panic(message),
 			}
 		}
 	}
@@ -94,6 +113,20 @@ pub mod result {
 			match self {
 				Self~Err { ..} => true,
 				else => false,
+			}
+		}
+
+		pub funky unwrap(self <- Self) -> T {
+			match self {
+				Self~Ok { value } => value,
+				else => root~panic("tried to unwrap an Err value"),
+			}
+		}
+
+		pub funky expect(self <- Self, message <- String) -> T {
+			match self {
+				Self~Ok { value } => value,
+				else => root~panic(message),
 			}
 		}
 	}

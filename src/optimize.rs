@@ -3,9 +3,9 @@ mod fold_constants;
 mod propagate_constants;
 mod thread_jumps;
 
-use crate::ssa::Ssa;
+use crate::{ApartOptions, ssa::Ssa};
 
-pub fn optimize(ssa: &mut Ssa) {
+pub fn optimize(_: &ApartOptions, ssa: &mut Ssa) {
     loop {
         let eliminated = eliminate_dead_code::optimize(ssa);
         let propagated = propagate_constants::optimize(ssa);
