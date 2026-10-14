@@ -237,12 +237,12 @@ pub enum Instruction<T> {
     },
     Push(ValueOrLocation<T>),
     Access {
-        index: usize,
+        index: u16,
         of: ValueOrLocation<T>,
         to: Location,
     },
     AccessAssign {
-        index: usize,
+        index: u16,
         of: ValueOrLocation<T>,
         value: ValueOrLocation<T>,
     },

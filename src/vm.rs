@@ -463,7 +463,7 @@ impl Vm {
                 let value = if let CopyableValue::ValueIndex(value_index) = of {
                     match self.values.get(usize::from(value_index)) {
                         Some(Value::Compound(fields) | Value::TaggedCompound { fields, .. }) => {
-                            fields.get(index).map_or_else(
+                            fields.get(usize::from(index)).map_or_else(
                                 || {
                                     panic!("tried to access a field that doesn't exist {of:?} @ {index}");
                                 },
@@ -494,7 +494,7 @@ impl Vm {
                 if let CopyableValue::ValueIndex(value_index) = of {
                     match self.values.get_mut(usize::from(value_index)) {
                         Some(Value::Compound(fields) | Value::TaggedCompound { fields, .. }) => {
-                            if let Some(field) = fields.get_mut(index) {
+                            if let Some(field) = fields.get_mut(usize::from(index)) {
                                 *field = value;
                             } else {
                                 panic!(

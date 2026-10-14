@@ -365,32 +365,6 @@ fn backpatch(
                     &mut changed,
                 );
             }
-            Ok(OpCode::AccessU32) => {
-                ip += 5;
-
-                move_through_location(bytecode, &mut ip);
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-            }
-            Ok(OpCode::AccessU64) => {
-                ip += 9;
-
-                move_through_location(bytecode, &mut ip);
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-            }
             Ok(OpCode::AccessAssignU8) => {
                 ip += 2;
 
@@ -412,44 +386,6 @@ fn backpatch(
             }
             Ok(OpCode::AccessAssignU16) => {
                 ip += 3;
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-            }
-            Ok(OpCode::AccessAssignU32) => {
-                ip += 5;
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-
-                backpatch_value(
-                    bytecode,
-                    &mut ip,
-                    block_addresses,
-                    address_to_label,
-                    &mut changed,
-                );
-            }
-            Ok(OpCode::AccessAssignU64) => {
-                ip += 9;
 
                 backpatch_value(
                     bytecode,
@@ -682,13 +618,13 @@ fn backpatch_value(
                     *ip += 1;
 
                     let field_count = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|field_count| usize::try_from(field_count).ok())
-                        .expect("tagged compound field count was not a valid usize");
+                        .get((*ip)..(*ip + 2))
+                        .and_then(|bytes| bytes.as_array::<2>())
+                        .map(|bytes| u16::from_le_bytes(*bytes))
+                        .map(usize::from)
+                        .expect("tagged compound field count was not a valid u16");
 
-                    *ip += 8;
+                    *ip += 2;
 
                     for _ in 0..field_count {
                         backpatch_value(bytecode, ip, block_addresses, address_to_label, changed);
@@ -698,13 +634,13 @@ fn backpatch_value(
                     *ip += 3;
 
                     let field_count = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|field_count| usize::try_from(field_count).ok())
-                        .expect("tagged compound field count was not a valid usize");
+                        .get((*ip)..(*ip + 2))
+                        .and_then(|bytes| bytes.as_array::<2>())
+                        .map(|bytes| u16::from_le_bytes(*bytes))
+                        .map(usize::from)
+                        .expect("tagged compound field count was not a valid u16");
 
-                    *ip += 8;
+                    *ip += 2;
 
                     for _ in 0..field_count {
                         backpatch_value(bytecode, ip, block_addresses, address_to_label, changed);
@@ -810,20 +746,6 @@ fn find_labels(
 
                 move_through_value(bytecode, &mut ip);
             }
-            Ok(OpCode::AccessU32) => {
-                ip += 5;
-
-                move_through_location(bytecode, &mut ip);
-
-                move_through_value(bytecode, &mut ip);
-            }
-            Ok(OpCode::AccessU64) => {
-                ip += 9;
-
-                move_through_location(bytecode, &mut ip);
-
-                move_through_value(bytecode, &mut ip);
-            }
             Ok(OpCode::AccessAssignU8) => {
                 ip += 2;
 
@@ -833,20 +755,6 @@ fn find_labels(
             }
             Ok(OpCode::AccessAssignU16) => {
                 ip += 3;
-
-                move_through_value(bytecode, &mut ip);
-
-                move_through_value(bytecode, &mut ip);
-            }
-            Ok(OpCode::AccessAssignU32) => {
-                ip += 5;
-
-                move_through_value(bytecode, &mut ip);
-
-                move_through_value(bytecode, &mut ip);
-            }
-            Ok(OpCode::AccessAssignU64) => {
-                ip += 9;
 
                 move_through_value(bytecode, &mut ip);
 
@@ -940,13 +848,13 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                     *ip += 1;
 
                     let field_count = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|field_count| usize::try_from(field_count).ok())
-                        .expect("tagged compound field count was not a valid usize");
+                        .get((*ip)..(*ip + 2))
+                        .and_then(|bytes| bytes.as_array::<2>())
+                        .map(|bytes| u16::from_le_bytes(*bytes))
+                        .map(usize::from)
+                        .expect("tagged compound field count was not a valid u16");
 
-                    *ip += 8;
+                    *ip += 2;
 
                     for _ in 0..field_count {
                         move_through_value(bytecode, ip);
@@ -956,13 +864,13 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                     *ip += 3;
 
                     let field_count = bytecode
-                        .get((*ip)..(*ip + 8))
-                        .and_then(|bytes| bytes.as_array::<8>())
-                        .map(|bytes| u64::from_le_bytes(*bytes))
-                        .and_then(|field_count| usize::try_from(field_count).ok())
-                        .expect("tagged compound field count was not a valid usize");
+                        .get((*ip)..(*ip + 2))
+                        .and_then(|bytes| bytes.as_array::<2>())
+                        .map(|bytes| u16::from_le_bytes(*bytes))
+                        .map(usize::from)
+                        .expect("tagged compound field count was not a valid u16");
 
-                    *ip += 8;
+                    *ip += 2;
 
                     for _ in 0..field_count {
                         move_through_value(bytecode, ip);
@@ -1002,10 +910,6 @@ crate::int_enum! {
     AccessAssignU8 => 0xB1,
     AccessU16 => 0xB2,
     AccessAssignU16 => 0xB3,
-    AccessU32 => 0xB4,
-    AccessAssignU32 => 0xB5,
-    AccessU64 => 0xB6,
-    AccessAssignU64 => 0xB7,
     GetTag => 0xB8,
     JumpU8 => 0xC0,
     BranchU8 => 0xC1,
@@ -1203,17 +1107,11 @@ impl Assemble for IrInstruction<IrValue> {
                 if let Ok(index) = u8::try_from(*index).map(u8::to_le_bytes) {
                     bytes.push(u8::from(OpCode::AccessU8));
                     bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u16::try_from(*index).map(u16::to_le_bytes) {
+                } else {
+                    let index = index.to_le_bytes();
+
                     bytes.push(u8::from(OpCode::AccessU16));
                     bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u32::try_from(*index).map(u32::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::AccessU32));
-                    bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u64::try_from(*index).map(u64::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::AccessU64));
-                    bytes.extend_from_slice(index.as_slice());
-                } else {
-                    panic!("128-bit index not allowed!  sorry!");
                 }
 
                 bytes.append(&mut to.to_bytes(compiled));
@@ -1228,17 +1126,11 @@ impl Assemble for IrInstruction<IrValue> {
                 if let Ok(index) = u8::try_from(*index).map(u8::to_le_bytes) {
                     bytes.push(u8::from(OpCode::AccessAssignU8));
                     bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u16::try_from(*index).map(u16::to_le_bytes) {
+                } else {
+                    let index = index.to_le_bytes();
+
                     bytes.push(u8::from(OpCode::AccessAssignU16));
                     bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u32::try_from(*index).map(u32::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::AccessAssignU32));
-                    bytes.extend_from_slice(index.as_slice());
-                } else if let Ok(index) = u64::try_from(*index).map(u64::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::AccessAssignU64));
-                    bytes.extend_from_slice(index.as_slice());
-                } else {
-                    panic!("128-bit index not allowed!  sorry!");
                 }
 
                 bytes.append(&mut of.to_bytes(compiled));
@@ -1522,8 +1414,8 @@ impl Assemble for IrValue {
                 let mut bytes = vec![u8::from(TypeId::Compound)];
 
                 bytes.extend_from_slice(
-                    u64::try_from(values.len())
-                        .expect("128-bit usize not allowed!  sorry!")
+                    u16::try_from(values.len())
+                        .expect("type checking guarantees the number of fields fits within a u16")
                         .to_le_bytes()
                         .as_slice(),
                 );
@@ -1540,8 +1432,8 @@ impl Assemble for IrValue {
                 bytes.extend_from_slice(tag.to_le_bytes().as_slice());
 
                 bytes.extend_from_slice(
-                    u64::try_from(fields.len())
-                        .expect("128-bit usize not allowed!  sorry!")
+                    u16::try_from(fields.len())
+                        .expect("type checking guarantees the number of fields fits within a u16")
                         .to_le_bytes()
                         .as_slice(),
                 );
@@ -1686,9 +1578,9 @@ pub trait Instructive: Sized {
                 OpCode::AccessU8 => {
                     let index = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u16,
                     )
-                    .expect("access index is not a valid usize");
+                    .expect("access index is not a valid u16");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1698,39 +1590,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Access { index, of, to });
                 }
                 OpCode::AccessU16 => {
-                    let index = disassemble_number_and_convert!(
+                    let index = disassemble_number_from!(
                         bytes, self ;
-                        u16, usize,
+                        u16,
                     )
-                    .expect("access index is not a valid usize");
-
-                    let to = Location::from_bytes(bytes, self);
-
-                    let of = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::Access { index, of, to });
-                }
-                OpCode::AccessU32 => {
-                    let index = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u32, usize,
-                    )
-                    .expect("access index is not a valid usize");
-
-                    let to = Location::from_bytes(bytes, self);
-
-                    let of = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::Access { index, of, to });
-                }
-                OpCode::AccessU64 => {
-                    let index = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
-                    )
-                    .expect("access index is not a valid usize");
+                    .expect("access index is not a valid u16");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1742,9 +1606,9 @@ pub trait Instructive: Sized {
                 OpCode::AccessAssignU8 => {
                     let index = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u16,
                     )
-                    .expect("access index is not a valid usize");
+                    .expect("access index is not a valid u16");
 
                     let of = ValueOrLocation::from_bytes(bytes, self);
 
@@ -1754,37 +1618,9 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::AccessAssign { index, of, value });
                 }
                 OpCode::AccessAssignU16 => {
-                    let index = disassemble_number_and_convert!(
+                    let index = disassemble_number_from!(
                         bytes, self ;
-                        u16, usize,
-                    )
-                    .expect("access index is not a valid usize");
-
-                    let of = ValueOrLocation::from_bytes(bytes, self);
-
-                    let value = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::AccessAssign { index, of, value });
-                }
-                OpCode::AccessAssignU32 => {
-                    let index = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u32, usize,
-                    )
-                    .expect("access index is not a valid usize");
-
-                    let of = ValueOrLocation::from_bytes(bytes, self);
-
-                    let value = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::AccessAssign { index, of, value });
-                }
-                OpCode::AccessAssignU64 => {
-                    let index = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
+                        u16,
                     )
                     .expect("access index is not a valid usize");
 
@@ -2469,11 +2305,11 @@ where
                 .expect("a native function was not valid"),
             ),
             Ok(TypeId::Compound) => {
-                let field_count = disassemble_number_and_convert!(
+                let field_count = disassemble_number_from!(
                     bytes, instructive ;
-                    u64, usize,
+                    u16,
                 )
-                .expect("a compound's field count was not a valid usize");
+                .expect("a compound's field count was not a valid u16");
 
                 let mut fields = vec![];
 
@@ -2494,11 +2330,11 @@ where
                 )
                 .expect("a tagged compound's tag was not a valid u16");
 
-                let field_count = disassemble_number_and_convert!(
+                let field_count = disassemble_number_from!(
                     bytes, instructive ;
-                    u64, usize,
+                    u16,
                 )
-                .expect("a tagged compound's field count was not a valid usize");
+                .expect("a tagged compound's field count was not a valid u16");
 
                 let mut fields = vec![];
 

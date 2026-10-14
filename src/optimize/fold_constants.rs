@@ -45,14 +45,14 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     } => {
                         if let Value::TaggedCompound { fields, .. } = value {
                             *instruction = Instruction::Assign {
-                                value: fields[*index].clone(),
+                                value: fields[usize::from(*index)].clone(),
                                 to: to.clone(),
                             };
 
                             changed = true;
                         } else if let Value::Compound(fields) = value {
                             *instruction = Instruction::Assign {
-                                value: fields[*index].clone(),
+                                value: fields[usize::from(*index)].clone(),
                                 to: to.clone(),
                             };
 

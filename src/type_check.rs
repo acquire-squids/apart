@@ -420,6 +420,7 @@ pub enum Error {
     InvalidFloat,
     TooManyArguments(usize),
     TooManyParameters(usize),
+    TooManyFields(usize),
 }
 
 impl fmt::Display for Error {
@@ -527,6 +528,11 @@ impl fmt::Display for Error {
             Self::TooManyParameters(got) => write!(
                 f,
                 "a function definition may not exceed {} parameters (got {got})",
+                u16::MAX
+            ),
+            Self::TooManyFields(got) => write!(
+                f,
+                "a product or sum variant may not have more than {} parameters (got {got})",
                 u16::MAX
             ),
         }
@@ -972,6 +978,13 @@ impl TypeChecker {
                             }
                         })
                         .collect::<Vec<_>>();
+
+                    if fields.len() > usize::from(u16::MAX) {
+                        self.errors.push(Spanned::new(
+                            Error::TooManyFields(fields.len()),
+                            ast[*item].span(),
+                        ));
+                    }
 
                     for module_generic_type_index in self.module_generics.iter().flatten() {
                         if let Type::Existential(module_generic) = &self[*module_generic_type_index]

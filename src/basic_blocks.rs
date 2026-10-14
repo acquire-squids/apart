@@ -226,7 +226,7 @@ enum Addresslike {
     Block(BlockIndex),
     CallArgument(u16),
     NativeFn { name: Span, module_id: ModuleId },
-    CompoundField { index: usize, of: Address },
+    CompoundField { index: u16, of: Address },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,12 +284,12 @@ pub enum Instruction {
         temporary: Value,
     },
     Access {
-        index: usize,
+        index: u16,
         of: Value,
         temporary: Value,
     },
     AccessAssign {
-        index: usize,
+        index: u16,
         of: Value,
         value: Value,
     },
@@ -1727,7 +1727,7 @@ impl Translator<'_> {
     fn find_field_index(
         (ast, _, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) -> usize {
+    ) -> u16 {
         let lhs_span = ast[lhs].span();
 
         match &types[types[lhs_span]] {
@@ -1736,8 +1736,10 @@ impl Translator<'_> {
                 ..
             } => match ast[rhs].kind() {
                 Expr::Name(name) => {
-                    let Some(field_index) =
-                        type_fields.iter().position(|field| field.name() == name)
+                    let Some(field_index) = type_fields
+                        .iter()
+                        .position(|field| field.name() == name)
+                        .and_then(|index| u16::try_from(index).ok())
                     else {
                         unreachable!("type checking guarantees the field exists on the type");
                     };
@@ -2283,6 +2285,7 @@ impl Translator<'_> {
 
                         let field_index = field_types.iter()
                             .position(|field_type| field_type.name() == field_name.kind())
+                            .and_then(|index| u16::try_from(index).ok())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {
@@ -2387,6 +2390,7 @@ impl Translator<'_> {
 
                         let field_index = field_types.iter()
                             .position(|field_type| field_type.name() == field_name.kind())
+                            .and_then(|index| u16::try_from(index).ok())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {
