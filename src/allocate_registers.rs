@@ -74,7 +74,7 @@ impl RegisterAllocator {
     fn assign(&mut self, to: &mut Value, addresses: &mut HashMap<Address, Allocation>) {
         match to {
             Value::CallArgument(index) => {
-                *to = Value::Register(*index);
+                *to = Value::Register(usize::from(*index));
             }
             Value::Address(to_address) => {
                 let to_address = *to_address;
@@ -145,7 +145,7 @@ impl RegisterAllocator {
 
                         self.max_register_count = self.max_register_count.max(self.register_count);
 
-                        self.register_count -= *arity;
+                        self.register_count -= usize::from(*arity);
 
                         self.assign(to, addresses);
                     }
@@ -228,7 +228,7 @@ impl RegisterAllocator {
                 );
             }
             Value::CallArgument(index) => {
-                *value = Value::Register(*index);
+                *value = Value::Register(usize::from(*index));
             }
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {

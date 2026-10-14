@@ -117,7 +117,7 @@ impl Ssa {
 }
 
 pub struct Block {
-    call_argument_count: usize,
+    call_argument_count: u16,
     max_register_count: usize,
     instructions: Vec<Instruction>,
     terminator: BlockTerminator,
@@ -149,13 +149,13 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn call_argument_count(&self) -> usize {
+    pub const fn call_argument_count(&self) -> u16 {
         self.call_argument_count
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn call_argument_count_mut(&mut self) -> &mut usize {
+    pub const fn call_argument_count_mut(&mut self) -> &mut u16 {
         &mut self.call_argument_count
     }
 

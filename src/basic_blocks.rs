@@ -81,7 +81,7 @@ impl From<BlockIndex> for usize {
 }
 
 pub struct Block {
-    call_argument_count: usize,
+    call_argument_count: u16,
     instructions: Vec<Instruction>,
     terminator: Option<BlockTerminator>,
 }
@@ -122,7 +122,7 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn call_argument_count(&self) -> usize {
+    pub const fn call_argument_count(&self) -> u16 {
         self.call_argument_count
     }
 
@@ -224,7 +224,7 @@ impl Translator<'_> {
 enum Addresslike {
     Address(Address),
     Block(BlockIndex),
-    CallArgument(usize),
+    CallArgument(u16),
     NativeFn { name: Span, module_id: ModuleId },
     CompoundField { index: usize, of: Address },
 }
@@ -249,7 +249,7 @@ pub enum Value {
     Fn(BlockIndex),
     Address(Address),
     NativeFn { name: Span, module_id: ModuleId },
-    CallArgument(usize),
+    CallArgument(u16),
     Register(usize),
     Compound(Vec<Self>),
     TaggedCompound { fields: Vec<Self>, tag: u16 },
@@ -280,7 +280,7 @@ pub enum Instruction {
     Push(Value),
     Call {
         callee: Value,
-        arity: usize,
+        arity: u16,
         temporary: Value,
     },
     Access {
@@ -582,9 +582,15 @@ impl<'a> Translator<'a> {
                 });
             }
 
-            for (p, parameter) in parameters.iter().enumerate() {
-                self.addresses
-                    .insert(parameter.name().span(), Addresslike::CallArgument(p));
+            let mut parameter_count = 0u16;
+
+            for parameter in parameters {
+                self.addresses.insert(
+                    parameter.name().span(),
+                    Addresslike::CallArgument(parameter_count),
+                );
+
+                parameter_count += 1;
             }
 
             let after_arguments = self.next_block();
@@ -593,7 +599,7 @@ impl<'a> Translator<'a> {
                 unreachable!("we're guaranteed to have a block by now");
             };
 
-            block.call_argument_count = parameters.len();
+            block.call_argument_count = parameter_count;
 
             if block.terminator.is_none() {
                 block.terminator = Some(BlockTerminator::Jump(after_arguments));
@@ -1544,10 +1550,12 @@ impl Translator<'_> {
             })
             .collect::<Vec<_>>();
 
-        let arity = arguments.len();
+        let mut arity = 0u16;
 
         for argument in arguments {
             self.push_instruction(Instruction::Push(argument));
+
+            arity += 1;
         }
 
         let address = self.next_address();
@@ -1990,10 +1998,12 @@ impl Translator<'_> {
             })
             .collect::<Vec<_>>();
 
-        let arity = arguments.len();
+        let mut arity = 0u16;
 
         for argument in arguments {
             self.push_instruction(Instruction::Push(argument));
+
+            arity += 1;
         }
 
         let address = self.next_address();

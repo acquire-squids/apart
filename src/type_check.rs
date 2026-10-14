@@ -418,9 +418,12 @@ pub enum Error {
     UnknownFloat,
     InvalidInteger,
     InvalidFloat,
+    TooManyArguments(usize),
+    TooManyParameters(usize),
 }
 
 impl fmt::Display for Error {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TypeMismatch { expected, got } => {
@@ -515,6 +518,16 @@ impl fmt::Display for Error {
             Self::InvalidFloat => write!(
                 f,
                 "this float does not parse into an f64 or an f32 and is thus invalid"
+            ),
+            Self::TooManyArguments(got) => write!(
+                f,
+                "a function call may not exceed {} arguments (got {got})",
+                u16::MAX
+            ),
+            Self::TooManyParameters(got) => write!(
+                f,
+                "a function definition may not exceed {} parameters (got {got})",
+                u16::MAX
             ),
         }
     }
@@ -1530,6 +1543,13 @@ impl TypeChecker {
             ..
         } = ast[item].kind()
         {
+            if parameters.len() > usize::from(u16::MAX) {
+                self.errors.push(Spanned::new(
+                    Error::TooManyParameters(parameters.len()),
+                    name.span(),
+                ));
+            }
+
             for generic in generics {
                 let type_index = self.push_type(Type::Existential(generic.clone()));
 
@@ -2611,6 +2631,13 @@ impl TypeChecker {
         (callee_span, callee_type_index, arguments): (Span, TypeIndex, &[ExprIndex]),
         context: &[(String, TypeIndex)],
     ) -> Result<TypeIndex, Spanned<Error>> {
+        if arguments.len() > usize::from(u16::MAX) {
+            return Err(Spanned::new(
+                Error::TooManyArguments(arguments.len()),
+                callee_span,
+            ));
+        }
+
         let functions = match &self[callee_type_index] {
             function @ Type::Fn { .. } => {
                 vec![(0, function.clone(), callee_span)]

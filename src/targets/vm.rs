@@ -365,7 +365,7 @@ fn backpatch(
                     &mut changed,
                 );
             }
-            Ok(OpCode::CallU32 | OpCode::AccessU32) => {
+            Ok(OpCode::AccessU32) => {
                 ip += 5;
 
                 move_through_location(bytecode, &mut ip);
@@ -378,7 +378,7 @@ fn backpatch(
                     &mut changed,
                 );
             }
-            Ok(OpCode::CallU64 | OpCode::AccessU64) => {
+            Ok(OpCode::AccessU64) => {
                 ip += 9;
 
                 move_through_location(bytecode, &mut ip);
@@ -810,14 +810,14 @@ fn find_labels(
 
                 move_through_value(bytecode, &mut ip);
             }
-            Ok(OpCode::CallU32 | OpCode::AccessU32) => {
+            Ok(OpCode::AccessU32) => {
                 ip += 5;
 
                 move_through_location(bytecode, &mut ip);
 
                 move_through_value(bytecode, &mut ip);
             }
-            Ok(OpCode::CallU64 | OpCode::AccessU64) => {
+            Ok(OpCode::AccessU64) => {
                 ip += 9;
 
                 move_through_location(bytecode, &mut ip);
@@ -998,8 +998,6 @@ crate::int_enum! {
     PopNU64 => 0x93,
     CallU8 => 0xA0,
     CallU16 => 0xA1,
-    CallU32 => 0xA2,
-    CallU64 => 0xA3,
     AccessU8 => 0xB0,
     AccessAssignU8 => 0xB1,
     AccessU16 => 0xB2,
@@ -1186,17 +1184,11 @@ impl Assemble for IrInstruction<IrValue> {
                 if let Ok(arity) = u8::try_from(*arity).map(u8::to_le_bytes) {
                     bytes.push(u8::from(OpCode::CallU8));
                     bytes.extend_from_slice(arity.as_slice());
-                } else if let Ok(arity) = u16::try_from(*arity).map(u16::to_le_bytes) {
+                } else {
+                    let arity = arity.to_le_bytes();
+
                     bytes.push(u8::from(OpCode::CallU16));
                     bytes.extend_from_slice(arity.as_slice());
-                } else if let Ok(arity) = u32::try_from(*arity).map(u32::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::CallU32));
-                    bytes.extend_from_slice(arity.as_slice());
-                } else if let Ok(arity) = u64::try_from(*arity).map(u64::to_le_bytes) {
-                    bytes.push(u8::from(OpCode::CallU64));
-                    bytes.extend_from_slice(arity.as_slice());
-                } else {
-                    panic!("128-bit arity not allowed!  sorry!");
                 }
 
                 bytes.append(&mut to.to_bytes(compiled));
@@ -1850,9 +1842,9 @@ pub trait Instructive: Sized {
                 OpCode::CallU8 => {
                     let arity = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u16,
                     )
-                    .expect("call arity is not a valid usize");
+                    .expect("call arity is not a valid u16");
 
                     let to = Location::from_bytes(bytes, self);
 
@@ -1862,39 +1854,11 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Call { callee, arity, to });
                 }
                 OpCode::CallU16 => {
-                    let arity = disassemble_number_and_convert!(
+                    let arity = disassemble_number_from!(
                         bytes, self ;
-                        u16, usize,
+                        u16,
                     )
-                    .expect("call arity is not a valid usize");
-
-                    let to = Location::from_bytes(bytes, self);
-
-                    let callee = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::Call { callee, arity, to });
-                }
-                OpCode::CallU32 => {
-                    let arity = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u32, usize,
-                    )
-                    .expect("call arity is not a valid usize");
-
-                    let to = Location::from_bytes(bytes, self);
-
-                    let callee = ValueOrLocation::from_bytes(bytes, self);
-
-                    self.instructions_mut()
-                        .push(IrInstruction::Call { callee, arity, to });
-                }
-                OpCode::CallU64 => {
-                    let arity = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
-                    )
-                    .expect("call arity is not a valid usize");
+                    .expect("call arity is not a valid u16");
 
                     let to = Location::from_bytes(bytes, self);
 

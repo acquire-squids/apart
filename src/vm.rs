@@ -545,13 +545,13 @@ impl Vm {
 
                         let call_frame = CallFrame {
                             from: self.ip,
-                            fp: self.sp - arity,
+                            fp: self.sp - usize::from(arity),
                             register_count: self.registers.len(),
                         };
 
                         self.ip = address;
 
-                        self.fp = self.sp - arity;
+                        self.fp = self.sp - usize::from(arity);
 
                         self.call_frames.push(call_frame);
 
@@ -565,9 +565,10 @@ impl Vm {
                         return Ok(());
                     }
                     CopyableValue::NativeFn(index) => {
-                        let call_arguments = self.registers[(self.sp - arity)..(self.sp)].to_vec();
+                        let call_arguments =
+                            self.registers[(self.sp - usize::from(arity))..(self.sp)].to_vec();
 
-                        self.sp -= arity;
+                        self.sp -= usize::from(arity);
 
                         let value =
                             self.native_fn_call(call_arguments.as_slice(), u16::from(index), out);

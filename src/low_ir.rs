@@ -248,7 +248,7 @@ pub enum Instruction<T> {
     },
     Call {
         callee: ValueOrLocation<T>,
-        arity: usize,
+        arity: u16,
         to: Location,
     },
     GetTag {
