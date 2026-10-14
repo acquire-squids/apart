@@ -114,20 +114,14 @@ macro_rules! backpatch_jump {
             $bytecode.splice($ip..($ip + SIZE), destination);
 
             $ip += 2;
-        } else if let Ok(destination) = u32::try_from(destination).map(u32::to_le_bytes) {
-            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::JumpU32);
-
-            $bytecode.splice($ip..($ip + SIZE), destination);
-
-            $ip += 4;
         } else {
-            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::JumpU64);
+            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::BranchU32);
 
             $bytecode.splice(
                 $ip..($ip + SIZE),
-                u64::try_from(destination)
-                    .expect("128-bit usize not allowed!  sorry!")
-                    .to_le_bytes(),
+                u32::try_from(destination)
+                    .map(u32::to_le_bytes)
+                    .expect("jump destination was not a valid u32"),
             );
 
             $ip += 8;
@@ -216,34 +210,24 @@ macro_rules! backpatch_branch {
             $bytecode.splice($ip..($ip + SIZE), when_true);
 
             $ip += 4;
-        } else if let Ok(when_true) = u32::try_from(when_true).map(u32::to_le_bytes)
-            && let Ok(otherwise) = u32::try_from(otherwise).map(u32::to_le_bytes)
-        {
-            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::BranchU32);
-
-            $bytecode.splice(($ip + SIZE)..($ip + SIZE * 2), otherwise);
-
-            $bytecode.splice($ip..($ip + SIZE), when_true);
-
-            $ip += 8;
         } else {
-            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::BranchU64);
+            $bytecode[$ip - 1] = u8::from($crate::targets::vm::OpCode::BranchU32);
 
             $bytecode.splice(
                 ($ip + SIZE)..($ip + SIZE * 2),
-                u64::try_from(otherwise)
-                    .expect("128-bit usize not allowed!  sorry!")
-                    .to_le_bytes(),
+                u32::try_from(otherwise)
+                    .map(u32::to_le_bytes)
+                    .expect("jump destination was not a valid u32"),
             );
 
             $bytecode.splice(
                 $ip..($ip + SIZE),
-                u64::try_from(when_true)
-                    .expect("128-bit usize not allowed!  sorry!")
-                    .to_le_bytes(),
+                u32::try_from(when_true)
+                    .map(u32::to_le_bytes)
+                    .expect("jump destination was not a valid u32"),
             );
 
-            $ip += 16;
+            $ip += 8;
         }
 
         $crate::targets::vm::backpatch_value(
@@ -422,12 +406,6 @@ fn backpatch(
                     u32,
                 );
             }
-            Ok(OpCode::JumpU64) => {
-                changed |= backpatch_jump!(
-                    bytecode, ip, block_addresses, address_to_label ;
-                    u64,
-                );
-            }
             Ok(OpCode::BranchU8) => {
                 changed |= backpatch_branch!(
                     bytecode, ip, block_addresses, address_to_label ;
@@ -444,12 +422,6 @@ fn backpatch(
                 changed |= backpatch_branch!(
                     bytecode, ip, block_addresses, address_to_label ;
                     u32, changed,
-                );
-            }
-            Ok(OpCode::BranchU64) => {
-                changed |= backpatch_branch!(
-                    bytecode, ip, block_addresses, address_to_label ;
-                    u64, changed,
                 );
             }
         }
@@ -521,18 +493,12 @@ macro_rules! backpatch_fn {
             $bytecode.splice((*$ip)..(*$ip + SIZE), destination);
 
             *$ip += 2;
-        } else if let Ok(destination) = u32::try_from(destination).map(u32::to_le_bytes) {
-            $bytecode[*$ip - 1] = u8::from($crate::targets::vm::TypeId::FnU32);
-
-            $bytecode.splice((*$ip)..(*$ip + SIZE), destination);
-
-            *$ip += 4;
         } else {
-            $bytecode[*$ip - 1] = u8::from($crate::targets::vm::TypeId::FnU64);
+            $bytecode[*$ip - 1] = u8::from($crate::targets::vm::TypeId::FnU32);
 
             $bytecode.splice(
                 (*$ip)..(*$ip + SIZE),
-                u64::try_from(destination)
+                u32::try_from(destination)
                     .expect("128-bit usize not allowed!  sorry!")
                     .to_le_bytes(),
             );
@@ -601,12 +567,6 @@ fn backpatch_value(
                     *changed |= backpatch_fn!(
                         bytecode, ip, block_addresses, address_to_label ;
                         u32,
-                    );
-                }
-                Ok(TypeId::FnU64) => {
-                    *changed |= backpatch_fn!(
-                        bytecode, ip, block_addresses, address_to_label ;
-                        u64,
                     );
                 }
                 Ok(TypeId::Compound) => {
@@ -721,7 +681,7 @@ fn find_labels(
             Ok(OpCode::PopNU32 | OpCode::JumpU32) => {
                 ip += 5;
             }
-            Ok(OpCode::PopNU64 | OpCode::JumpU64) => {
+            Ok(OpCode::PopNU64) => {
                 ip += 9;
             }
             Ok(OpCode::Push | OpCode::Return) => {
@@ -762,11 +722,6 @@ fn find_labels(
             }
             Ok(OpCode::BranchU32) => {
                 ip += 9;
-
-                move_through_value(bytecode, &mut ip);
-            }
-            Ok(OpCode::BranchU64) => {
-                ip += 17;
 
                 move_through_value(bytecode, &mut ip);
             }
@@ -830,9 +785,6 @@ fn move_through_value(bytecode: &mut Vec<u8>, ip: &mut usize) {
                 }
                 Ok(TypeId::FnU16) => {
                     *ip += 7;
-                }
-                Ok(TypeId::FnU64) => {
-                    *ip += 13;
                 }
                 Ok(TypeId::Compound) => {
                     *ip += 1;
@@ -902,8 +854,6 @@ crate::int_enum! {
     BranchU16 => 0xC3,
     JumpU32 => 0xC4,
     BranchU32 => 0xC5,
-    JumpU64 => 0xC6,
-    BranchU64 => 0xC7,
     Return => 0xC9,
 }
 
@@ -923,7 +873,6 @@ crate::int_enum! {
     FnU8 => 0x04,
     FnU16 => 0x05,
     FnU32 => 0x06,
-    FnU64 => 0x07,
     NativeFn => 0x08,
     Compound => 0x09,
     TaggedCompound => 0x0A,
@@ -956,7 +905,7 @@ pub enum CopyableValue {
     Boolean(bool),
     Unit,
     Fn {
-        address: usize,
+        address: u32,
         max_register_count: u32,
     },
     NativeFn(NativeFn),
@@ -1153,14 +1102,9 @@ impl Assemble for IrInstruction<IrValue> {
                 bytes
             }
             Self::Jump(destination) => {
-                let mut bytes = vec![u8::from(OpCode::JumpU64)];
+                let mut bytes = vec![u8::from(OpCode::JumpU32)];
 
-                bytes.extend_from_slice(
-                    u64::try_from(usize::from(*destination))
-                        .map(u64::to_le_bytes)
-                        .expect("128-bit jump destination not allowed!  sorry!")
-                        .as_slice(),
-                );
+                bytes.extend_from_slice(u32::from(*destination).to_le_bytes().as_slice());
 
                 bytes
             }
@@ -1169,21 +1113,11 @@ impl Assemble for IrInstruction<IrValue> {
                 when_true,
                 otherwise,
             } => {
-                let mut bytes = vec![u8::from(OpCode::BranchU64)];
+                let mut bytes = vec![u8::from(OpCode::BranchU32)];
 
-                bytes.extend_from_slice(
-                    u64::try_from(usize::from(*when_true))
-                        .map(u64::to_le_bytes)
-                        .expect("128-bit jump destination not allowed!  sorry!")
-                        .as_slice(),
-                );
+                bytes.extend_from_slice(u32::from(*when_true).to_le_bytes().as_slice());
 
-                bytes.extend_from_slice(
-                    u64::try_from(usize::from(*otherwise))
-                        .map(u64::to_le_bytes)
-                        .expect("128-bit jump destination not allowed!  sorry!")
-                        .as_slice(),
-                );
+                bytes.extend_from_slice(u32::from(*otherwise).to_le_bytes().as_slice());
 
                 bytes.append(&mut condition.to_bytes(compiled));
 
@@ -1362,14 +1296,9 @@ impl Assemble for IrValue {
                 block_index,
                 max_register_count,
             } => {
-                let mut bytes = vec![u8::from(TypeId::FnU64)];
+                let mut bytes = vec![u8::from(TypeId::FnU32)];
 
-                bytes.extend_from_slice(
-                    u64::try_from(usize::from(*block_index))
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
+                bytes.extend_from_slice(u32::from(*block_index).to_le_bytes().as_slice());
 
                 bytes.extend_from_slice(
                     u32::try_from(*max_register_count)
@@ -1475,7 +1404,12 @@ pub trait Instructive: Sized {
         let mut block_addresses = HashMap::new();
 
         while *self.ip_mut() < bytes.len() {
-            block_addresses.insert(*self.ip_mut(), self.instructions_mut().len());
+            block_addresses.insert(
+                u32::try_from(*self.ip_mut())
+                    .expect("bytecode length isn't allowed to surpass u32::MAX"),
+                u32::try_from(self.instructions_mut().len())
+                    .expect("bytecode length isn't allowed to surpass u32::MAX"),
+            );
 
             let op_code = OpCode::from_bytes(bytes, self);
 
@@ -1683,7 +1617,7 @@ pub trait Instructive: Sized {
                 OpCode::JumpU8 => {
                     let to = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1693,7 +1627,7 @@ pub trait Instructive: Sized {
                 OpCode::JumpU16 => {
                     let to = disassemble_number_and_convert!(
                         bytes, self ;
-                        u16, usize,
+                        u16, u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1701,19 +1635,9 @@ pub trait Instructive: Sized {
                         .push(IrInstruction::Jump(BlockIndex(to)));
                 }
                 OpCode::JumpU32 => {
-                    let to = disassemble_number_and_convert!(
+                    let to = disassemble_number_from!(
                         bytes, self ;
-                        u32, usize,
-                    )
-                    .expect("jump address is not a valid usize");
-
-                    self.instructions_mut()
-                        .push(IrInstruction::Jump(BlockIndex(to)));
-                }
-                OpCode::JumpU64 => {
-                    let to = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
+                        u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1723,13 +1647,13 @@ pub trait Instructive: Sized {
                 OpCode::BranchU8 => {
                     let when_true = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u32,
                     )
                     .expect("jump address is not a valid usize");
 
                     let otherwise = disassemble_number_and_convert!(
                         bytes, self ;
-                        u8, usize,
+                        u8, u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1748,13 +1672,13 @@ pub trait Instructive: Sized {
                 OpCode::BranchU16 => {
                     let when_true = disassemble_number_and_convert!(
                         bytes, self ;
-                        u16, usize,
+                        u16, u32,
                     )
                     .expect("jump address is not a valid usize");
 
                     let otherwise = disassemble_number_and_convert!(
                         bytes, self ;
-                        u16, usize,
+                        u16, u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1771,40 +1695,15 @@ pub trait Instructive: Sized {
                     });
                 }
                 OpCode::BranchU32 => {
-                    let when_true = disassemble_number_and_convert!(
+                    let when_true = disassemble_number_from!(
                         bytes, self ;
-                        u32, usize,
+                        u32,
                     )
                     .expect("jump address is not a valid usize");
 
-                    let otherwise = disassemble_number_and_convert!(
+                    let otherwise = disassemble_number_from!(
                         bytes, self ;
-                        u32, usize,
-                    )
-                    .expect("jump address is not a valid usize");
-
-                    let condition = ValueOrLocation::from_bytes(bytes, self);
-
-                    let when_true = BlockIndex(when_true);
-
-                    let otherwise = BlockIndex(otherwise);
-
-                    self.instructions_mut().push(IrInstruction::Branch {
-                        condition,
-                        when_true,
-                        otherwise,
-                    });
-                }
-                OpCode::BranchU64 => {
-                    let when_true = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
-                    )
-                    .expect("jump address is not a valid usize");
-
-                    let otherwise = disassemble_number_and_convert!(
-                        bytes, self ;
-                        u64, usize,
+                        u32,
                     )
                     .expect("jump address is not a valid usize");
 
@@ -1871,12 +1770,12 @@ pub trait Instructive: Sized {
                 IrInstruction::Jump(destination) => {
                     *destination = BlockIndex(
                         block_addresses
-                            .get(&usize::from(*destination))
+                            .get(&u32::from(*destination))
                             .copied()
                             .unwrap_or_else(|| {
                                 panic!(
                                 "tried to backpatch a function value to an invalid address {:#X}",
-                                    usize::from(*destination)
+                                    u32::from(*destination)
                                 );
                             }),
                     );
@@ -1896,24 +1795,24 @@ pub trait Instructive: Sized {
 
                     *when_true = BlockIndex(
                         block_addresses
-                            .get(&usize::from(*when_true))
+                            .get(&u32::from(*when_true))
                             .copied()
                             .unwrap_or_else(|| {
                                 panic!(
                                 "tried to backpatch a function value to an invalid address {:#X}",
-                                    usize::from(*when_true)
+                                    u32::from(*when_true)
                                 );
                             }),
                     );
 
                     *otherwise = BlockIndex(
                         block_addresses
-                            .get(&usize::from(*otherwise))
+                            .get(&u32::from(*otherwise))
                             .copied()
                             .unwrap_or_else(|| {
                                 panic!(
                                     "tried to backpatch a function value to an invalid address {:#X}",
-                                    usize::from(*otherwise)
+                                    u32::from(*otherwise)
                                 );
                             }),
                     );
@@ -2184,7 +2083,7 @@ where
             Ok(TypeId::FnU8) => {
                 let block_index = disassemble_number_and_convert!(
                     bytes, instructive ;
-                    u8, usize,
+                    u8, u32,
                 )
                 .expect("a function was not a valid usize");
 
@@ -2202,7 +2101,7 @@ where
             Ok(TypeId::FnU16) => {
                 let block_index = disassemble_number_and_convert!(
                     bytes, instructive ;
-                    u16, usize,
+                    u16, u32,
                 )
                 .expect("a function was not a valid usize");
 
@@ -2218,27 +2117,9 @@ where
                 }
             }
             Ok(TypeId::FnU32) => {
-                let block_index = disassemble_number_and_convert!(
-                    bytes, instructive ;
-                    u32, usize,
-                )
-                .expect("a function was not a valid usize");
-
-                let max_register_count = disassemble_number_from!(
+                let block_index = disassemble_number_from!(
                     bytes, instructive ;
                     u32,
-                )
-                .expect("a function's max register count was not a valid u32");
-
-                Self::Fn {
-                    address: block_index,
-                    max_register_count,
-                }
-            }
-            Ok(TypeId::FnU64) => {
-                let block_index = disassemble_number_and_convert!(
-                    bytes, instructive ;
-                    u64, usize,
                 )
                 .expect("a function was not a valid usize");
 

@@ -549,7 +549,8 @@ impl Vm {
                             register_count: self.registers.len(),
                         };
 
-                        self.ip = address;
+                        self.ip =
+                            usize::try_from(address).expect("call address was not a valid usize");
 
                         self.fp = self.sp - usize::from(arity);
 
@@ -583,7 +584,8 @@ impl Vm {
             Some(Instruction::Jump(destination)) => {
                 let destination = *destination;
 
-                self.ip = usize::from(destination);
+                self.ip = usize::try_from(u32::from(destination))
+                    .expect("jump address was not a valid usize");
 
                 return Ok(());
             }
@@ -596,10 +598,12 @@ impl Vm {
 
                 match self.dereference_value(out, condition)? {
                     CopyableValue::Boolean(true) => {
-                        self.ip = usize::from(when_true);
+                        self.ip = usize::try_from(u32::from(when_true))
+                            .expect("jump address was not a valid usize");
                     }
                     CopyableValue::Boolean(false) => {
-                        self.ip = usize::from(otherwise);
+                        self.ip = usize::try_from(u32::from(otherwise))
+                            .expect("jump address was not a valid usize");
                     }
                     value => panic!("branch condition was not a boolean {value:?}"),
                 }

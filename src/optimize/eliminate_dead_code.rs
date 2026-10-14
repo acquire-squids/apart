@@ -5,6 +5,7 @@ use crate::{
 
 use std::collections::HashSet;
 
+#[allow(clippy::too_many_lines)]
 pub fn optimize(ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
@@ -15,7 +16,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     let mut block_count = 0;
 
     for (b, remap) in block_remap.iter_mut().enumerate() {
-        if blocks_used.contains(&BlockIndex(b)) {
+        if let Ok(b) = u32::try_from(b)
+            && blocks_used.contains(&BlockIndex(b))
+        {
             *remap = Some(BlockIndex(block_count));
 
             block_count += 1;
@@ -56,8 +59,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             match block.terminator_mut() {
                 BlockTerminator::Return(_) => {}
                 BlockTerminator::Jump(destination) => {
-                    if let Some(destination_block) = block_remap
-                        .get(usize::from(*destination))
+                    if let Some(destination_block) = usize::try_from(u32::from(*destination))
+                        .ok()
+                        .and_then(|destination| block_remap.get(destination))
                         .and_then(|remap| *remap)
                     {
                         *destination = destination_block;
@@ -68,15 +72,17 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     otherwise,
                     ..
                 } => {
-                    if let Some(when_true_block) = block_remap
-                        .get(usize::from(*when_true))
+                    if let Some(when_true_block) = usize::try_from(u32::from(*when_true))
+                        .ok()
+                        .and_then(|destination| block_remap.get(destination))
                         .and_then(|remap| *remap)
                     {
                         *when_true = when_true_block;
                     }
 
-                    if let Some(otherwise_block) = block_remap
-                        .get(usize::from(*otherwise))
+                    if let Some(otherwise_block) = usize::try_from(u32::from(*otherwise))
+                        .ok()
+                        .and_then(|destination| block_remap.get(destination))
                         .and_then(|remap| *remap)
                     {
                         *otherwise = otherwise_block;
@@ -87,16 +93,18 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
         ssa.for_value(block_index, |value| match value {
             Value::Fn(block_index) => {
-                if let Some(fn_block) = block_remap
-                    .get(usize::from(*block_index))
+                if let Some(fn_block) = usize::try_from(u32::from(*block_index))
+                    .ok()
+                    .and_then(|destination| block_remap.get(destination))
                     .and_then(|remap| *remap)
                 {
                     *block_index = fn_block;
                 }
             }
             Value::Address(Address { block_index, .. }) => {
-                if let Some(address_block) = block_remap
-                    .get(usize::from(*block_index))
+                if let Some(address_block) = usize::try_from(u32::from(*block_index))
+                    .ok()
+                    .and_then(|destination| block_remap.get(destination))
                     .and_then(|remap| *remap)
                 {
                     *block_index = address_block;

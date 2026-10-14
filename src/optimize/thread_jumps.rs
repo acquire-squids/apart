@@ -22,7 +22,10 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     )
                 }))
         {
-            block_swaps[usize::from(*destination)] = Some(BlockIndex(b));
+            block_swaps[usize::try_from(u32::from(*destination))
+                .expect("this is verified fine by previous stages")] = Some(BlockIndex(
+                u32::try_from(b).expect("this is verified fine by previous stages"),
+            ));
 
             changed = true;
         }
@@ -33,8 +36,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             match block.terminator_mut() {
                 BlockTerminator::Return(_) => {}
                 BlockTerminator::Jump(destination) => {
-                    if let Some(destination_block) = block_swaps
-                        .get(usize::from(*destination))
+                    if let Some(destination_block) = usize::try_from(u32::from(*destination))
+                        .ok()
+                        .and_then(|destination| block_swaps.get(destination))
                         .and_then(|swap| *swap)
                     {
                         *destination = destination_block;
@@ -45,15 +49,17 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     otherwise,
                     ..
                 } => {
-                    if let Some(when_true_block) = block_swaps
-                        .get(usize::from(*when_true))
+                    if let Some(when_true_block) = usize::try_from(u32::from(*when_true))
+                        .ok()
+                        .and_then(|destination| block_swaps.get(destination))
                         .and_then(|swap| *swap)
                     {
                         *when_true = when_true_block;
                     }
 
-                    if let Some(otherwise_block) = block_swaps
-                        .get(usize::from(*otherwise))
+                    if let Some(otherwise_block) = usize::try_from(u32::from(*otherwise))
+                        .ok()
+                        .and_then(|destination| block_swaps.get(destination))
                         .and_then(|swap| *swap)
                     {
                         *otherwise = otherwise_block;
@@ -64,16 +70,18 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
         ssa.for_value(block_index, |value| match value {
             Value::Fn(block_index) => {
-                if let Some(fn_block) = block_swaps
-                    .get(usize::from(*block_index))
+                if let Some(fn_block) = usize::try_from(u32::from(*block_index))
+                    .ok()
+                    .and_then(|destination| block_swaps.get(destination))
                     .and_then(|swap| *swap)
                 {
                     *block_index = fn_block;
                 }
             }
             Value::Address(Address { block_index, .. }) => {
-                if let Some(address_block) = block_swaps
-                    .get(usize::from(*block_index))
+                if let Some(address_block) = usize::try_from(u32::from(*block_index))
+                    .ok()
+                    .and_then(|destination| block_swaps.get(destination))
                     .and_then(|swap| *swap)
                 {
                     *block_index = address_block;
@@ -83,9 +91,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         });
     });
 
-    for destination in (0..(ssa.blocks().len())).map(BlockIndex) {
-        if let Some(b) = block_swaps
-            .get(usize::from(destination))
+    for destination in (0..(ssa.blocks().len()))
+        .filter_map(|index| u32::try_from(index).ok())
+        .map(BlockIndex)
+    {
+        if let Some(b) = usize::try_from(u32::from(destination))
+            .ok()
+            .and_then(|destination| block_swaps.get(destination))
             .and_then(|swap_to| *swap_to)
             && let Some(call_argument_count) = ssa.get_block(b).map(Block::call_argument_count)
         {
@@ -95,8 +107,11 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 .filter(|instruction| matches!(instruction, Instruction::FnLabel { .. }))
                 .cloned();
 
-            ssa.blocks_mut()
-                .swap(usize::from(destination), usize::from(b));
+            ssa.blocks_mut().swap(
+                usize::try_from(u32::from(destination))
+                    .expect("this is verified fine by previous stages"),
+                usize::try_from(u32::from(b)).expect("this is verified fine by previous stages"),
+            );
 
             if let Some(block) = ssa.get_block_mut(b) {
                 *block.call_argument_count_mut() = call_argument_count;

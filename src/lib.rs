@@ -14,6 +14,7 @@ pub mod vm;
 
 pub use {
     allocate_registers::Error as AllocateRegistersError,
+    basic_blocks::Error as BasicBlocksError,
     expand_macros::Error as MacroExpansionError,
     low_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, UnaryOp,
@@ -71,6 +72,7 @@ pub enum Error {
     ExpandMacros(MacroExpansionError),
     NameResolve(NameResolveError),
     TypeCheck(TypeCheckError),
+    BasicBlocks(BasicBlocksError),
     AllocateRegisters(AllocateRegistersError),
 }
 
@@ -82,6 +84,7 @@ impl fmt::Display for Error {
             Self::ExpandMacros(error) => write!(f, "{error}"),
             Self::NameResolve(error) => write!(f, "{error}"),
             Self::TypeCheck(error) => write!(f, "{error}"),
+            Self::BasicBlocks(error) => write!(f, "{error}"),
             Self::AllocateRegisters(error) => write!(f, "{error}"),
         }
     }
@@ -203,11 +206,34 @@ pub fn compile<'a>(
                 .collect::<Vec<_>>(),
         })?;
 
-    let basic_blocks = basic_blocks::translate(
+    let basic_blocks = match basic_blocks::translate(
         options,
         sources_with_core.as_slice(),
         (&ast, &names, &types),
-    );
+    ) {
+        Ok(basic_blocks) => basic_blocks,
+        Err(error) => {
+            // TODO: it'd be nice to have a span for the cfg error somehow
+            let span = sources_with_core.get(1).map_or_else(
+                || {
+                    Span::new(
+                        *sources_with_core
+                            .first()
+                            .map(|(source_id, (_, _))| source_id)
+                            .expect("there is always at least the core"),
+                        0,
+                        0,
+                    )
+                },
+                |(source_id, (_, _))| Span::new(*source_id, 0, 0),
+            );
+
+            return Err(Compiled {
+                sources_with_core,
+                result: vec![Spanned::new(Error::BasicBlocks(error), span)],
+            });
+        }
+    };
 
     if cfg!(feature = "print_blocks") {
         print!("{basic_blocks}");

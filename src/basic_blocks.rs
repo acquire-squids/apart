@@ -7,7 +7,7 @@ use crate::{
     type_check::{Primitive, Type, TypeChecker},
 };
 
-use std::{collections::HashMap, fmt, iter};
+use std::{collections::HashMap, error, fmt, iter};
 
 pub mod modules {
     pub const MODULE_ROOT: u64 = super::ROOT_MODULE.is();
@@ -19,7 +19,7 @@ pub fn translate(
     options: &ApartOptions,
     sources: &[(usize, (&str, &str))],
     (ast, names, types): (&Ast, &Names, &TypeChecker),
-) -> BasicBlocks {
+) -> Result<BasicBlocks, Error> {
     let mut translator = Translator::new();
 
     if let Some(root) = ast.roots().iter().find(|root| {
@@ -31,10 +31,10 @@ pub fn translate(
             false
         }
     }) {
-        translator.label_function(ast, names, *root);
+        translator.label_function(ast, names, *root)?;
     }
 
-    translator.label_items((ast, names, types), ast.roots(), false);
+    translator.label_items((ast, names, types), ast.roots(), false)?;
 
     let function_count = translator.blocks.len();
 
@@ -47,24 +47,27 @@ pub fn translate(
             false
         }
     }) {
-        translator.translate_function(options, sources, (ast, names, types), *root);
+        translator.translate_function(options, sources, (ast, names, types), *root)?;
     }
 
-    translator.translate_items(options, sources, (ast, names, types), ast.roots(), false);
+    translator.translate_items(options, sources, (ast, names, types), ast.roots(), false)?;
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
-            block.terminator = Some(BlockTerminator::Jump(BlockIndex(if b < function_count {
-                b + function_count + 1
-            } else {
-                b + 1
-            })));
+            block.terminator = Some(BlockTerminator::Jump(BlockIndex(
+                u32::try_from(if b < function_count {
+                    b + function_count + 1
+                } else {
+                    b + 1
+                })
+                .map_err(|_| Error::TooManyBlocks)?,
+            )));
         }
     }
 
-    BasicBlocks {
+    Ok(BasicBlocks {
         blocks: translator.blocks,
-    }
+    })
 }
 
 pub struct BasicBlocks {
@@ -72,13 +75,31 @@ pub struct BasicBlocks {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BlockIndex(pub usize);
+pub struct BlockIndex(pub u32);
 
-impl From<BlockIndex> for usize {
+impl From<BlockIndex> for u32 {
     fn from(value: BlockIndex) -> Self {
         value.0
     }
 }
+
+#[derive(Debug)]
+pub enum Error {
+    TooManyBlocks,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyBlocks => write!(
+                f,
+                "the number of basic blocks is not allowed to exceed u32::MAX"
+            ),
+        }
+    }
+}
+
+impl error::Error for Error {}
 
 pub struct Block {
     call_argument_count: u16,
@@ -159,13 +180,17 @@ impl BasicBlocks {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
-        self.blocks.get(usize::from(block_index))
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get(block_index))
     }
 
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
-        self.blocks.get_mut(usize::from(block_index))
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get_mut(block_index))
     }
 
     #[allow(dead_code)]
@@ -217,6 +242,18 @@ impl Translator<'_> {
 
     const fn switch_to_block(&mut self, block_index: BlockIndex) {
         self.current_block = Some(block_index);
+    }
+
+    fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get(block_index))
+    }
+
+    fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get_mut(block_index))
     }
 }
 
@@ -320,21 +357,23 @@ pub struct Address {
 }
 
 impl<'a> Translator<'a> {
-    fn label_function(&mut self, ast: &Ast, names: &Names, f: ItemIndex) {
+    fn label_function(&mut self, ast: &Ast, names: &Names, f: ItemIndex) -> Result<(), Error> {
         match ast[f].kind() {
             Item::Fn { name, .. } => {
                 self.addresses.insert(
                     name.span(),
-                    Addresslike::Block(BlockIndex(self.blocks.len())),
+                    Addresslike::Block(BlockIndex(
+                        u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?,
+                    )),
                 );
 
-                self.next_block();
+                self.next_block().map(|_| ())
             }
             Item::Primitive(_)
             | Item::Product { .. }
             | Item::Sum { .. }
             | Item::Directive { .. }
-            | Item::Alias { .. } => {}
+            | Item::Alias { .. } => Ok(()),
             Item::NativeFn { name, .. } => {
                 self.addresses.insert(
                     name.span(),
@@ -345,22 +384,29 @@ impl<'a> Translator<'a> {
                             .map_or(ROOT_MODULE.is(), |definition| definition.module().is()),
                     },
                 );
+
+                Ok(())
             }
             Item::Mod { contents, .. } => {
                 for item in contents {
-                    self.label_function(ast, names, *item);
+                    self.label_function(ast, names, *item)?;
                 }
+
+                Ok(())
             }
             Item::Teach { body, .. } => {
                 for item in body {
-                    self.label_function(ast, names, *item);
+                    self.label_function(ast, names, *item)?;
                 }
+
+                Ok(())
             }
         }
     }
 
-    fn next_block(&mut self) -> BlockIndex {
-        let block_index = BlockIndex(self.blocks.len());
+    fn next_block(&mut self) -> Result<BlockIndex, Error> {
+        let block_index =
+            BlockIndex(u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?);
 
         self.blocks.push(Block {
             call_argument_count: 0,
@@ -370,14 +416,14 @@ impl<'a> Translator<'a> {
 
         self.switch_to_block(block_index);
 
-        block_index
+        Ok(block_index)
     }
 
     fn next_address(&self) -> Address {
         Address {
             block_index: self
                 .current_block
-                .expect("match expressions only exist in blocks"),
+                .expect("addresses are only used in blocks"),
             offset: self.instructions_len(),
             version: 0,
         }
@@ -406,7 +452,7 @@ impl<'a> Translator<'a> {
     fn push_instruction(&mut self, instruction: Instruction) {
         let block = self
             .current_block
-            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+            .and_then(|block_index| self.get_block_mut(block_index))
             .expect("instructions only get pushed within blocks");
 
         block.instructions.push(instruction);
@@ -414,10 +460,8 @@ impl<'a> Translator<'a> {
 
     fn instructions_len(&self) -> usize {
         self.current_block
-            .and_then(|block_index| self.blocks.get(usize::from(block_index)))
-            .expect("instructions only get checked within blocks")
-            .instructions
-            .len()
+            .and_then(|block_index| self.get_block(block_index))
+            .map_or(0, |block| block.instructions().len())
     }
 
     fn label_items(
@@ -425,19 +469,19 @@ impl<'a> Translator<'a> {
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         items: &[ItemIndex],
         allow_main: bool,
-    ) {
+    ) -> Result<(), Error> {
         for item in items {
             match ast[*item].kind() {
                 Item::Mod { contents, .. } => {
-                    self.label_items((ast, names, types), contents, true);
+                    self.label_items((ast, names, types), contents, true)?;
                 }
                 Item::Teach { body, .. } => {
-                    self.label_items((ast, names, types), body, true);
+                    self.label_items((ast, names, types), body, true)?;
                 }
                 Item::Fn { name, .. } | Item::NativeFn { name, .. }
                     if name.kind() != "main" || allow_main =>
                 {
-                    self.label_function(ast, names, *item);
+                    self.label_function(ast, names, *item)?;
                 }
                 Item::Primitive(_)
                 | Item::Product { .. }
@@ -448,6 +492,8 @@ impl<'a> Translator<'a> {
                 | Item::Alias { .. } => {}
             }
         }
+
+        Ok(())
     }
 
     fn translate_items(
@@ -457,7 +503,7 @@ impl<'a> Translator<'a> {
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         items: &[ItemIndex],
         allow_main: bool,
-    ) {
+    ) -> Result<(), Error> {
         for item in items {
             match ast[*item].kind() {
                 Item::Primitive(_)
@@ -481,7 +527,7 @@ impl<'a> Translator<'a> {
                         (ast, names, types),
                         contents.as_slice(),
                         true,
-                    );
+                    )?;
 
                     self.label.pop();
                 }
@@ -500,7 +546,7 @@ impl<'a> Translator<'a> {
                         (ast, names, types),
                         body.as_slice(),
                         true,
-                    );
+                    )?;
 
                     self.label.pop();
                 }
@@ -514,13 +560,15 @@ impl<'a> Translator<'a> {
 
                         self.label.push(lexeme);
 
-                        self.translate_function(options, sources, (ast, names, types), *item);
+                        self.translate_function(options, sources, (ast, names, types), *item)?;
 
                         self.label.pop();
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
     fn translate_function(
@@ -529,7 +577,7 @@ impl<'a> Translator<'a> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         item: ItemIndex,
-    ) {
+    ) -> Result<(), Error> {
         if let Item::Fn {
             name,
             parameters,
@@ -593,9 +641,9 @@ impl<'a> Translator<'a> {
                 parameter_count += 1;
             }
 
-            let after_arguments = self.next_block();
+            let after_arguments = self.next_block()?;
 
-            let Some(block) = self.blocks.get_mut(usize::from(block_index)) else {
+            let Some(block) = self.get_block_mut(block_index) else {
                 unreachable!("we're guaranteed to have a block by now");
             };
 
@@ -613,12 +661,14 @@ impl<'a> Translator<'a> {
 
             self.last_in_fn = true;
 
-            self.translate_expr(options, sources, (ast, names, types), *body);
+            self.translate_expr(options, sources, (ast, names, types), *body)?;
 
             self.last_in_fn = last_in_fn;
 
             assert_eq!(self.values.as_slice(), &[]);
         }
+
+        Ok(())
     }
 }
 
@@ -630,7 +680,7 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
-    ) {
+    ) -> Result<(), Error> {
         match ast[expr].kind() {
             Expr::BinaryNoLhs { .. }
             | Expr::CallNoCallee(_)
@@ -695,6 +745,8 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::NegativeInteger(radix) => {
                 self.values.push(
@@ -732,6 +784,8 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Float => {
                 self.values.push(
@@ -763,6 +817,8 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Boolean(value) => {
                 self.values.push(Value::Boolean(*value));
@@ -770,6 +826,8 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Unit => {
                 self.values.push(Value::Unit);
@@ -777,6 +835,8 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Never => {
                 let source_index = sources
@@ -802,12 +862,16 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Name(_) => {
                 self.translate_name((ast, names, types), expr);
+
+                Ok(())
             }
             Expr::Unary { op, .. } => {
-                self.translate_unary(options, sources, (ast, names, types), expr, *op);
+                self.translate_unary(options, sources, (ast, names, types), expr, *op)
             }
             Expr::Block(exprs) if exprs.is_empty() => {
                 self.values.push(Value::Unit);
@@ -815,123 +879,115 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
             Expr::Block(exprs) => {
-                self.translate_block(options, sources, (ast, names, types), exprs.as_slice());
+                self.translate_block(options, sources, (ast, names, types), exprs.as_slice())
             }
             Expr::Group(_) => {
+                let mut error = Ok(());
+
                 ast.for_children_exprs(expr, |ast, expr| {
-                    self.translate_expr(options, sources, (ast, names, types), expr);
+                    if let Err(real_error) =
+                        self.translate_expr(options, sources, (ast, names, types), expr)
+                    {
+                        error = Err(real_error);
+                    }
                 });
+
+                error
             }
-            Expr::Let { name, value, .. } => {
-                self.translate_assign_name(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (name.span(), *value),
-                );
-            }
+            Expr::Let { name, value, .. } => self.translate_assign_name(
+                options,
+                sources,
+                (ast, names, types),
+                (name.span(), *value),
+            ),
             Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
-            } => {
-                self.translate_assign(options, sources, (ast, names, types), (*lhs, *rhs));
-            }
+            } => self.translate_assign(options, sources, (ast, names, types), (*lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 lhs,
                 rhs,
-            } => {
-                self.translate_path_access(options, sources, (ast, names, types), (*lhs, *rhs));
-            }
+            } => self.translate_path_access(options, sources, (ast, names, types), (*lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
-            } => {
-                self.translate_access(options, sources, (ast, names, types), (*lhs, *rhs));
-            }
+            } => self.translate_access(options, sources, (ast, names, types), (*lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
-            } => {
-                self.translate_and(options, sources, (ast, names, types), (*lhs, *rhs));
-            }
+            } => self.translate_and(options, sources, (ast, names, types), (*lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
-            } => {
-                self.translate_or(options, sources, (ast, names, types), (*lhs, *rhs));
-            }
+            } => self.translate_or(options, sources, (ast, names, types), (*lhs, *rhs)),
             Expr::Binary { op, .. } => {
-                self.translate_binary(options, sources, (ast, names, types), expr, *op);
+                self.translate_binary(options, sources, (ast, names, types), expr, *op)
             }
             Expr::If {
                 condition,
                 when_true,
                 otherwise,
-            } => {
-                self.translate_if(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*condition, *when_true, *otherwise),
-                );
-            }
-            Expr::Call { callee, arguments } => {
-                self.translate_call(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*callee, arguments.as_slice()),
-                );
-            }
+            } => self.translate_if(
+                options,
+                sources,
+                (ast, names, types),
+                (*condition, *when_true, *otherwise),
+            ),
+            Expr::Call { callee, arguments } => self.translate_call(
+                options,
+                sources,
+                (ast, names, types),
+                (*callee, arguments.as_slice()),
+            ),
             Expr::MethodCall {
                 target,
                 method,
                 arguments,
-            } => {
-                self.translate_method_call(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*target, *method, arguments.as_slice()),
-                );
-            }
+            } => self.translate_method_call(
+                options,
+                sources,
+                (ast, names, types),
+                (*target, *method, arguments.as_slice()),
+            ),
             Expr::While {
                 condition,
                 when_true,
-            } => {
-                self.translate_while(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*condition, *when_true),
-                );
-            }
+            } => self.translate_while(
+                options,
+                sources,
+                (ast, names, types),
+                (*condition, *when_true),
+            ),
             Expr::Return(value) => {
                 let last_in_fn = self.last_in_fn;
 
                 self.last_in_fn = false;
 
-                self.translate_expr(options, sources, (ast, names, types), *value);
+                self.translate_expr(options, sources, (ast, names, types), *value)?;
 
                 self.last_in_fn = last_in_fn;
 
                 self.emit_return();
 
                 self.values.push(Value::Unit);
+
+                Ok(())
             }
             Expr::AsUnit(value) => {
                 let last_in_fn = self.last_in_fn;
 
                 self.last_in_fn = false;
 
-                self.translate_expr(options, sources, (ast, names, types), *value);
+                self.translate_expr(options, sources, (ast, names, types), *value)?;
 
                 self.values.pop();
 
@@ -942,34 +998,34 @@ impl Translator<'_> {
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
-            Expr::Product { fields, .. } => {
-                self.translate_product(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    expr,
-                    fields.as_slice(),
-                );
-            }
+            Expr::Product { fields, .. } => self.translate_product(
+                options,
+                sources,
+                (ast, names, types),
+                expr,
+                fields.as_slice(),
+            ),
             Expr::Match {
                 expr,
                 cases,
                 fallback,
-            } => {
-                self.translate_match(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*expr, cases.as_slice(), *fallback),
-                );
-            }
+            } => self.translate_match(
+                options,
+                sources,
+                (ast, names, types),
+                (*expr, cases.as_slice(), *fallback),
+            ),
             Expr::String(text) => {
                 self.values.push(Value::String(text.clone()));
 
                 if self.last_in_fn {
                     self.emit_return();
                 }
+
+                Ok(())
             }
         }
     }
@@ -984,7 +1040,7 @@ impl Translator<'_> {
             .current_block
             .expect("there will be a block by this point");
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block))
+        if let Some(block) = self.get_block_mut(current_block)
             && block.terminator.is_none()
         {
             block.terminator = Some(BlockTerminator::Return(value));
@@ -1039,7 +1095,7 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         exprs: &[ExprIndex],
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
@@ -1047,7 +1103,7 @@ impl Translator<'_> {
         self.push_instruction(Instruction::ScopeStart);
 
         for expr in exprs.iter().rev().skip(1).rev() {
-            self.translate_expr(options, sources, (ast, names, types), *expr);
+            self.translate_expr(options, sources, (ast, names, types), *expr)?;
 
             self.values
                 .pop()
@@ -1063,9 +1119,11 @@ impl Translator<'_> {
             *exprs
                 .last()
                 .expect("`translate_block` in only called on blocks that aren't empty"),
-        );
+        )?;
 
         self.push_instruction(Instruction::PopN(0));
+
+        Ok(())
     }
 
     fn translate_unary(
@@ -1075,13 +1133,19 @@ impl Translator<'_> {
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         op: UnaryOp,
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
+        let mut error = Ok(());
+
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(options, sources, (ast, names, types), expr);
+            if let Err(real_error) =
+                self.translate_expr(options, sources, (ast, names, types), expr)
+            {
+                error = Err(real_error);
+            }
         });
 
         let operand = self
@@ -1104,6 +1168,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        error
     }
 
     fn translate_binary(
@@ -1113,13 +1179,19 @@ impl Translator<'_> {
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         op: BinaryOp,
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
+        let mut error = Ok(());
+
         ast.for_children_exprs(expr, |ast, expr| {
-            self.translate_expr(options, sources, (ast, names, types), expr);
+            if let Err(real_error) =
+                self.translate_expr(options, sources, (ast, names, types), expr)
+            {
+                error = Err(real_error);
+            }
         });
 
         let rhs = self
@@ -1148,6 +1220,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        error
     }
 
     fn translate_assign(
@@ -1156,7 +1230,7 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let value = rhs;
 
         match ast[lhs].kind() {
@@ -1168,20 +1242,20 @@ impl Translator<'_> {
                     sources,
                     (ast, names, types),
                     (lhs_span, value),
-                );
+                )?;
+
+                Ok(())
             }
             Expr::Binary {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
-            } => {
-                self.translate_assign_access(
-                    options,
-                    sources,
-                    (ast, names, types),
-                    (*lhs, *rhs, value),
-                );
-            }
+            } => self.translate_assign_access(
+                options,
+                sources,
+                (ast, names, types),
+                (*lhs, *rhs, value),
+            ),
             _ => {
                 unreachable!("for now, only names and accesses can be assigned to");
             }
@@ -1194,8 +1268,8 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (span, value): (Span, ExprIndex),
-    ) {
-        self.translate_expr(options, sources, (ast, names, types), value);
+    ) -> Result<(), Error> {
+        self.translate_expr(options, sources, (ast, names, types), value)?;
 
         let value = self
             .values
@@ -1255,6 +1329,8 @@ impl Translator<'_> {
                 self.values.push(Value::Unit);
             }
         }
+
+        Ok(())
     }
 
     fn translate_and(
@@ -1263,12 +1339,12 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ast, names, types), lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs)?;
 
         let address = self.assign_if_not_address();
 
@@ -1276,17 +1352,17 @@ impl Translator<'_> {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true_block = self.next_block();
+        let when_true_block = self.next_block()?;
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+        if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition: Value::Address(address),
                 when_true: when_true_block,
-                otherwise: BlockIndex(usize::MAX),
+                otherwise: BlockIndex(u32::MAX),
             });
         }
 
-        self.translate_expr(options, sources, (ast, names, types), rhs);
+        self.translate_expr(options, sources, (ast, names, types), rhs)?;
 
         let address = Address {
             block_index: address.block_index,
@@ -1304,18 +1380,18 @@ impl Translator<'_> {
             to: Value::Address(address),
         });
 
-        let after_all = BlockIndex(self.blocks.len());
+        let after_all =
+            BlockIndex(u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?);
 
         if let Some(block) = self
             .current_block
-            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+            .and_then(|block_index| self.get_block_mut(block_index))
         {
             block.terminator = Some(BlockTerminator::Jump(after_all));
         }
 
         if let Some(BlockTerminator::Branch { otherwise, .. }) = self
-            .blocks
-            .get_mut(usize::from(current_block))
+            .get_block_mut(current_block)
             .and_then(|block| block.terminator.as_mut())
         {
             *otherwise = after_all;
@@ -1323,7 +1399,7 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.next_block();
+        self.next_block()?;
 
         self.values.push(Value::Address(Address {
             block_index: address.block_index,
@@ -1334,6 +1410,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_or(
@@ -1342,12 +1420,12 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ast, names, types), lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs)?;
 
         let address = self.assign_if_not_address();
 
@@ -1355,17 +1433,17 @@ impl Translator<'_> {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let otherwise_block = self.next_block();
+        let otherwise_block = self.next_block()?;
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+        if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition: Value::Address(address),
-                when_true: BlockIndex(usize::MAX),
+                when_true: BlockIndex(u32::MAX),
                 otherwise: otherwise_block,
             });
         }
 
-        self.translate_expr(options, sources, (ast, names, types), rhs);
+        self.translate_expr(options, sources, (ast, names, types), rhs)?;
 
         let address = Address {
             block_index: address.block_index,
@@ -1383,18 +1461,18 @@ impl Translator<'_> {
             to: Value::Address(address),
         });
 
-        let after_all = BlockIndex(self.blocks.len());
+        let after_all =
+            BlockIndex(u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?);
 
         if let Some(block) = self
             .current_block
-            .and_then(|block_index| self.blocks.get_mut(usize::from(block_index)))
+            .and_then(|block_index| self.get_block_mut(block_index))
         {
             block.terminator = Some(BlockTerminator::Jump(after_all));
         }
 
         if let Some(BlockTerminator::Branch { when_true, .. }) = self
-            .blocks
-            .get_mut(usize::from(current_block))
+            .get_block_mut(current_block)
             .and_then(|block| block.terminator.as_mut())
         {
             *when_true = after_all;
@@ -1402,7 +1480,7 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.next_block();
+        self.next_block()?;
 
         self.values.push(Value::Address(Address {
             block_index: address.block_index,
@@ -1413,6 +1491,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_if(
@@ -1421,12 +1501,12 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ast, names, types), condition);
+        self.translate_expr(options, sources, (ast, names, types), condition)?;
 
         let condition = self
             .values
@@ -1444,17 +1524,17 @@ impl Translator<'_> {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true_block = self.next_block();
+        let when_true_block = self.next_block()?;
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+        if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition,
                 when_true: when_true_block,
-                otherwise: BlockIndex(usize::MAX),
+                otherwise: BlockIndex(u32::MAX),
             });
         }
 
-        self.translate_expr(options, sources, (ast, names, types), when_true);
+        self.translate_expr(options, sources, (ast, names, types), when_true)?;
 
         let address = Address {
             block_index: address.block_index,
@@ -1473,18 +1553,17 @@ impl Translator<'_> {
             .current_block
             .expect("if expressions can only exist in a block");
 
-        let otherwise_block = self.next_block();
+        let otherwise_block = self.next_block()?;
 
         if let BlockTerminator::Branch { otherwise, .. } = self
-            .blocks
-            .get_mut(usize::from(current_block))
+            .get_block_mut(current_block)
             .and_then(|block| block.terminator.as_mut())
             .expect("the destination to backpatch was set just before")
         {
             *otherwise = otherwise_block;
         }
 
-        self.translate_expr(options, sources, (ast, names, types), otherwise);
+        self.translate_expr(options, sources, (ast, names, types), otherwise)?;
 
         let address = Address {
             block_index: address.block_index,
@@ -1499,9 +1578,9 @@ impl Translator<'_> {
             to: Value::Address(address),
         });
 
-        let after_all = self.next_block();
+        let after_all = self.next_block()?;
 
-        if let Some(block) = self.blocks.get_mut(usize::from(when_true_block))
+        if let Some(block) = self.get_block_mut(when_true_block)
             && block.terminator.is_none()
         {
             block.terminator = Some(BlockTerminator::Jump(after_all));
@@ -1518,6 +1597,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_call(
@@ -1526,23 +1607,29 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (callee, arguments): (ExprIndex, &[ExprIndex]),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ast, names, types), callee);
+        self.translate_expr(options, sources, (ast, names, types), callee)?;
 
         let callee = self
             .values
             .pop()
             .expect("parsing ensures a call expression has a callee");
 
+        let mut error = Ok(());
+
         let arguments = arguments
             .iter()
             .copied()
             .map(|argument| {
-                self.translate_expr(options, sources, (ast, names, types), argument);
+                if let Err(real_error) =
+                    self.translate_expr(options, sources, (ast, names, types), argument)
+                {
+                    error = Err(real_error);
+                }
 
                 self.values
                     .pop()
@@ -1573,6 +1660,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        error
     }
 
     fn translate_while(
@@ -1581,14 +1670,14 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (condition, when_true): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        let condition_block = self.next_block();
+        let condition_block = self.next_block()?;
 
-        self.translate_expr(options, sources, (ast, names, types), condition);
+        self.translate_expr(options, sources, (ast, names, types), condition)?;
 
         let condition = self
             .values
@@ -1599,34 +1688,33 @@ impl Translator<'_> {
             .current_block
             .expect("a block will exist if we're translating expressions");
 
-        let when_true_block = self.next_block();
+        let when_true_block = self.next_block()?;
 
-        if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+        if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
                 condition,
                 when_true: when_true_block,
-                otherwise: BlockIndex(usize::MAX),
+                otherwise: BlockIndex(u32::MAX),
             });
         }
 
-        self.translate_expr(options, sources, (ast, names, types), when_true);
+        self.translate_expr(options, sources, (ast, names, types), when_true)?;
 
         let when_true_block = self
             .current_block
             .expect("while loops can only exist in a block");
 
-        let otherwise_block = self.next_block();
+        let otherwise_block = self.next_block()?;
 
         if let BlockTerminator::Branch { otherwise, .. } = self
-            .blocks
-            .get_mut(usize::from(current_block))
+            .get_block_mut(current_block)
             .and_then(|block| block.terminator.as_mut())
             .expect("the destination to backpatch was set just before")
         {
             *otherwise = otherwise_block;
         }
 
-        if let Some(block) = self.blocks.get_mut(usize::from(when_true_block))
+        if let Some(block) = self.get_block_mut(when_true_block)
             && block.terminator.is_none()
         {
             block.terminator = Some(BlockTerminator::Jump(condition_block));
@@ -1641,6 +1729,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_product(
@@ -1650,7 +1740,7 @@ impl Translator<'_> {
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         expr: ExprIndex,
         fields: &[(Spanned<String>, ExprIndex)],
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
@@ -1673,7 +1763,7 @@ impl Translator<'_> {
                 unreachable!("type checking guarantees all fields are present and not duplicated");
             };
 
-            self.translate_expr(options, sources, (ast, names, types), *value);
+            self.translate_expr(options, sources, (ast, names, types), *value)?;
 
             values.push(self.values.pop().expect("all expressions produce a value"));
         }
@@ -1685,6 +1775,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_access(
@@ -1693,14 +1785,14 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
         let field_index = Self::find_field_index((ast, names, types), (lhs, rhs));
 
-        self.translate_expr(options, sources, (ast, names, types), lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs)?;
 
         let lhs = self
             .values
@@ -1722,6 +1814,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn find_field_index(
@@ -1758,21 +1852,21 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs, value): (ExprIndex, ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
         let field_index = Self::find_field_index((ast, names, types), (lhs, rhs));
 
-        self.translate_expr(options, sources, (ast, names, types), lhs);
+        self.translate_expr(options, sources, (ast, names, types), lhs)?;
 
         let lhs = self
             .values
             .pop()
             .expect("every expression produces a value");
 
-        self.translate_expr(options, sources, (ast, names, types), value);
+        self.translate_expr(options, sources, (ast, names, types), value)?;
 
         let value = self
             .values
@@ -1792,6 +1886,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1801,7 +1897,7 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
@@ -1910,7 +2006,7 @@ impl Translator<'_> {
                     _ => unreachable!("for now, only products can be variants"),
                 };
 
-                self.translate_expr(options, sources, (ast, names, types), rhs);
+                self.translate_expr(options, sources, (ast, names, types), rhs)?;
 
                 let Some(Value::Compound(fields)) = self.values.pop() else {
                     unreachable!("type checking guarantees the right operand is a product literal");
@@ -1922,7 +2018,7 @@ impl Translator<'_> {
                 });
             }
             _ => {
-                self.translate_expr(options, sources, (ast, names, types), rhs);
+                self.translate_expr(options, sources, (ast, names, types), rhs)?;
             }
         }
 
@@ -1931,6 +2027,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     fn translate_method_call(
@@ -1939,7 +2037,7 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (target, method, arguments): (ExprIndex, ExprIndex, &[ExprIndex]),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
@@ -1989,10 +2087,16 @@ impl Translator<'_> {
             }
         };
 
+        let mut error = Ok(());
+
         let arguments = iter::once(target)
             .chain(arguments.iter().copied())
             .map(|argument| {
-                self.translate_expr(options, sources, (ast, names, types), argument);
+                if let Err(real_error) =
+                    self.translate_expr(options, sources, (ast, names, types), argument)
+                {
+                    error = Err(real_error);
+                }
 
                 self.values
                     .pop()
@@ -2023,6 +2127,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        error
     }
 
     fn translate_match(
@@ -2031,12 +2137,12 @@ impl Translator<'_> {
         sources: &[(usize, (&str, &str))],
         (ast, names, types): (&Ast, &Names, &TypeChecker),
         (expr, cases, fallback): (ExprIndex, &[MatchCase], ExprIndex),
-    ) {
+    ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ast, names, types), expr);
+        self.translate_expr(options, sources, (ast, names, types), expr)?;
 
         let expr_address = self.assign_if_not_address();
 
@@ -2053,11 +2159,11 @@ impl Translator<'_> {
 
         for case in cases {
             let backpatch_these =
-                self.translate_pattern(sources, types, expr_address, case.pattern());
+                self.translate_pattern(sources, types, expr_address, case.pattern())?;
 
             self.push_instruction(Instruction::ScopeStart);
 
-            self.translate_expr(options, sources, (ast, names, types), case.case());
+            self.translate_expr(options, sources, (ast, names, types), case.case())?;
 
             let case_value = self
                 .values
@@ -2082,20 +2188,18 @@ impl Translator<'_> {
                     .expect("match expressions can only exist in blocks"),
             );
 
-            let next_block = self.next_block();
+            let next_block = self.next_block()?;
 
             for backpatch in backpatch_these {
-                if let Some(BlockTerminator::Branch { otherwise, .. }) = self
-                    .blocks
-                    .get_mut(usize::from(backpatch))
-                    .map(Block::terminator_mut)
+                if let Some(BlockTerminator::Branch { otherwise, .. }) =
+                    self.get_block_mut(backpatch).map(Block::terminator_mut)
                 {
                     *otherwise = next_block;
                 }
             }
         }
 
-        self.translate_expr(options, sources, (ast, names, types), fallback);
+        self.translate_expr(options, sources, (ast, names, types), fallback)?;
 
         let fallback_value = self
             .values
@@ -2115,16 +2219,17 @@ impl Translator<'_> {
             to: Value::Address(address),
         });
 
-        self.next_block();
+        self.next_block()?;
+
+        let block_index = self
+            .current_block
+            .expect("match expressions can only exist in blocks");
 
         for backpatch in backpatch_successes {
-            if let Some(block) = self.blocks.get_mut(usize::from(backpatch))
+            if let Some(block) = self.get_block_mut(backpatch)
                 && block.terminator.is_none()
             {
-                block.terminator = Some(BlockTerminator::Jump(
-                    self.current_block
-                        .expect("match expressions can only exist in blocks"),
-                ));
+                block.terminator = Some(BlockTerminator::Jump(block_index));
             }
         }
 
@@ -2139,6 +2244,8 @@ impl Translator<'_> {
         if self.last_in_fn {
             self.emit_return();
         }
+
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2148,7 +2255,7 @@ impl Translator<'_> {
         types: &TypeChecker,
         match_against: Address,
         pattern: &Spanned<Pattern>,
-    ) -> Vec<BlockIndex> {
+    ) -> Result<Vec<BlockIndex>, Error> {
         match &types[types[pattern.span()]] {
             Type::Integer(_)
             | Type::NegativeInteger(_)
@@ -2254,17 +2361,17 @@ impl Translator<'_> {
                     .current_block
                     .expect("a block will exist if we're translating expressions");
 
-                let when_true_block = self.next_block();
+                let when_true_block = self.next_block()?;
 
-                if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+                if let Some(block) = self.get_block_mut(current_block) {
                     block.terminator = Some(BlockTerminator::Branch {
                         condition: Value::Address(condition_address),
                         when_true: when_true_block,
-                        otherwise: BlockIndex(usize::MAX),
+                        otherwise: BlockIndex(u32::MAX),
                     });
                 }
 
-                vec![current_block]
+                Ok(vec![current_block])
             }
             Type::Product {
                 fields: field_types,
@@ -2300,7 +2407,7 @@ impl Translator<'_> {
                                 types,
                                 field_address,
                                 field,
-                            ));
+                            )?);
                         } else {
                             self.addresses.insert(
                                 field_name.span(),
@@ -2312,7 +2419,7 @@ impl Translator<'_> {
                         }
                     }
 
-                    to_backpatch
+                    Ok(to_backpatch)
                 }
             },
             Type::Sum {
@@ -2373,13 +2480,13 @@ impl Translator<'_> {
                         .current_block
                         .expect("a block will exist if we're translating expressions");
 
-                    let when_true_block = self.next_block();
+                    let when_true_block = self.next_block()?;
 
-                    if let Some(block) = self.blocks.get_mut(usize::from(current_block)) {
+                    if let Some(block) = self.get_block_mut(current_block) {
                         block.terminator = Some(BlockTerminator::Branch {
                             condition: Value::Address(condition_address),
                             when_true: when_true_block,
-                            otherwise: BlockIndex(usize::MAX),
+                            otherwise: BlockIndex(u32::MAX),
                         });
                     }
 
@@ -2405,7 +2512,7 @@ impl Translator<'_> {
                                 types,
                                 field_address,
                                 field,
-                            ));
+                            )?);
                         } else {
                             self.addresses.insert(
                                 field_name.span(),
@@ -2417,7 +2524,7 @@ impl Translator<'_> {
                         }
                     }
 
-                    to_backpatch
+                    Ok(to_backpatch)
                 }
             },
         }

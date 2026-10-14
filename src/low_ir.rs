@@ -52,7 +52,9 @@ impl<T> Ir<T> {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block<T>> {
-        self.blocks.get(usize::from(block_index))
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get(block_index))
     }
 
     #[allow(dead_code)]

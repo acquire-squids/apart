@@ -79,13 +79,17 @@ impl Ssa {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
-        self.blocks.get(usize::from(block_index))
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get(block_index))
     }
 
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
-        self.blocks.get_mut(usize::from(block_index))
+        usize::try_from(u32::from(block_index))
+            .ok()
+            .and_then(|block_index| self.blocks.get_mut(block_index))
     }
 
     #[allow(dead_code)]
@@ -544,7 +548,10 @@ impl Ssa {
     }
 
     fn clean_dead_blocks(&mut self, blocks_used: &HashSet<BlockIndex>) {
-        for b in (0..(self.blocks.len())).map(BlockIndex) {
+        for b in (0..(self.blocks.len()))
+            .filter_map(|index| u32::try_from(index).ok())
+            .map(BlockIndex)
+        {
             if !blocks_used.contains(&b)
                 && let Some(block) = self.get_block_mut(b)
             {
