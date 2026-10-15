@@ -2,7 +2,7 @@ use crate::{
     Compiled,
     basic_blocks::BlockIndex,
     low_ir::{
-        BinaryOp, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
+        BinaryOp, FnLabel, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
         Value as IrValue, ValueOrLocation,
     },
 };
@@ -950,27 +950,24 @@ impl Assemble for IrInstruction<IrValue> {
     fn to_bytes(&self, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
         match self {
             Self::NoOp => vec![],
-            Self::FnLabel {
-                file_name,
-                function_label,
-            } => {
+            Self::FnLabel(fn_label) => {
                 let mut bytes = vec![u8::from(OpCode::FnLabel)];
 
                 bytes.extend(
-                    u64::try_from(file_name.len())
+                    u64::try_from(fn_label.file_name().len())
                         .map(u64::to_le_bytes)
                         .expect("128-bit file name length not allowed!  sorry!"),
                 );
 
-                bytes.extend_from_slice(file_name.as_bytes());
+                bytes.extend_from_slice(fn_label.file_name().as_bytes());
 
                 bytes.extend(
-                    u64::try_from(function_label.len())
+                    u64::try_from(fn_label.function_label().len())
                         .map(u64::to_le_bytes)
                         .expect("128-bit function label length not allowed!  sorry!"),
                 );
 
-                bytes.extend_from_slice(function_label.as_bytes());
+                bytes.extend_from_slice(fn_label.function_label().as_bytes());
 
                 bytes
             }
@@ -1445,10 +1442,11 @@ pub trait Instructive: Sized {
                     )
                     .expect("a function label was not valid utf-8!");
 
-                    self.instructions_mut().push(IrInstruction::FnLabel {
-                        file_name,
-                        function_label,
-                    });
+                    self.instructions_mut()
+                        .push(IrInstruction::FnLabel(Box::new(FnLabel::new(
+                            file_name,
+                            function_label,
+                        ))));
                 }
                 OpCode::Label => unreachable!("labels are eliminated before compilation ends"),
                 OpCode::Unary => {

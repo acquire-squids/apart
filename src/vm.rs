@@ -671,20 +671,25 @@ impl Vm {
     where
         O: Write,
     {
-        if let Some(Instruction::FnLabel {
-            file_name,
-            function_label,
-        }) = self.instructions[..(self.call_frames.last().map_or(self.ip, |frame| frame.from))]
+        if let Some(Instruction::FnLabel(fn_label)) = self.instructions
+            [..(self.call_frames.last().map_or(self.ip, |frame| frame.from))]
             .iter()
             .rfind(|instruction| matches!(instruction, Instruction::FnLabel { .. }))
         {
             if let Some((line_number, column)) = location {
                 writeln!(
                     out,
-                    "VM panicked at {file_name}:{line_number}:{column} in {function_label}"
+                    "VM panicked at {}:{line_number}:{column} in {}",
+                    fn_label.file_name(),
+                    fn_label.function_label(),
                 )
             } else {
-                writeln!(out, "VM panicked at {file_name} in {function_label}")
+                writeln!(
+                    out,
+                    "VM panicked at {} in {}",
+                    fn_label.file_name(),
+                    fn_label.function_label()
+                )
             }
         } else {
             writeln!(out, "VM panicked")
