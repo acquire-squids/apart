@@ -406,6 +406,33 @@ impl Vm {
                 let operand = self.dereference_value(*operand, true);
 
                 match operand {
+                    CopyableValue::Boolean(value) => {
+                        self.assign(*to, CopyableValue::Boolean(!value));
+                    }
+                    CopyableValue::U8(_)
+                    | CopyableValue::I8(_)
+                    | CopyableValue::U16(_)
+                    | CopyableValue::I16(_)
+                    | CopyableValue::U32(_)
+                    | CopyableValue::I32(_)
+                    | CopyableValue::U64(_)
+                    | CopyableValue::I64(_)
+                    | CopyableValue::F32(_)
+                    | CopyableValue::F64(_)
+                    | CopyableValue::Unit
+                    | CopyableValue::Fn { .. }
+                    | CopyableValue::NativeFn(_)
+                    | CopyableValue::ValueIndex(_)
+                    | CopyableValue::Never
+                    | CopyableValue::Register(_) => {
+                        panic!("incorrect argument for logical not {operand:?}")
+                    }
+                }
+            }
+            Instruction::NegateRegister { to, operand } => {
+                let operand = self.get_register(*operand);
+
+                match operand {
                     CopyableValue::I8(value) => {
                         self.assign(*to, CopyableValue::I8(-value));
                     }
@@ -435,18 +462,8 @@ impl Vm {
                     | CopyableValue::ValueIndex(_)
                     | CopyableValue::Never
                     | CopyableValue::Register(_) => {
-                        panic!("incorrect argument for logical not {operand:?}")
+                        panic!("incorrect argument for negate {operand:?}")
                     }
-                }
-            }
-            Instruction::NegateRegister { to, operand } => {
-                let operand = self.get_register(*operand);
-
-                match operand {
-                    CopyableValue::Boolean(value) => {
-                        self.assign(*to, CopyableValue::Boolean(!value));
-                    }
-                    operand => panic!("incorrect argument for negate {operand:?}"),
                 }
             }
             Instruction::NegateValue { to, operand } => {
