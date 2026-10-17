@@ -22,7 +22,10 @@ pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
 
             instructions.push(lower_block_terminator(compiled, block.terminator()));
 
-            Block { instructions }
+            Block {
+                instructions,
+                call_argument_count: block.call_argument_count(),
+            }
         })
         .collect::<Vec<_>>();
 
@@ -72,18 +75,28 @@ impl<T> Ir<T> {
 
 pub struct Block<T> {
     instructions: Vec<Instruction<T>>,
+    call_argument_count: u16,
 }
 
 impl<T> Block<T> {
     #[must_use]
-    pub const fn new(instructions: Vec<Instruction<T>>) -> Self {
-        Self { instructions }
+    pub const fn new(instructions: Vec<Instruction<T>>, call_argument_count: u16) -> Self {
+        Self {
+            instructions,
+            call_argument_count,
+        }
     }
 
     #[allow(dead_code)]
     #[must_use]
     pub const fn instructions(&self) -> &[Instruction<T>] {
         self.instructions.as_slice()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn call_argument_count(&self) -> u16 {
+        self.call_argument_count
     }
 }
 
