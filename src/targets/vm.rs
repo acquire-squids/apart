@@ -531,7 +531,7 @@ fn find_labels(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub enum CopyableValue {
     Never,
     U8(u8),

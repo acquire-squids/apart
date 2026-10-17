@@ -1783,7 +1783,7 @@ impl Vm {
             (CopyableValue::F32(lhs), CopyableValue::F32(rhs)) => lhs == rhs,
             (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => lhs == rhs,
             (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => lhs == rhs,
-            (CopyableValue::Unit, CopyableValue::Unit) => lhs == rhs,
+            (CopyableValue::Unit, CopyableValue::Unit) => true,
             (CopyableValue::Fn { address: lhs, .. }, CopyableValue::Fn { address: rhs, .. }) => {
                 lhs == rhs
             }
