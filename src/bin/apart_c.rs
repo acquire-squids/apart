@@ -55,7 +55,7 @@ fn main() -> ExitCode {
                                         }
 
                                         if let Err(error) = fs::write(
-                                            output_path, apart::targets::vm::compile(&compiled)
+                                            output_path, apart::targets::vm::compile(&options, &compiled)
                                         ) {
                                             eprintln!(
                                                 "failed to write compiled output to \"{output}\"; see next line",

@@ -307,17 +307,16 @@ macro_rules! __test_vm_output_single_function {
     ) => {
         #[test]
         fn $test_name() {
+            let options = $crate::ApartOptions {
+                optimize: $optimized,
+                strip_debug_info: true,
+                target: $crate::Target::Vm,
+            };
+
             let mut out = vec![];
 
-            let result = $crate::compile(
-                &$crate::ApartOptions {
-                    optimize: $optimized,
-                    strip_debug_info: true,
-                    target: $crate::Target::Vm,
-                },
-                [(0, ($test_file_name, $source))].as_slice(),
-            )
-            .map(|compiled| $crate::targets::vm::compile(&compiled));
+            let result = $crate::compile(&options, [(0, ($test_file_name, $source))].as_slice())
+                .map(|compiled| $crate::targets::vm::compile(&options, &compiled));
 
             match result {
                 Ok(compiled) => {

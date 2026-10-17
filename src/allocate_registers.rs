@@ -137,7 +137,7 @@ impl RegisterAllocator {
         if let Some(block) = ssa.get_block_mut(block_index) {
             for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                 match instruction {
-                    Instruction::FnLabel { .. } | Instruction::NoOp => {}
+                    Instruction::NoOp | Instruction::FnLabel { .. } | Instruction::Panic => {}
                     Instruction::ScopeStart => {
                         self.scope_register_counts.push(self.register_count);
                     }

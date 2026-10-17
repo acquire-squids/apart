@@ -269,7 +269,6 @@ enum Addresslike {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Never,
-    DebugNever { line_number: usize, column: usize },
     U8(u8),
     I8(i8),
     U16(u16),
@@ -294,6 +293,7 @@ pub enum Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
+    Panic,
     FnLabel {
         file_name: String,
         function_label: String,
@@ -598,37 +598,35 @@ impl<'a> Translator<'a> {
         {
             self.switch_to_block(block_index);
 
-            if !options.strip_debug_info {
-                let file_name = sources
+            let file_name = sources
+                .iter()
+                .find_map(|(source_id, (file_name, _))| {
+                    if *source_id == name.span().source_id() {
+                        Some(file_name.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .expect("the span is from this source");
+
+            let function_label =
+                self.label
                     .iter()
-                    .find_map(|(source_id, (file_name, _))| {
-                        if *source_id == name.span().source_id() {
-                            Some(file_name.to_string())
-                        } else {
-                            None
+                    .enumerate()
+                    .fold(String::new(), |mut accum, (i, text)| {
+                        if i != 0 {
+                            accum.push('~');
                         }
-                    })
-                    .expect("the span is from this source");
 
-                let function_label =
-                    self.label
-                        .iter()
-                        .enumerate()
-                        .fold(String::new(), |mut accum, (i, text)| {
-                            if i != 0 {
-                                accum.push('~');
-                            }
+                        accum.push_str(text);
 
-                            accum.push_str(text);
+                        accum
+                    });
 
-                            accum
-                        });
-
-                self.push_instruction(Instruction::FnLabel {
-                    file_name,
-                    function_label,
-                });
-            }
+            self.push_instruction(Instruction::FnLabel {
+                file_name,
+                function_label,
+            });
 
             let mut parameter_count = 0u16;
 
@@ -839,25 +837,9 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Never => {
-                let source_index = sources
-                    .iter()
-                    .position(|(source_id, (_, _))| *source_id == ast[expr].span().source_id())
-                    .expect("the source will exist");
+                self.push_instruction(Instruction::Panic);
 
-                let source = sources
-                    .get(source_index)
-                    .map(|(_, (_, source))| source)
-                    .copied()
-                    .unwrap_or_default();
-
-                if options.strip_debug_info {
-                    self.values.push(Value::Never);
-                } else {
-                    self.values.push(Value::DebugNever {
-                        line_number: ast[expr].span().line(source).unwrap_or(1),
-                        column: ast[expr].span().column(source).unwrap_or(1),
-                    });
-                }
+                self.values.push(Value::Never);
 
                 if self.last_in_fn {
                     self.emit_return();

@@ -272,6 +272,7 @@ impl Ssa {
                     for instruction in block.instructions() {
                         match instruction {
                             Instruction::FnLabel { .. }
+                            | Instruction::Panic
                             | Instruction::NoOp
                             | Instruction::ScopeStart
                             | Instruction::PopN(_) => {}
@@ -366,6 +367,7 @@ impl Ssa {
                     for instruction in block.instructions() {
                         match instruction {
                             Instruction::FnLabel { .. }
+                            | Instruction::Panic
                             | Instruction::NoOp
                             | Instruction::ScopeStart
                             | Instruction::PopN(_) => {}
@@ -472,6 +474,7 @@ impl Ssa {
             for instruction in block.instructions_mut() {
                 match instruction {
                     Instruction::FnLabel { .. }
+                    | Instruction::Panic
                     | Instruction::NoOp
                     | Instruction::ScopeStart
                     | Instruction::PopN(_) => {}
@@ -570,6 +573,7 @@ impl Ssa {
                 for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                     match instruction {
                         Instruction::FnLabel { .. }
+                        | Instruction::Panic
                         | Instruction::NoOp
                         | Instruction::Push(_)
                         | Instruction::AccessAssign { .. }
@@ -615,6 +619,7 @@ impl Ssa {
                 for instruction in block.instructions_mut() {
                     match instruction {
                         Instruction::FnLabel { .. }
+                        | Instruction::Panic
                         | Instruction::NoOp
                         | Instruction::ScopeStart
                         | Instruction::PopN(_) => {}

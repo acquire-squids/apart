@@ -165,10 +165,6 @@ crate::int_enum! {
 #[derive(Debug)]
 pub enum Value {
     Never,
-    DebugNever {
-        line_number: usize,
-        column: usize,
-    },
     U8(u8),
     I8(i8),
     U16(u16),
@@ -241,6 +237,7 @@ impl FnLabel {
 pub enum Instruction<T> {
     FnLabel(Box<FnLabel>),
     NoOp,
+    Panic,
     Unary {
         op: UnaryOp,
         operand: ValueOrLocation<T>,
@@ -313,6 +310,7 @@ fn lower_instruction(
 ) -> Instruction<Value> {
     match instruction {
         IrInstruction::NoOp | IrInstruction::ScopeStart => Instruction::NoOp,
+        IrInstruction::Panic => Instruction::Panic,
         IrInstruction::FnLabel {
             file_name,
             function_label,
@@ -403,13 +401,6 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
             unreachable!("these are eliminated by register allocation {value:?}")
         }
         IrValue::Never => ValueOrLocation::Value(Value::Never),
-        IrValue::DebugNever {
-            line_number,
-            column,
-        } => ValueOrLocation::Value(Value::DebugNever {
-            line_number: *line_number,
-            column: *column,
-        }),
         IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
         IrValue::I8(value) => ValueOrLocation::Value(Value::I8(*value)),
         IrValue::U16(value) => ValueOrLocation::Value(Value::U16(*value)),

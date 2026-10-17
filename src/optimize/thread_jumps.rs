@@ -102,7 +102,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             && let Some(call_argument_count) = ssa.get_block(b).map(Block::call_argument_count)
         {
             let fn_label = ssa
-                .get_block(b)
+                .get_block(destination)
                 .and_then(|block| block.instructions().first())
                 .filter(|instruction| matches!(instruction, Instruction::FnLabel { .. }))
                 .cloned();

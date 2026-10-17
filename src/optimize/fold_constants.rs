@@ -12,6 +12,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
             for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                 match instruction {
                     Instruction::FnLabel { .. }
+                    | Instruction::Panic
                     | Instruction::NoOp
                     | Instruction::Assign { .. }
                     | Instruction::Push(_)

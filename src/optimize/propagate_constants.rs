@@ -37,6 +37,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 {
                     match instruction {
                         Instruction::FnLabel { .. }
+                        | Instruction::Panic
                         | Instruction::NoOp
                         | Instruction::ScopeStart
                         | Instruction::PopN(_) => {}
@@ -163,8 +164,7 @@ fn clone_constant(
         | Value::Compound(_)
         | Value::TaggedCompound { .. }
         | Value::String(_)
-        | Value::Never
-        | Value::DebugNever { .. } => None,
+        | Value::Never => None,
     }
 }
 
