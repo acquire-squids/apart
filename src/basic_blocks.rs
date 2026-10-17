@@ -960,7 +960,7 @@ impl Translator<'_> {
 
                 self.emit_return();
 
-                self.values.push(Value::Unit);
+                self.values.push(Value::Never);
 
                 Ok(())
             }
