@@ -36,6 +36,7 @@ const CORE_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/lan
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Target {
+    NttGml,
     Vm,
 }
 
@@ -449,7 +450,7 @@ macro_rules! __int_enum {
         $v:vis $name:ident as $int:ty ;
         $($variant:ident => $value:literal,)+
     ) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         $v enum $name {
             $($variant,)+
         }

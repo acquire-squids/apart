@@ -175,6 +175,7 @@ fn interpret(ast: &Ast, options: &ApartOptions, expr: ExprIndex) -> Result<Value
         Expr::Group(expr) => interpret(ast, options, *expr),
         Expr::Name(name) => match name.as_str() {
             "target" => Ok(Value::String(match options.target {
+                Target::NttGml => "ntt_gml".to_string(),
                 Target::Vm => "vm".to_string(),
             })),
             _ => Err(Spanned::new(

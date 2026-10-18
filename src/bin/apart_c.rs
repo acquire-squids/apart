@@ -44,16 +44,73 @@ fn main() -> ExitCode {
                             |compiled| {
                                 let output_path = Path::new(output.as_str());
 
+                                if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
+                                    eprintln!("failed to write compiled output to \"{output}\"; see next line");
+
+                                    eprintln!("{error}");
+
+                                    return ExitCode::FAILURE;
+                                }
+
                                 match options.target {
-                                    Target::Vm => {
-                                        if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
-                                            eprintln!("failed to write compiled output to \"{output}\"; see next_line");
+                                    Target::NttGml => {
+                                        if let Err(error) = fs::create_dir_all(output_path) {
+                                            eprintln!("failed to write compiled output to \"{output}\"; see next line");
 
                                             eprintln!("{error}");
 
                                             return ExitCode::FAILURE;
                                         }
 
+                                        let mut ntt_gml_files = vec![];
+
+                                        let output = apart::targets::ntt_gml::compile(&options, &compiled);
+
+                                        let mut errored = false;
+
+                                        for (ntt_output_path, ntt_output_source) in output {
+                                            ntt_gml_files.push(ntt_output_path.display().to_string());
+
+                                            let ntt_output_path = output_path.join(ntt_output_path);
+
+                                            if let Some(directory) = ntt_output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
+                                                eprintln!("failed to write compiled output to \"{}\"; see next line", ntt_output_path.display());
+
+                                                eprintln!("{error}");
+
+                                                errored |= true;
+
+                                                continue;
+                                            }
+
+                                            if let Err(error) = fs::write(&ntt_output_path, ntt_output_source) {
+                                                eprintln!("failed to write compiled output to \"{}\"; see next line", ntt_output_path.display());
+
+                                                eprintln!("{error}");
+
+                                                errored |= true;
+                                            }
+                                        }
+
+                                        if errored {
+                                            return ExitCode::FAILURE;
+                                        }
+
+                                        if let Err(error) = fs::write(output_path.join("main.txt"), ntt_gml_files.iter().map(|ntt_gml_file| format!("/loadlive {ntt_gml_file}")).fold(String::new(), |mut accum, command| {
+                                            accum.push_str(command.as_str());
+
+                                            accum.push('\n');
+
+                                            accum
+                                        })) {
+                                            eprintln!("failed to write compiled output to \"{}\"; see next line", output_path.join("main.txt").display());
+
+                                            eprintln!("{error}");
+
+                                            return ExitCode::FAILURE;
+                                        }
+                                    }
+                                    Target::Vm => {
                                         if let Err(error) = fs::write(
                                             output_path, apart::targets::vm::compile(&options, &compiled)
                                         ) {
@@ -218,8 +275,10 @@ fn parse_options(
 
                 let target = arguments.next();
 
-                #[allow(clippy::single_match_else)]
                 match target.as_deref() {
+                    Some("ntt_gml") => {
+                        options.target = Target::NttGml;
+                    }
                     Some("vm") => {
                         options.target = Target::Vm;
                     }
