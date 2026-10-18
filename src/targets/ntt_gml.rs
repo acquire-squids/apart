@@ -2,7 +2,7 @@ use crate::{
     ApartOptions, Compiled,
     basic_blocks::BlockIndex,
     low_ir::{
-        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, UnaryOp,
+        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
         Value as IrValue, ValueOrLocation,
     },
 };
@@ -210,7 +210,7 @@ fn normalize_function_name(name: &str) -> String {
 
 fn compile_location(mangled_prefix: &str, location: Location) -> String {
     match location {
-        Location::Register(register) => format!("{mangled_prefix}_locals[{}]", u16::from(register)),
+        Location::Register(register) => format!("{mangled_prefix}_local{}", u16::from(register)),
     }
 }
 
@@ -267,32 +267,35 @@ fn compile_block(
                     buffer.push_str(", ");
                 }
 
-                buffer.push_str(format!("{mangled_prefix}_argument{i}").as_str());
+                buffer.push_str(
+                    compile_location(mangled_prefix, Location::Register(Register(i))).as_str(),
+                );
             }
 
             buffer.push(')');
 
-            let locals = format!(
-                "[{}]",
-                (0..(block.max_register_count()))
-                    .map(|i| {
-                        if i < block.call_argument_count() {
-                            format!(
-                                "{}{mangled_prefix}_argument{i}",
-                                if i > 0 { ", " } else { "" }
-                            )
+            let mut locals = (0..(block.max_register_count()))
+                .skip(usize::from(block.call_argument_count()))
+                .map(|i| {
+                    format!(
+                        "{}{} = null",
+                        if i > block.call_argument_count() {
+                            ", "
                         } else {
-                            format!("{}null", if i > 0 { ", " } else { "" })
-                        }
-                    })
-                    .fold(String::new(), |mut accum, local| {
-                        accum.push_str(local.as_str());
+                            ""
+                        },
+                        compile_location(mangled_prefix, Location::Register(Register(i)))
+                    )
+                })
+                .fold(" var ".to_string(), |mut accum, local| {
+                    accum.push_str(local.as_str());
 
-                        accum
-                    })
-            );
+                    accum
+                });
 
-            buffer.push_str(format!(" {{ var {mangled_prefix}_block_index = {b}; var {mangled_prefix}_locals = {locals}; while true {{ switch {mangled_prefix}_block_index {{").as_str());
+            locals.push(';');
+
+            buffer.push_str(format!(" {{ var {mangled_prefix}_block_index = {b};{} while true {{ switch {mangled_prefix}_block_index {{", if block.max_register_count() > block.call_argument_count() { locals.as_str() } else { "" }).as_str());
         }
 
         let mut call_arguments = vec![];
