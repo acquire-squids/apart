@@ -1,35 +1,35 @@
-primitive u8;
-primitive i8;
-primitive u16;
-primitive i16;
-primitive u32;
-primitive i32;
-primitive u64;
-primitive i64;
-primitive f32;
-primitive f64;
-primitive bool;
-primitive unit;
-primitive String;
-primitive never;
+pub primitive u8;
+pub primitive i8;
+pub primitive u16;
+pub primitive i16;
+pub primitive u32;
+pub primitive i32;
+pub primitive u64;
+pub primitive i64;
+pub primitive f32;
+pub primitive f64;
+pub primitive bool;
+pub primitive unit;
+pub primitive String;
+pub primitive never;
 
 pub alias Option[T] = option~Option[T];
 pub alias Result[T, E] = result~Result[T, E];
 
-native funky print_u8 = funky(u8) -> unit;
-native funky print_i8 = funky(i8) -> unit;
-native funky print_u16 = funky(u16) -> unit;
-native funky print_i16 = funky(i16) -> unit;
-native funky print_u32 = funky(u32) -> unit;
-native funky print_i32 = funky(i32) -> unit;
-native funky print_u64 = funky(u64) -> unit;
-native funky print_i64 = funky(i64) -> unit;
-native funky print_f32 = funky(f32) -> unit;
-native funky print_f64 = funky(f64) -> unit;
-native funky print_bool = funky(bool) -> unit;
-native funky print_unit = funky(unit) -> unit;
-native funky print_string = funky(String) -> unit;
-native funky clock = funky() -> f64;
+pub native funky print_u8 = funky(u8) -> unit;
+pub native funky print_i8 = funky(i8) -> unit;
+pub native funky print_u16 = funky(u16) -> unit;
+pub native funky print_i16 = funky(i16) -> unit;
+pub native funky print_u32 = funky(u32) -> unit;
+pub native funky print_i32 = funky(i32) -> unit;
+pub native funky print_u64 = funky(u64) -> unit;
+pub native funky print_i64 = funky(i64) -> unit;
+pub native funky print_f32 = funky(f32) -> unit;
+pub native funky print_f64 = funky(f64) -> unit;
+pub native funky print_bool = funky(bool) -> unit;
+pub native funky print_unit = funky(unit) -> unit;
+pub native funky print_string = funky(String) -> unit;
+pub native funky clock = funky() -> f64;
 
 pub mod string {
 	teach String {
