@@ -25,31 +25,22 @@ pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
             Block {
                 instructions,
                 call_argument_count: block.call_argument_count(),
+                max_register_count: block.max_register_count(),
             }
         })
         .collect::<Vec<_>>();
 
-    Ir {
-        blocks,
-        main_max_register_count: compiled.result().blocks().first().map_or(0, |block| {
-            u16::try_from(block.max_register_count())
-                .expect("register allocations guarantees the registers don't exceed the maximum")
-        }),
-    }
+    Ir { blocks }
 }
 
 pub struct Ir<T> {
     blocks: Vec<Block<T>>,
-    main_max_register_count: u16,
 }
 
 impl<T> Ir<T> {
     #[must_use]
-    pub const fn new(blocks: Vec<Block<T>>, main_max_register_count: u16) -> Self {
-        Self {
-            blocks,
-            main_max_register_count,
-        }
+    pub const fn new(blocks: Vec<Block<T>>) -> Self {
+        Self { blocks }
     }
 
     #[allow(dead_code)]
@@ -65,25 +56,25 @@ impl<T> Ir<T> {
     pub const fn blocks(&self) -> &[Block<T>] {
         self.blocks.as_slice()
     }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub const fn main_max_register_count(&self) -> u16 {
-        self.main_max_register_count
-    }
 }
 
 pub struct Block<T> {
     instructions: Vec<Instruction<T>>,
     call_argument_count: u16,
+    max_register_count: u16,
 }
 
 impl<T> Block<T> {
     #[must_use]
-    pub const fn new(instructions: Vec<Instruction<T>>, call_argument_count: u16) -> Self {
+    pub const fn new(
+        instructions: Vec<Instruction<T>>,
+        call_argument_count: u16,
+        max_register_count: u16,
+    ) -> Self {
         Self {
             instructions,
             call_argument_count,
+            max_register_count,
         }
     }
 
@@ -91,6 +82,12 @@ impl<T> Block<T> {
     #[must_use]
     pub const fn instructions(&self) -> &[Instruction<T>] {
         self.instructions.as_slice()
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn max_register_count(&self) -> u16 {
+        self.max_register_count
     }
 
     #[allow(dead_code)]
@@ -193,7 +190,7 @@ pub enum Value {
     String(String),
     Fn {
         block_index: BlockIndex,
-        max_register_count: usize,
+        max_register_count: u16,
     },
     NativeFn(NativeFn),
     Compound(Vec<ValueOrLocation<Self>>),

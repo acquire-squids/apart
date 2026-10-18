@@ -1,8 +1,8 @@
 use crate::{
     ApartOptions, Compiled,
     low_ir::{
-        BinaryOp, FnLabel, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
-        Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Ir, Location, NativeFn, Register,
+        UnaryOp, Value as IrValue, ValueOrLocation,
     },
 };
 
@@ -43,9 +43,9 @@ pub fn compile(options: &ApartOptions, compiled: &Compiled<'_, Ir<IrValue>>) -> 
     let mut bytecode = vec![];
 
     bytecode.extend_from_slice(
-        compiled
-            .result()
-            .main_max_register_count()
+        ssa.blocks()
+            .first()
+            .map_or(0u16, Block::max_register_count)
             .to_le_bytes()
             .as_slice(),
     );
@@ -1529,12 +1529,7 @@ where
 
                 bytes.extend_from_slice(u32::from(*block_index).to_le_bytes().as_slice());
 
-                bytes.extend_from_slice(
-                    u16::try_from(*max_register_count)
-                        .expect("a function's max register count was not a valid u32")
-                        .to_le_bytes()
-                        .as_slice(),
-                );
+                bytes.extend_from_slice(max_register_count.to_le_bytes().as_slice());
 
                 bytes
             }

@@ -53,7 +53,8 @@ pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) -> Result<(), Vec<Error>> {
             if allocator.max_register_count > usize::from(u16::MAX) {
                 errors.push(Error::TooManyRegisters(allocator.max_register_count));
             } else {
-                *block.max_register_count_mut() = allocator.max_register_count;
+                *block.max_register_count_mut() = u16::try_from(allocator.max_register_count)
+                    .expect("verified fine by the if condition");
             }
         }
     });

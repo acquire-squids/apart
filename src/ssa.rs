@@ -122,7 +122,7 @@ impl Ssa {
 
 pub struct Block {
     call_argument_count: u16,
-    max_register_count: usize,
+    max_register_count: u16,
     instructions: Vec<Instruction>,
     terminator: BlockTerminator,
 }
@@ -177,13 +177,13 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn max_register_count(&self) -> usize {
+    pub const fn max_register_count(&self) -> u16 {
         self.max_register_count
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn max_register_count_mut(&mut self) -> &mut usize {
+    pub const fn max_register_count_mut(&mut self) -> &mut u16 {
         &mut self.max_register_count
     }
 }
