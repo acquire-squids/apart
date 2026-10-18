@@ -6,8 +6,8 @@ fn main() -> ExitCode {
     let mut arguments = env::args().peekable();
     arguments.next();
 
-    let (options, output) = match parse_options(&mut arguments) {
-        Ok((options, output)) => (options, output),
+    let options = match parse_options(&mut arguments) {
+        Ok(options) => options,
         Err(exit_code) => return exit_code,
     };
 
@@ -22,11 +22,8 @@ fn main() -> ExitCode {
 
             let input_file_path = Path::new(input_path);
 
-            if !input_file_path.exists() {
-                eprintln!("\"{input_path}\" does not exist");
-                ExitCode::FAILURE
-            } else if !input_file_path.is_file() {
-                eprintln!("\"{input_path}\" is not a file");
+            if !input_file_path.exists() || !input_file_path.is_file() {
+                eprintln!("\"{input_path}\" does not exist as an input file and is not a known {} flag", env!("CARGO_BIN_NAME"));
                 ExitCode::FAILURE
             } else {
                 match fs::read_to_string(input_file_path) {
@@ -42,10 +39,10 @@ fn main() -> ExitCode {
                         compile(&options, sources).map_or(
                             ExitCode::FAILURE,
                             |compiled| {
-                                let output_path = Path::new(output.as_str());
+                                let output_path = Path::new(options.output.as_str());
 
                                 if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
-                                    eprintln!("failed to write compiled output to \"{output}\"; see next line");
+                                    eprintln!("failed to write compiled output to \"{}\"; see next line", options.output);
 
                                     eprintln!("{error}");
 
@@ -55,7 +52,7 @@ fn main() -> ExitCode {
                                 match options.target {
                                     Target::NttGml => {
                                         if let Err(error) = fs::create_dir_all(output_path) {
-                                            eprintln!("failed to write compiled output to \"{output}\"; see next line");
+                                            eprintln!("failed to write compiled output to \"{}\"; see next line", options.output);
 
                                             eprintln!("{error}");
 
@@ -69,7 +66,7 @@ fn main() -> ExitCode {
                                         let mut errored = false;
 
                                         for (ntt_output_path, ntt_output_source) in output {
-                                            ntt_gml_files.push(ntt_output_path.display().to_string());
+                                            ntt_gml_files.push(options.output.clone());
 
                                             let ntt_output_path = output_path.join(ntt_output_path);
 
@@ -115,7 +112,8 @@ fn main() -> ExitCode {
                                             output_path, apart::targets::vm::compile(&options, &compiled)
                                         ) {
                                             eprintln!(
-                                                "failed to write compiled output to \"{output}\"; see next line",
+                                                "failed to write compiled output to \"{}\"; see next line",
+                                                options.output
                                             );
 
                                             eprintln!("{error}");
@@ -220,16 +218,14 @@ const TARGETS: &str = concat!(
     "Valid ",
     env!("CARGO_BIN_NAME"),
     " compilation targets:
+    ntt_gml
     vm
 "
 );
 
-fn parse_options(
-    arguments: &mut iter::Peekable<env::Args>,
-) -> Result<(ApartOptions, String), ExitCode> {
-    let mut output = "main.apart".to_string();
-
+fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
     let mut options = ApartOptions {
+        output: "main".to_string(),
         strip_debug_info: false,
         optimize: false,
         target: Target::Vm,
@@ -253,7 +249,7 @@ fn parse_options(
                     .expect("we just matched while peeking, it will exist");
 
                 if let Some(specified_output) = arguments.next() {
-                    output = specified_output;
+                    options.output = specified_output;
                 } else {
                     eprintln!("expected the output path after {argument}");
 
@@ -297,5 +293,5 @@ fn parse_options(
         }
     }
 
-    Ok((options, output))
+    Ok(options)
 }

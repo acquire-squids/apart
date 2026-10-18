@@ -183,7 +183,23 @@ pub fn compile(
 
     output_source.push_str(format!("{mangled_prefix}_0();").as_str());
 
-    output.push((PathBuf::from("main.mod.ntgml"), output_source));
+    output.push((
+        PathBuf::from(options.output.clone())
+            .file_name()
+            .map_or_else(
+                || PathBuf::from("main.mod.ntgml"),
+                |file_name| {
+                    let mut file_name = file_name.to_os_string();
+
+                    file_name.push("_main");
+
+                    PathBuf::from(file_name)
+                        .with_added_extension("mod")
+                        .with_added_extension("ntgml")
+                },
+            ),
+        output_source,
+    ));
 
     output
 }
