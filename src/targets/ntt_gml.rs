@@ -164,7 +164,7 @@ pub fn compile(
                 )
             }
             NativeFn::Clock => format!(
-                "function {mangled_prefix}_clock() {{ return get_timer_nonsync() / 1000000.0; }}"
+                "function {mangled_prefix}_clock() {{ return get_timer_nonsync() / 1000.0; }}"
             ),
         };
 
@@ -188,7 +188,10 @@ pub fn compile(
     output
 }
 
+#[allow(dead_code)]
 const OPTION_SOME: u16 = 1;
+
+#[allow(dead_code)]
 const OPTION_NONE: u16 = 0;
 
 #[allow(dead_code)]
