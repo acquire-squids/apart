@@ -265,7 +265,7 @@ fn parse_options(
 
                 options.optimize = true;
             }
-            "-s" | "--strip-debug-info" => {
+            "-S" | "--strip-debug-info" => {
                 arguments.next();
 
                 options.strip_debug_info = true;
