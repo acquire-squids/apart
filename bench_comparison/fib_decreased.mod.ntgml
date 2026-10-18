@@ -1,0 +1,21 @@
+function main() {
+	var _startTime = clock();
+
+	var n = 30;
+
+	trace(fib(n));
+
+	var _endTime = clock() - _startTime;
+
+	trace(_endTime / 1000.0);
+}
+
+function fib(n) {
+	return (n <= 1 ? n : fib(n - 2) + fib(n - 1));
+}
+
+function clock() {
+	return get_timer_nonsync() / 1000.0;
+}
+
+main();

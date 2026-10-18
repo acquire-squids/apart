@@ -1,0 +1,63 @@
+function main() {
+	var _startTime = clock();
+
+	var zoo = Zoo_new();
+
+	var total = 0;
+
+	while total < 1000000 {
+		total += ant(zoo)
+			+ banana(zoo)
+			+ tuna(zoo)
+			+ hay(zoo)
+			+ grass(zoo)
+			+ mouse(zoo);
+	}
+
+	trace(total);
+
+	var _endTime = clock() - _startTime;
+
+	trace(_endTime / 1000.0);
+}
+
+function Zoo_new() {
+	return {
+		aardvark: 1,
+		baboon: 1,
+		cat: 1,
+		donkey: 1,
+		elephant: 1,
+		fox: 1,
+	};
+}
+
+function ant(zoo) {
+	return zoo.aardvark;
+}
+
+function banana(zoo) {
+	return zoo.baboon;
+}
+
+function tuna(zoo) {
+	return zoo.cat;
+}
+
+function hay(zoo) {
+	return zoo.donkey;
+}
+
+function grass(zoo) {
+	return zoo.elephant;
+}
+
+function mouse(zoo) {
+	return zoo.fox;
+}
+
+function clock() {
+	return get_timer_nonsync() / 1000.0;
+}
+
+main();
