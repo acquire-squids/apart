@@ -797,6 +797,7 @@ pub enum BinaryOp {
     PathAccess,
     Access,
     Multiply,
+    IntegerDivide,
     Divide,
     Remainder,
     Add,

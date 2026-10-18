@@ -1189,7 +1189,18 @@ impl Translator<'_> {
         let address = self.next_address();
 
         self.push_instruction(Instruction::Binary {
-            op,
+            // TODO: this injection of integer division feels hacky.  improve it later
+            op: if
+                matches!(op, BinaryOp::Divide)
+                && (
+                    matches!(types[types[ast[expr].span()]], Type::Integer(_) | Type::NegativeInteger(_))
+                    || matches!(&types[types[ast[expr].span()]], Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U8 | Primitive::I8 | Primitive::U16 | Primitive::I16 | Primitive::U32 | Primitive::I32 | Primitive::U64 | Primitive::I64))
+                )
+            {
+                BinaryOp::IntegerDivide
+            } else {
+                op
+            },
             lhs,
             rhs,
             temporary: Value::Address(address),

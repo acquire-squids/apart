@@ -1844,6 +1844,7 @@ impl TypeChecker {
                 }
                 Expr::Binary { op, lhs, rhs } => match op {
                     BinaryOp::Multiply
+                    | BinaryOp::IntegerDivide
                     | BinaryOp::Divide
                     | BinaryOp::Remainder
                     | BinaryOp::Add
@@ -2999,6 +3000,7 @@ impl TypeChecker {
                 }
             }
             BinaryOp::Multiply
+            | BinaryOp::IntegerDivide
             | BinaryOp::Divide
             | BinaryOp::Remainder
             | BinaryOp::Add

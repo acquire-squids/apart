@@ -686,7 +686,7 @@ where
                 .assemble(assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide,
+                    BinaryOp::Divide | BinaryOp::IntegerDivide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::DivideRegisterRegister {
@@ -697,7 +697,7 @@ where
                 .assemble(assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide,
+                    BinaryOp::Divide | BinaryOp::IntegerDivide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(rhs),
                 ) => Instruction::DivideRegisterValue {
@@ -708,7 +708,7 @@ where
                 .assemble(assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide,
+                    BinaryOp::Divide | BinaryOp::IntegerDivide,
                     ValueOrLocation::Value(lhs),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::DivideValueRegister {
@@ -719,7 +719,7 @@ where
                 .assemble(assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide,
+                    BinaryOp::Divide | BinaryOp::IntegerDivide,
                     ValueOrLocation::Value(lhs),
                     ValueOrLocation::Value(rhs),
                 ) => Instruction::DivideValueValue {

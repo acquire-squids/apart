@@ -170,6 +170,7 @@ crate::int_enum! {
     NotEqual => 0x0A,
     And => 0x0B,
     Or => 0x0C,
+    IntegerDivide => 0x0D,
 }
 
 #[derive(Debug)]
@@ -353,6 +354,7 @@ fn lower_instruction(
                 }
                 AstBinaryOp::Multiply => BinaryOp::Multiply,
                 AstBinaryOp::Divide => BinaryOp::Divide,
+                AstBinaryOp::IntegerDivide => BinaryOp::IntegerDivide,
                 AstBinaryOp::Remainder => BinaryOp::Remainder,
                 AstBinaryOp::Add => BinaryOp::Add,
                 AstBinaryOp::Subtract => BinaryOp::Subtract,
