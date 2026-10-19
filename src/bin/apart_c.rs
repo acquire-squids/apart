@@ -109,7 +109,7 @@ fn main() -> ExitCode {
                                     }
                                     Target::Vm => {
                                         if let Err(error) = fs::write(
-                                            output_path, apart::targets::vm::compile(&options, &compiled)
+                                            output_path.with_extension("apart"), apart::targets::vm::compile(&options, &compiled)
                                         ) {
                                             eprintln!(
                                                 "failed to write compiled output to \"{}\"; see next line",
