@@ -32,3 +32,6 @@ name = "apart_c"
 [[bin]]
 name = "apart_vm"
 
+[[bin]]
+name = "apart_disassembler"
+

@@ -17,7 +17,7 @@ pub use {
     basic_blocks::Error as BasicBlocksError,
     expand_macros::Error as MacroExpansionError,
     low_ir::{
-        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, Register, UnaryOp,
+        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
         Value as IrValue, ValueOrLocation,
     },
     name_resolve::Error as NameResolveError,
