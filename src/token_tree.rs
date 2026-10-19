@@ -115,8 +115,7 @@ impl Reportable for Error {}
 #[allow(clippy::too_many_lines)]
 pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Error>>> {
     let mut trees = vec![TokenTree::Tree {
-        // TODO: is it okay to use this span?
-        span: Span::new(lexer.source_id(), 0, 0),
+        span: Span::new(lexer.source_id(), 0, lexer.source().len()),
         kind: TreeKind::Invisible,
         outer: None,
         tokens: vec![],
@@ -128,7 +127,7 @@ pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Er
 
     let mut errors = vec![];
 
-    for maybe_token in lexer {
+    for maybe_token in lexer.by_ref() {
         match maybe_token {
             Err(error) => {
                 errors.push(error.transmute(Error::Lex));
@@ -165,17 +164,29 @@ pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Er
                     stack.push(TokenTreeIndex(trees.len() - 1));
                 }
                 Token::CloseParenthesis => {
-                    if let Some((token_tree_index, TokenTree::Tree { span, kind, .. })) =
-                        stack.pop().and_then(|token_tree_index| {
-                            trees
-                                .get_mut(usize::from(token_tree_index))
-                                .map(|tree| (token_tree_index, tree))
-                        })
-                    {
+                    let tree_count = trees.len();
+
+                    if let Some((
+                        token_tree_index,
+                        TokenTree::Tree {
+                            span, kind, tokens, ..
+                        },
+                    )) = stack.pop().and_then(|token_tree_index| {
+                        trees
+                            .get_mut(usize::from(token_tree_index))
+                            .map(|tree| (token_tree_index, tree))
+                    }) {
                         if matches!(kind, TreeKind::Parentheses) {
                             *span = span
                                 .combine_with(token.span())
                                 .expect("these spans are from the same source");
+
+                            tokens.push(TokenTreeIndex(tree_count));
+
+                            trees.push(TokenTree::Token(Spanned::new(
+                                Token::EndOfTree,
+                                token.span(),
+                            )));
 
                             if let Some(TokenTree::Tree {
                                 tokens: outer_tokens,
@@ -204,17 +215,29 @@ pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Er
                     }
                 }
                 Token::CloseBracket => {
-                    if let Some((token_tree_index, TokenTree::Tree { span, kind, .. })) =
-                        stack.pop().and_then(|token_tree_index| {
-                            trees
-                                .get_mut(usize::from(token_tree_index))
-                                .map(|tree| (token_tree_index, tree))
-                        })
-                    {
+                    let tree_count = trees.len();
+
+                    if let Some((
+                        token_tree_index,
+                        TokenTree::Tree {
+                            span, kind, tokens, ..
+                        },
+                    )) = stack.pop().and_then(|token_tree_index| {
+                        trees
+                            .get_mut(usize::from(token_tree_index))
+                            .map(|tree| (token_tree_index, tree))
+                    }) {
                         if matches!(kind, TreeKind::Brackets) {
                             *span = span
                                 .combine_with(token.span())
                                 .expect("these spans are from the same source");
+
+                            tokens.push(TokenTreeIndex(tree_count));
+
+                            trees.push(TokenTree::Token(Spanned::new(
+                                Token::EndOfTree,
+                                token.span(),
+                            )));
 
                             if let Some(TokenTree::Tree {
                                 tokens: outer_tokens,
@@ -243,17 +266,29 @@ pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Er
                     }
                 }
                 Token::CloseSquareBracket => {
-                    if let Some((token_tree_index, TokenTree::Tree { span, kind, .. })) =
-                        stack.pop().and_then(|token_tree_index| {
-                            trees
-                                .get_mut(usize::from(token_tree_index))
-                                .map(|tree| (token_tree_index, tree))
-                        })
-                    {
+                    let tree_count = trees.len();
+
+                    if let Some((
+                        token_tree_index,
+                        TokenTree::Tree {
+                            span, kind, tokens, ..
+                        },
+                    )) = stack.pop().and_then(|token_tree_index| {
+                        trees
+                            .get_mut(usize::from(token_tree_index))
+                            .map(|tree| (token_tree_index, tree))
+                    }) {
                         if matches!(kind, TreeKind::SquareBrackets) {
                             *span = span
                                 .combine_with(token.span())
                                 .expect("these spans are from the same source");
+
+                            tokens.push(TokenTreeIndex(tree_count));
+
+                            trees.push(TokenTree::Token(Spanned::new(
+                                Token::EndOfTree,
+                                token.span(),
+                            )));
 
                             if let Some(TokenTree::Tree {
                                 tokens: outer_tokens,
@@ -311,6 +346,30 @@ pub fn tokens_to_token_trees(lexer: &mut Lexer) -> Result<Forest, Vec<Spanned<Er
             errors.push(Spanned::new(Error::Missing(*kind), *span));
         }
     }
+
+    let tree_count = trees.len();
+
+    let Some(TokenTree::Tree {
+        kind: TreeKind::Invisible,
+        tokens,
+        ..
+    }) = stack
+        .pop()
+        .and_then(|token_tree_index| trees.get_mut(usize::from(token_tree_index)))
+    else {
+        panic!("final token tree wasn't the outermost tree");
+    };
+
+    tokens.push(TokenTreeIndex(tree_count));
+
+    trees.push(TokenTree::Token(Spanned::new(
+        Token::EndOfTree,
+        Span::new(
+            lexer.source_id(),
+            lexer.source().len(),
+            lexer.source().len(),
+        ),
+    )));
 
     if errors.is_empty() {
         Ok(Forest { trees, root })

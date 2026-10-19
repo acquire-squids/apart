@@ -1015,18 +1015,8 @@ impl<'s, 'p> Parser<'s, 'p> {
         }
     }
 
-    fn in_token_tree(&self, token_tree_index: TokenTreeIndex) -> bool {
-        self.current_tree == token_tree_index
-            || matches!(
-                self.forest.get_tree(self.current_tree),
-                Some(TokenTree::Tree { outer: Some(outer), .. })
-                    if *outer == token_tree_index && self.at == 0
-            )
-    }
-
-    fn leave_finished_token_trees(&mut self) {
-        while let Some(TokenTree::Tree { tokens, outer, .. }) =
-            self.forest.get_tree(self.current_tree)
+    fn leave_finished_token_tree(&mut self) {
+        if let Some(TokenTree::Tree { tokens, outer, .. }) = self.forest.get_tree(self.current_tree)
             && self.at >= tokens.len()
             && let Some(outer) = outer
             && let Some(TokenTree::Tree { tokens, .. }) = self.forest.get_tree(*outer)
@@ -1041,23 +1031,12 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     fn advance_token_tree(&mut self) -> Option<&'p TokenTree> {
-        self.leave_finished_token_trees();
-
         while let Some(TokenTree::Tree { tokens, .. }) = self.forest.get_tree(self.current_tree) {
             let next_token_tree = if let Some(token_tree_index) = tokens.get(self.at) {
                 match self.forest.get_tree(*token_tree_index) {
-                    Some(
-                        tree @ TokenTree::Tree {
-                            tokens: inner_tokens,
-                            ..
-                        },
-                    ) => {
-                        if inner_tokens.is_empty() {
-                            self.at += 1;
-                        } else {
-                            self.current_tree = *token_tree_index;
-                            self.at = 0;
-                        }
+                    Some(tree @ TokenTree::Tree { .. }) => {
+                        self.current_tree = *token_tree_index;
+                        self.at = 0;
 
                         Some(tree)
                     }
@@ -1074,7 +1053,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                 None
             };
 
-            self.leave_finished_token_trees();
+            self.leave_finished_token_tree();
 
             if next_token_tree.is_some() {
                 return next_token_tree;
@@ -1230,7 +1209,7 @@ impl Parser<'_, '_> {
     fn parse(&mut self, ast: &mut Ast) -> Result<(), Vec<Spanned<Error>>> {
         let mut succeeded = None;
 
-        while self.peek_token_tree().is_some() {
+        while self.match_next(Token::EndOfTree).is_none() {
             match self.parse_item(ast) {
                 Err(error) => {
                     if succeeded.is_none_or(|succeeded| succeeded) {
@@ -1299,7 +1278,6 @@ impl Parser<'_, '_> {
 
             if let Some(hash) = self.match_next(Token::Hash)
                 && let Some(directive) = self.match_next(Token::Identifier)
-                && self.in_token_tree(current_tree)
             {
                 self.parse_directive(ast, hash.span(), directive.span())
             } else {
@@ -1349,8 +1327,6 @@ impl Parser<'_, '_> {
         hash_span: Span,
         directive_span: Span,
     ) -> Result<ItemIndex, Spanned<Error>> {
-        let current_tree = self.current_tree;
-
         let name = Spanned::new(
             directive_span
                 .lexeme(self.source)
@@ -1363,24 +1339,20 @@ impl Parser<'_, '_> {
 
         let condition = self.parse_expression(ast, 0)?;
 
-        if self.in_token_tree(current_tree) {
-            let item = self.parse_item(ast)?;
+        let item = self.parse_item(ast)?;
 
-            let span = hash_span
-                .combine_with(ast[item].span())
-                .expect("these spans are from the same source");
+        let span = hash_span
+            .combine_with(ast[item].span())
+            .expect("these spans are from the same source");
 
-            Ok(ast.push_item(Spanned::new(
-                Item::Directive {
-                    name,
-                    condition,
-                    item,
-                },
-                span,
-            )))
-        } else {
-            Err(Spanned::new(Error::ExpectedConditionalItem, name.span()))
-        }
+        Ok(ast.push_item(Spanned::new(
+            Item::Directive {
+                name,
+                condition,
+                item,
+            },
+            span,
+        )))
     }
 
     fn parse_primitive(&mut self, ast: &mut Ast, span: Span) -> Result<ItemIndex, Spanned<Error>> {
@@ -1446,52 +1418,45 @@ impl Parser<'_, '_> {
 
         let parameters_span = self.span_or_end();
 
-        let parameters = if let TokenTree::Tree { tokens, .. } = self
-            .consume_next_token_tree_with_span(
-                TreeKind::Parentheses,
-                Error::FnWithoutParameters,
-                parameters_span,
-            )?
-            && !tokens.is_empty()
-        {
-            let mut parameters = vec![];
+        self.consume_next_token_tree_with_span(
+            TreeKind::Parentheses,
+            Error::FnWithoutParameters,
+            parameters_span,
+        )?;
 
-            let current_tree = self.current_tree;
+        let mut parameters = vec![];
 
-            while self.in_token_tree(current_tree) {
-                let parameter_name = self
-                    .spanned_name()
-                    .map_err(|error| error.transmute(|_| Error::FnParameterWithoutName))?;
+        while self.check_next(Token::EndOfTree).is_none() {
+            let parameter_name = self
+                .spanned_name()
+                .map_err(|error| error.transmute(|_| Error::FnParameterWithoutName))?;
 
-                let less = self.consume_next(Token::Less, Error::FnParameterWithoutLeftArrow)?;
+            let less = self.consume_next(Token::Less, Error::FnParameterWithoutLeftArrow)?;
 
-                let minus = self.consume_next(Token::Minus, Error::FnParameterWithoutLeftArrow)?;
+            let minus = self.consume_next(Token::Minus, Error::FnParameterWithoutLeftArrow)?;
 
-                if minus.span().start() != less.span().end() {
-                    return Err(Spanned::new(
-                        Error::FnParameterWithoutLeftArrow,
-                        less.span()
-                            .combine_with(minus.span())
-                            .expect("these spans are from the same source"),
-                    ));
-                }
-
-                let type_signature = self.parse_type_signature()?;
-
-                parameters.push(Parameter {
-                    name: parameter_name,
-                    type_signature,
-                });
-
-                if self.in_token_tree(current_tree) {
-                    self.consume_next(Token::Comma, Error::FnParametersWithoutComma)?;
-                }
+            if minus.span().start() != less.span().end() {
+                return Err(Spanned::new(
+                    Error::FnParameterWithoutLeftArrow,
+                    less.span()
+                        .combine_with(minus.span())
+                        .expect("these spans are from the same source"),
+                ));
             }
 
-            parameters
-        } else {
-            vec![]
-        };
+            let type_signature = self.parse_type_signature()?;
+
+            parameters.push(Parameter {
+                name: parameter_name,
+                type_signature,
+            });
+
+            if self.check_next(Token::EndOfTree).is_none() {
+                self.consume_next(Token::Comma, Error::FnParametersWithoutComma)?;
+            }
+        }
+
+        self.match_next(Token::EndOfTree);
 
         let current_tree = self.current_tree;
         let at = self.at;
@@ -1540,25 +1505,25 @@ impl Parser<'_, '_> {
 
     fn parse_generics(&mut self) -> Result<Vec<Spanned<String>>, Spanned<Error>> {
         Ok(
-            if let Some(TokenTree::Tree { tokens, .. }) =
-                self.match_next_token_tree(TreeKind::SquareBrackets)
-                && !tokens.is_empty()
+            if self
+                .match_next_token_tree(TreeKind::SquareBrackets)
+                .is_some()
             {
                 let mut generics = vec![];
 
-                let current_tree = self.current_tree;
-
-                while self.in_token_tree(current_tree) {
+                while self.check_next(Token::EndOfTree).is_none() {
                     let generic_name = self
                         .spanned_name()
                         .map_err(|error| error.transmute(|_| Error::GenericWithoutName))?;
 
                     generics.push(generic_name);
 
-                    if self.in_token_tree(current_tree) {
+                    if self.check_next(Token::EndOfTree).is_none() {
                         self.consume_next(Token::Comma, Error::GenericsWithoutComma)?;
                     }
                 }
+
+                self.match_next(Token::EndOfTree);
 
                 generics
             } else {
@@ -1587,60 +1552,53 @@ impl Parser<'_, '_> {
 
         let fields_span = self.span_or_end();
 
-        let fields = if let TokenTree::Tree { tokens, .. } = self
-            .consume_next_token_tree_with_span(
-                TreeKind::Brackets,
-                Error::ProductWithoutFields,
-                fields_span,
-            )?
-            && !tokens.is_empty()
-        {
-            let mut fields = vec![];
+        self.consume_next_token_tree_with_span(
+            TreeKind::Brackets,
+            Error::ProductWithoutFields,
+            fields_span,
+        )?;
 
-            let current_tree = self.current_tree;
+        let mut fields = vec![];
 
-            while self.in_token_tree(current_tree) {
-                let visibility = self
-                    .match_keyword_next("pub")
-                    .map_or(Visibility::Private, |_| Visibility::Public);
+        while self.check_next(Token::EndOfTree).is_none() {
+            let visibility = self
+                .match_keyword_next("pub")
+                .map_or(Visibility::Private, |_| Visibility::Public);
 
-                let name = self
-                    .spanned_name()
-                    .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
+            let name = self
+                .spanned_name()
+                .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
 
-                let less = self.consume_next(Token::Less, Error::ProductFieldWithoutLeftArrow)?;
+            let less = self.consume_next(Token::Less, Error::ProductFieldWithoutLeftArrow)?;
 
-                let minus = self.consume_next(Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
+            let minus = self.consume_next(Token::Minus, Error::ProductFieldWithoutLeftArrow)?;
 
-                if minus.span().start() != less.span().end() {
-                    return Err(Spanned::new(
-                        Error::ProductFieldWithoutLeftArrow,
-                        less.span()
-                            .combine_with(minus.span())
-                            .expect("these spans are from the same source"),
-                    ));
-                }
-
-                let type_signature = self.parse_type_signature()?;
-
-                fields.push(Field {
-                    name,
-                    type_signature,
-                    visibility,
-                });
-
-                if self.in_token_tree(current_tree) {
-                    self.consume_next(Token::Comma, Error::ProductFieldsWithoutComma)?;
-                }
+            if minus.span().start() != less.span().end() {
+                return Err(Spanned::new(
+                    Error::ProductFieldWithoutLeftArrow,
+                    less.span()
+                        .combine_with(minus.span())
+                        .expect("these spans are from the same source"),
+                ));
             }
 
-            // sort fields to keep the order consistent in other passes
-            fields.sort_by(|a, b| a.name().kind().cmp(b.name().kind()));
+            let type_signature = self.parse_type_signature()?;
 
-            fields
-        } else {
-            vec![]
-        };
+            fields.push(Field {
+                name,
+                type_signature,
+                visibility,
+            });
+
+            if self.check_next(Token::EndOfTree).is_none() {
+                self.consume_next(Token::Comma, Error::ProductFieldsWithoutComma)?;
+            }
+        }
+
+        self.match_next(Token::EndOfTree);
+
+        // sort fields to keep the order consistent in other passes
+        fields.sort_by(|a, b| a.name().kind().cmp(b.name().kind()));
 
         Ok(ast.push_item(Spanned::new(
             Item::Product {
@@ -1667,23 +1625,20 @@ impl Parser<'_, '_> {
 
         let variants_span = self.span_or_end();
 
-        let variants = if let TokenTree::Tree { tokens, .. } = self
-            .consume_next_token_tree_with_span(
-                TreeKind::Brackets,
-                Error::SumWithoutVariants,
-                variants_span,
-            )?
-            && !tokens.is_empty()
-        {
-            let mut variants = vec![];
+        self.consume_next_token_tree_with_span(
+            TreeKind::Brackets,
+            Error::SumWithoutVariants,
+            variants_span,
+        )?;
 
-            let current_tree = self.current_tree;
+        let mut variants = vec![];
 
-            while self.in_token_tree(current_tree) {
-                let span = self.span_or_end();
+        while self.check_next(Token::EndOfTree).is_none() {
+            let span = self.span_or_end();
 
-                variants.push(self.parse_product(ast, span, visibility, false).map_err(
-                    |error| {
+            variants.push(
+                self.parse_product(ast, span, visibility, false)
+                    .map_err(|error| {
                         error.transmute(|error| match error {
                             Error::ProductWithoutName => Error::SumVariantWithoutName,
                             Error::ProductWithoutFields => Error::SumVariantWithoutFields,
@@ -1694,27 +1649,24 @@ impl Parser<'_, '_> {
                             Error::ProductFieldsWithoutComma => Error::SumVariantFieldsWithoutComma,
                             _ => unreachable!("no other errors are produced by `parse_product`"),
                         })
-                    },
-                )?);
+                    })?,
+            );
 
-                if self.in_token_tree(current_tree) {
-                    self.consume_next(Token::Comma, Error::SumVariantsWithoutComma)?;
-                }
+            if self.check_next(Token::EndOfTree).is_none() {
+                self.consume_next(Token::Comma, Error::SumVariantsWithoutComma)?;
             }
+        }
 
-            // sort variants to keep the order consistent in other passes
-            variants.sort_by_key(|a| {
-                let Item::Product { name, .. } = ast[*a].kind() else {
-                    unreachable!("only products are sum variants");
-                };
+        self.match_next(Token::EndOfTree);
 
-                name.kind()
-            });
+        // sort variants to keep the order consistent in other passes
+        variants.sort_by_key(|a| {
+            let Item::Product { name, .. } = ast[*a].kind() else {
+                unreachable!("only products are sum variants");
+            };
 
-            variants
-        } else {
-            vec![]
-        };
+            name.kind()
+        });
 
         Ok(ast.push_item(Spanned::new(
             Item::Sum {
@@ -1741,25 +1693,19 @@ impl Parser<'_, '_> {
 
         let contents_span = self.span_or_end();
 
-        let contents =
-            if let TokenTree::Tree { tokens, .. } = self.consume_next_token_tree_with_span(
-                TreeKind::Brackets,
-                Error::ModWithoutBody,
-                contents_span,
-            )? && !tokens.is_empty()
-            {
-                let mut contents = vec![];
+        self.consume_next_token_tree_with_span(
+            TreeKind::Brackets,
+            Error::ModWithoutBody,
+            contents_span,
+        )?;
 
-                let current_tree = self.current_tree;
+        let mut contents = vec![];
 
-                while self.in_token_tree(current_tree) {
-                    contents.push(self.parse_item(ast)?);
-                }
+        while self.check_next(Token::EndOfTree).is_none() {
+            contents.push(self.parse_item(ast)?);
+        }
 
-                contents
-            } else {
-                vec![]
-            };
+        self.match_next(Token::EndOfTree);
 
         Ok(ast.push_item(Spanned::new(
             Item::Mod {
@@ -1780,43 +1726,37 @@ impl Parser<'_, '_> {
 
         let contents_span = self.span_or_end();
 
-        let body = if let TokenTree::Tree { tokens, .. } = self.consume_next_token_tree_with_span(
+        self.consume_next_token_tree_with_span(
             TreeKind::Brackets,
             Error::TeachWithoutBody,
             contents_span,
-        )? && !tokens.is_empty()
-        {
-            let mut body = vec![];
+        )?;
 
-            let current_tree = self.current_tree;
+        let mut body = vec![];
 
-            while self.in_token_tree(current_tree) {
-                let item = self.parse_item(ast)?;
+        while self.check_next(Token::EndOfTree).is_none() {
+            let item = self.parse_item(ast)?;
 
-                match &ast[item].kind() {
-                    Item::Directive { item, .. }
-                        if matches!(ast[*item].kind(), Item::NativeFn { .. } | Item::Fn { .. }) => {
-                    }
-                    Item::Primitive(_)
-                    | Item::Product { .. }
-                    | Item::Sum { .. }
-                    | Item::Mod { .. }
-                    | Item::Teach { .. }
-                    | Item::Directive { .. }
-                    | Item::Alias { .. } => {
-                        self.errors
-                            .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
-                    }
-                    Item::NativeFn { .. } | Item::Fn { .. } => {}
+            match &ast[item].kind() {
+                Item::Directive { item, .. }
+                    if matches!(ast[*item].kind(), Item::NativeFn { .. } | Item::Fn { .. }) => {}
+                Item::Primitive(_)
+                | Item::Product { .. }
+                | Item::Sum { .. }
+                | Item::Mod { .. }
+                | Item::Teach { .. }
+                | Item::Directive { .. }
+                | Item::Alias { .. } => {
+                    self.errors
+                        .push(Spanned::new(Error::InvalidAssociatedItem, ast[item].span()));
                 }
-
-                body.push(item);
+                Item::NativeFn { .. } | Item::Fn { .. } => {}
             }
 
-            body
-        } else {
-            vec![]
-        };
+            body.push(item);
+        }
+
+        self.match_next(Token::EndOfTree);
 
         Ok(ast.push_item(Spanned::new(
             Item::Teach {
@@ -1857,11 +1797,9 @@ impl Parser<'_, '_> {
     }
 
     fn path(&mut self) -> Result<Vec<Spanned<PathElement>>, Spanned<Error>> {
-        let current_tree = self.current_tree;
-
         let mut path = vec![self.path_element()?];
 
-        while self.in_token_tree(current_tree) && self.match_next(Token::Tilde).is_some() {
+        while self.match_next(Token::Tilde).is_some() {
             let path_element = self.path_element()?;
 
             path.push(path_element);
@@ -1881,33 +1819,23 @@ impl Parser<'_, '_> {
 
                     let parameters_span = self.span_or_end();
 
-                    let parameters = if let TokenTree::Tree { tokens, .. } = self
-                        .consume_next_token_tree_with_span(
-                            TreeKind::Parentheses,
-                            Error::FnTypeWithoutParameters,
-                            parameters_span,
-                        )?
-                        && !tokens.is_empty()
-                    {
-                        let mut parameters = vec![];
+                    self.consume_next_token_tree_with_span(
+                        TreeKind::Parentheses,
+                        Error::FnTypeWithoutParameters,
+                        parameters_span,
+                    )?;
 
-                        let current_tree = self.current_tree;
+                    let mut parameters = vec![];
 
-                        while self.in_token_tree(current_tree) {
-                            parameters.push(self.parse_type_signature()?);
+                    while self.check_next(Token::EndOfTree).is_none() {
+                        parameters.push(self.parse_type_signature()?);
 
-                            if self.in_token_tree(current_tree) {
-                                self.consume_next(
-                                    Token::Comma,
-                                    Error::FnTypeParametersWithoutComma,
-                                )?;
-                            }
+                        if self.check_next(Token::EndOfTree).is_none() {
+                            self.consume_next(Token::Comma, Error::FnTypeParametersWithoutComma)?;
                         }
+                    }
 
-                        parameters
-                    } else {
-                        vec![]
-                    };
+                    self.match_next(Token::EndOfTree);
 
                     let current_tree = self.current_tree;
                     let at = self.at;
@@ -1954,19 +1882,18 @@ impl Parser<'_, '_> {
 
                     let mut generics = vec![];
 
-                    let span = if let Some(TokenTree::Tree { tokens, span, .. }) =
+                    let span = if let Some(TokenTree::Tree { span, .. }) =
                         self.match_next_token_tree(TreeKind::SquareBrackets)
-                        && !tokens.is_empty()
                     {
-                        let current_tree = self.current_tree;
-
-                        while self.in_token_tree(current_tree) {
+                        while self.check_next(Token::EndOfTree).is_none() {
                             generics.push(self.parse_type_signature()?);
 
-                            if self.in_token_tree(current_tree) {
+                            if self.check_next(Token::EndOfTree).is_none() {
                                 self.consume_next(Token::Comma, Error::GenericsWithoutComma)?;
                             }
                         }
+
+                        self.match_next(Token::EndOfTree);
 
                         *span
                     } else {
@@ -1989,15 +1916,10 @@ impl Parser<'_, '_> {
 }
 
 mod precedence {
-    use super::{Ast, Error, ExprIndex, Parser, Span, Spanned, TokenTreeIndex};
+    use super::{Ast, Error, ExprIndex, Parser, Span, Spanned};
 
-    pub type ParseFn<'s, 'p> = fn(
-        &mut Parser<'s, 'p>,
-        &mut Ast,
-        TokenTreeIndex,
-        u16,
-        Span,
-    ) -> Result<ExprIndex, Spanned<Error>>;
+    pub type ParseFn<'s, 'p> =
+        fn(&mut Parser<'s, 'p>, &mut Ast, u16, Span) -> Result<ExprIndex, Spanned<Error>>;
 
     pub const PRIMARY: u16 = 0xEE00;
 
@@ -2108,11 +2030,10 @@ macro_rules! unary_op {
         fn $name(
             &mut self,
             ast: &mut $crate::parse::Ast,
-            current_tree: $crate::parse::TokenTreeIndex,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
-            if !self.in_token_tree(current_tree) {
+            if self.check_next(Token::EndOfTree).is_some() {
                 return Err(Spanned::new(
                     $crate::parse::Error::UnaryWithoutOperand,
                     span,
@@ -2140,11 +2061,10 @@ macro_rules! binary_op {
         fn $name(
             &mut self,
             ast: &mut $crate::parse::Ast,
-            current_tree: $crate::parse::TokenTreeIndex,
             precedence: u16,
             span: $crate::Span,
         ) -> Result<$crate::parse::ExprIndex, $crate::Spanned<$crate::parse::Error>> {
-            if !self.in_token_tree(current_tree) {
+            if self.check_next(Token::EndOfTree).is_some() {
                 return Err(Spanned::new(
                     $crate::parse::Error::BinaryWithoutRightOperand,
                     span,
@@ -2172,19 +2092,17 @@ impl<'s, 'p> Parser<'s, 'p> {
         mut ast: &mut Ast,
         min_precedence: u16,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        let within_tree = self.current_tree;
-
         let Some((precedence, (prefix_fn, prefix_span))) = self.prefix_precedence() else {
             return Err(Spanned::new(Error::ExpectedExpr, self.span_or_end()));
         };
 
-        let mut lhs = prefix_fn(self, ast, within_tree, precedence, prefix_span)?;
+        let mut lhs = prefix_fn(self, ast, precedence, prefix_span)?;
 
         loop {
             let current_tree = self.current_tree;
             let at = self.at;
 
-            if self.in_token_tree(within_tree)
+            if self.check_next(Token::EndOfTree).is_none()
                 && let Some((left_precedence, (postfix_fn, postfix_span))) =
                     self.postfix_precedence()
             {
@@ -2195,8 +2113,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                     break;
                 }
 
-                let unfinished_postfix =
-                    postfix_fn(self, ast, within_tree, left_precedence, postfix_span);
+                let unfinished_postfix = postfix_fn(self, ast, left_precedence, postfix_span);
 
                 let unfinished_postfix = match unfinished_postfix.as_ref().map_err(Spanned::kind) {
                     Ok(expr_index) => *expr_index,
@@ -2316,7 +2233,7 @@ impl<'s, 'p> Parser<'s, 'p> {
             let current_tree = self.current_tree;
             let at = self.at;
 
-            if self.in_token_tree(within_tree)
+            if self.check_next(Token::EndOfTree).is_none()
                 && let Some(((left_precedence, right_precedence), (infix_fn, infix_span))) =
                     self.infix_precedence()
             {
@@ -2327,8 +2244,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                     break;
                 }
 
-                let unfinished_infix =
-                    infix_fn(self, ast, within_tree, right_precedence, infix_span)?;
+                let unfinished_infix = infix_fn(self, ast, right_precedence, infix_span)?;
 
                 match ast[unfinished_infix].kind() {
                     Expr::BinaryNoLhs { op, rhs } => {
@@ -2376,7 +2292,6 @@ impl<'s, 'p> Parser<'s, 'p> {
                     let at = self.at;
 
                     if let Some(hash) = self.match_next(Token::Hash)
-                        && self.in_token_tree(current_tree)
                         && let Some(directive) = self.match_next(Token::Identifier)
                     {
                         Some((
@@ -2623,13 +2538,7 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn integer(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn integer(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
             .advance_token_tree()
             .and_then(|token_tree| match token_tree {
@@ -2649,7 +2558,6 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn string_expr(
         &mut self,
         ast: &mut Ast,
-        _: TokenTreeIndex,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -2673,13 +2581,7 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn float(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn float(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
         let token = self
             .advance_token_tree()
             .and_then(|token_tree| match token_tree {
@@ -2696,24 +2598,12 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_true(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_true(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(true), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn so_false(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn so_false(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::Boolean(false), span)))
     }
 
@@ -2722,11 +2612,10 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn negate(
         &mut self,
         ast: &mut Ast,
-        current_tree: TokenTreeIndex,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::UnaryWithoutOperand, span));
         }
 
@@ -2766,62 +2655,47 @@ impl<'s, 'p> Parser<'s, 'p> {
     binary_op!(or, Or);
     binary_op!(assign, Assign);
 
-    fn group(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn group(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         self.advance_token_tree();
 
         let expr = self.parse_expression(ast, 0)?;
+
+        self.match_next(Token::EndOfTree);
 
         Ok(ast.push_expr(Spanned::new(Expr::Group(expr), span)))
     }
 
     fn block_exprs(&mut self, ast: &mut Ast) -> Result<Vec<ExprIndex>, Spanned<Error>> {
-        Ok(
-            if let TokenTree::Tree { tokens, .. } =
-                self.consume_next_token_tree(TreeKind::Brackets, Error::ExpectedBlock)?
-                && !tokens.is_empty()
-            {
-                let mut exprs = vec![];
+        Ok({
+            self.consume_next_token_tree(TreeKind::Brackets, Error::ExpectedBlock)?;
 
-                let current_tree = self.current_tree;
+            let mut exprs = vec![];
 
-                while self.in_token_tree(current_tree) {
-                    let expr = self.parse_expression(ast, 0)?;
+            while self.check_next(Token::EndOfTree).is_none() {
+                let expr = self.parse_expression(ast, 0)?;
 
-                    exprs.push(expr);
+                exprs.push(expr);
 
-                    if !matches!(
-                        ast[expr].kind(),
-                        Expr::Block(_)
-                            | Expr::If { .. }
-                            | Expr::While { .. }
-                            | Expr::AsUnit(_)
-                            | Expr::Match { .. }
-                    ) && self.in_token_tree(current_tree)
-                    {
-                        self.consume_next(Token::Semicolon, Error::BlockWithoutSemicolon)?;
-                    }
+                if !matches!(
+                    ast[expr].kind(),
+                    Expr::Block(_)
+                        | Expr::If { .. }
+                        | Expr::While { .. }
+                        | Expr::AsUnit(_)
+                        | Expr::Match { .. }
+                ) && self.check_next(Token::EndOfTree).is_none()
+                {
+                    self.consume_next(Token::Semicolon, Error::BlockWithoutSemicolon)?;
                 }
+            }
 
-                exprs
-            } else {
-                vec![]
-            },
-        )
+            self.match_next(Token::EndOfTree);
+
+            exprs
+        })
     }
 
-    fn block(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn block(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         let exprs = self.block_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
@@ -2830,7 +2704,6 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn path_element_expr(
         &mut self,
         ast: &mut Ast,
-        _: TokenTreeIndex,
         _: u16,
         _: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -2839,32 +2712,21 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(path_element.transmute(Expr::PathElement)))
     }
 
-    fn name(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        _: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn name(&mut self, ast: &mut Ast, _: u16, _: Span) -> Result<ExprIndex, Spanned<Error>> {
         let name = self.spanned_name()?;
 
         Ok(ast.push_expr(name.transmute(Expr::Name)))
     }
 
-    fn let_in(
-        &mut self,
-        ast: &mut Ast,
-        current_tree: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+    fn let_in(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::LetWithoutName, span));
         }
 
         let mut exprs = vec![];
 
-        while self.peek_token_tree().is_some() && self.check_keyword_next("in").is_none() {
+        while self.check_next(Token::EndOfTree).is_none() && self.check_keyword_next("in").is_none()
+        {
             let name = self.spanned_name()?;
 
             let current_tree = self.current_tree;
@@ -2923,14 +2785,8 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(Spanned::new(Expr::Block(exprs), span)))
     }
 
-    fn if_expr(
-        &mut self,
-        ast: &mut Ast,
-        current_tree: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+    fn if_expr(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::IfWithoutCondition, span));
         }
 
@@ -2944,39 +2800,35 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let when_true_span = self.span_or_end();
 
-        let current_tree = self.current_tree;
+        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
+            error.transmute(|error| match error {
+                Error::ExpectedBlock => Error::IfThenWithoutBlock,
+                error => error,
+            })
+        })?;
 
-        let when_true = self
-            .block(ast, current_tree, 0, when_true_span)
-            .map_err(|error| {
-                error.transmute(|error| match error {
-                    Error::ExpectedBlock => Error::IfThenWithoutBlock,
-                    error => error,
-                })
-            })?;
-
-        let otherwise =
-            if self.in_token_tree(current_tree) && self.match_keyword_next("else").is_some() {
-                if let Some(next_token) = self.match_keyword_next("if") {
-                    self.if_expr(ast, current_tree, 0, next_token.span())?
-                } else {
-                    let otherwise_span = self.span_or_end();
-
-                    self.block(ast, current_tree, 0, otherwise_span)
-                        .map_err(|error| {
-                            error.transmute(|error| match error {
-                                Error::ExpectedBlock => Error::IfElseWithoutBlock,
-                                error => error,
-                            })
-                        })?
-                }
+        let otherwise = if self.check_next(Token::EndOfTree).is_none()
+            && self.match_keyword_next("else").is_some()
+        {
+            if let Some(next_token) = self.match_keyword_next("if") {
+                self.if_expr(ast, 0, next_token.span())?
             } else {
-                ast.push_expr(Spanned::new(
-                    Expr::Unit,
-                    span.combine_with(ast[when_true].span())
-                        .expect("these spans are from the same source"),
-                ))
-            };
+                let otherwise_span = self.span_or_end();
+
+                self.block(ast, 0, otherwise_span).map_err(|error| {
+                    error.transmute(|error| match error {
+                        Error::ExpectedBlock => Error::IfElseWithoutBlock,
+                        error => error,
+                    })
+                })?
+            }
+        } else {
+            ast.push_expr(Spanned::new(
+                Expr::Unit,
+                span.combine_with(ast[when_true].span())
+                    .expect("these spans are from the same source"),
+            ))
+        };
 
         let span = span
             .combine_with(ast[otherwise].span())
@@ -2995,11 +2847,10 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn while_expr(
         &mut self,
         ast: &mut Ast,
-        current_tree: TokenTreeIndex,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::WhileWithoutCondition, span));
         }
 
@@ -3013,14 +2864,12 @@ impl<'s, 'p> Parser<'s, 'p> {
 
         let when_true_span = self.span_or_end();
 
-        let when_true = self
-            .block(ast, current_tree, 0, when_true_span)
-            .map_err(|error| {
-                error.transmute(|error| match error {
-                    Error::ExpectedBlock => Error::WhileWithoutBlock,
-                    error => error,
-                })
-            })?;
+        let when_true = self.block(ast, 0, when_true_span).map_err(|error| {
+            error.transmute(|error| match error {
+                Error::ExpectedBlock => Error::WhileWithoutBlock,
+                error => error,
+            })
+        })?;
 
         let span = span
             .combine_with(ast[when_true].span())
@@ -3038,7 +2887,6 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn directive_expr(
         &mut self,
         ast: &mut Ast,
-        _current_tree: TokenTreeIndex,
         _: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
@@ -3049,63 +2897,45 @@ impl<'s, 'p> Parser<'s, 'p> {
     }
 
     fn call_exprs(&mut self, ast: &mut Ast) -> Result<Vec<ExprIndex>, Spanned<Error>> {
-        Ok(
-            if let TokenTree::Tree { tokens, .. } =
-                self.consume_next_token_tree(TreeKind::Parentheses, Error::ExpectedCallArguments)?
-                && !tokens.is_empty()
-            {
-                let mut exprs = vec![];
+        Ok({
+            self.consume_next_token_tree(TreeKind::Parentheses, Error::ExpectedCallArguments)?;
 
-                let current_tree = self.current_tree;
+            let mut exprs = vec![];
 
-                while self.in_token_tree(current_tree) {
-                    let expr = self.parse_expression(ast, 0)?;
+            while self.check_next(Token::EndOfTree).is_none() {
+                let expr = self.parse_expression(ast, 0)?;
 
-                    exprs.push(expr);
+                exprs.push(expr);
 
-                    if self.in_token_tree(current_tree) {
-                        self.consume_next(Token::Comma, Error::CallWithoutComma)?;
-                    }
+                if self.check_next(Token::EndOfTree).is_none() {
+                    self.consume_next(Token::Comma, Error::CallWithoutComma)?;
                 }
+            }
 
-                exprs
-            } else {
-                vec![]
-            },
-        )
+            self.match_next(Token::EndOfTree);
+
+            exprs
+        })
     }
 
-    fn call(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn call(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         let arguments = self.call_exprs(ast)?;
 
         Ok(ast.push_expr(Spanned::new(Expr::CallNoCallee(arguments), span)))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn as_unit(
-        &mut self,
-        ast: &mut Ast,
-        _: TokenTreeIndex,
-        _: u16,
-        span: Span,
-    ) -> Result<ExprIndex, Spanned<Error>> {
+    fn as_unit(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::AsUnitNoValue, span)))
     }
 
     fn return_expr(
         &mut self,
         ast: &mut Ast,
-        current_tree: TokenTreeIndex,
         precedence: u16,
         span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::ReturnWithoutValue, span));
         }
 
@@ -3123,17 +2953,14 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn product_expr(
         &mut self,
         ast: &mut Ast,
-        _: TokenTreeIndex,
         _: u16,
         mut span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
         let fields = if let TokenTree::Tree {
-            tokens,
-            span: tree_span,
-            ..
+            span: tree_span, ..
         } =
             self.consume_next_token_tree(TreeKind::Brackets, Error::ProductWithoutFields)?
-            && !tokens.is_empty()
+            && self.match_next(Token::EndOfTree).is_none()
         {
             span = span
                 .combine_with(*tree_span)
@@ -3141,14 +2968,14 @@ impl<'s, 'p> Parser<'s, 'p> {
 
             let mut fields = vec![];
 
-            let current_tree = self.current_tree;
-
-            while self.in_token_tree(current_tree) {
+            while self.check_next(Token::EndOfTree).is_none() {
                 let name = self
                     .spanned_name()
                     .map_err(|error| error.transmute(|_| Error::ProductFieldWithoutName))?;
 
-                if self.in_token_tree(current_tree) && self.match_next(Token::Comma).is_some() {
+                if self.check_next(Token::EndOfTree).is_none()
+                    && self.match_next(Token::Comma).is_some()
+                {
                     fields.push((
                         name.clone(),
                         ast.push_expr(Spanned::new(Expr::Name(name.kind().clone()), name.span())),
@@ -3174,10 +3001,12 @@ impl<'s, 'p> Parser<'s, 'p> {
 
                 fields.push((name, value));
 
-                if self.in_token_tree(current_tree) {
+                if self.check_next(Token::EndOfTree).is_none() {
                     self.consume_next(Token::Comma, Error::ProductFieldsWithoutComma)?;
                 }
             }
+
+            self.match_next(Token::EndOfTree);
 
             fields
         } else {
@@ -3190,11 +3019,10 @@ impl<'s, 'p> Parser<'s, 'p> {
     fn match_expr(
         &mut self,
         ast: &mut Ast,
-        current_tree: TokenTreeIndex,
         _: u16,
         mut span: Span,
     ) -> Result<ExprIndex, Spanned<Error>> {
-        if !self.in_token_tree(current_tree) {
+        if self.check_next(Token::EndOfTree).is_some() {
             return Err(Spanned::new(Error::MatchWithoutValue, span));
         }
 
@@ -3203,12 +3031,10 @@ impl<'s, 'p> Parser<'s, 'p> {
         let mut fallback = None;
 
         let cases = if let TokenTree::Tree {
-            tokens,
-            span: tree_span,
-            ..
+            span: tree_span, ..
         } =
             self.consume_next_token_tree(TreeKind::Brackets, Error::MatchWithoutBody)?
-            && !tokens.is_empty()
+            && self.match_next(Token::EndOfTree).is_none()
         {
             span = span
                 .combine_with(*tree_span)
@@ -3216,9 +3042,7 @@ impl<'s, 'p> Parser<'s, 'p> {
 
             let mut cases = vec![];
 
-            let current_tree = self.current_tree;
-
-            while self.in_token_tree(current_tree) {
+            while self.check_next(Token::EndOfTree).is_none() {
                 let pattern = if self.match_keyword_next("else").is_some() {
                     None
                 } else {
@@ -3260,11 +3084,13 @@ impl<'s, 'p> Parser<'s, 'p> {
                 if !matches!(
                     ast[case].kind(),
                     Expr::Block(_) | Expr::If { .. } | Expr::While { .. } | Expr::Match { .. }
-                ) && self.in_token_tree(current_tree)
+                ) && self.check_next(Token::EndOfTree).is_none()
                 {
                     self.consume_next(Token::Comma, Error::MatchCasesWithoutComma)?;
                 }
             }
+
+            self.match_next(Token::EndOfTree);
 
             cases
         } else {
@@ -3329,7 +3155,6 @@ impl Parser<'_, '_> {
                 if self.match_next(Token::Minus).is_some()
                     && let Some(TokenTree::Token(next_token)) = self.advance_token_tree()
                     && let Token::Integer(radix) = next_token.kind()
-                    && self.in_token_tree(current_tree)
                 {
                     Ok(Spanned::new(
                         Pattern::NegativeInteger(*radix),
@@ -3369,13 +3194,11 @@ impl Parser<'_, '_> {
                         .expect("paths are never empty");
 
                     let fields = if let TokenTree::Tree {
-                        tokens,
-                        span: tree_span,
-                        ..
+                        span: tree_span, ..
                     } = self.consume_next_token_tree(
                         TreeKind::Brackets,
                         Error::ProductPatternWithoutFields,
-                    )? && !tokens.is_empty()
+                    )? && self.match_next(Token::EndOfTree).is_none()
                     {
                         span = span
                             .combine_with(*tree_span)
@@ -3385,14 +3208,14 @@ impl Parser<'_, '_> {
 
                         let current_tree = self.current_tree;
 
-                        while self.in_token_tree(current_tree) {
+                        while self.check_next(Token::EndOfTree).is_none() {
                             let at = self.at;
 
                             if let Some(dot) = self.match_next(Token::Dot)
                                 && let Some(second_dot) = self.match_next(Token::Dot)
                                 && second_dot.span().start() == dot.span().end()
                             {
-                                if self.in_token_tree(current_tree) {
+                                if self.check_next(Token::EndOfTree).is_none() {
                                     return Err(Spanned::new(
                                         Error::PatternFieldElisionWasNotEnd,
                                         self.span_or_end(),
@@ -3418,13 +3241,15 @@ impl Parser<'_, '_> {
 
                             fields.push((field_name, pattern));
 
-                            if self.in_token_tree(current_tree) {
+                            if self.check_next(Token::EndOfTree).is_none() {
                                 self.consume_next(
                                     Token::Comma,
                                     Error::ProductPatternFieldsWithoutComma,
                                 )?;
                             }
                         }
+
+                        self.match_next(Token::EndOfTree);
 
                         fields.sort_by(|(a_field_name, _), (b_field_name, _)| {
                             a_field_name.kind().cmp(b_field_name.kind())

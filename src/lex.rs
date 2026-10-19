@@ -38,6 +38,7 @@ pub enum Token {
     Pipe,
     String,
     Hash,
+    EndOfTree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -86,6 +87,10 @@ impl Lexer {
 
     pub const fn source_id(&self) -> usize {
         self.source_id
+    }
+
+    pub const fn source(&self) -> &str {
+        self.source.as_str()
     }
 
     const fn at(&self) -> usize {

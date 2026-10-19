@@ -660,4 +660,10 @@ mod compilation_error {
             expected, got
         })] if expected == "Wrapper[i64]" && got == "Wrapper[unit]"
     );
+
+    apart::test_compilation_errors!(
+        unnamed_mod,
+        "unnamed_mod.txt",
+        [apart::Error::Parse(apart::ParseError::ModWithoutName)]
+    );
 }

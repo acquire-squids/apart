@@ -1,0 +1,9 @@
+funky main() {
+	
+}
+
+mod a {
+	mod
+} b {
+	
+}
