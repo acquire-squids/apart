@@ -9,25 +9,52 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
     let mut block_swaps = vec![const { None }; ssa.blocks().len()];
 
-    for (b, block) in ssa.blocks().iter().enumerate() {
-        if let BlockTerminator::Jump(destination) = block.terminator()
-            && (block.instructions().is_empty()
-                || block.instructions().iter().all(|instruction| {
-                    matches!(
-                        instruction,
-                        Instruction::NoOp
-                            | Instruction::ScopeStart
-                            | Instruction::PopN(0)
-                            | Instruction::FnLabel { .. }
-                    )
-                }))
-        {
-            block_swaps[usize::try_from(u32::from(*destination))
-                .expect("this is verified fine by previous stages")] = Some(BlockIndex(
-                u32::try_from(b).expect("this is verified fine by previous stages"),
-            ));
+    for (b, block) in ssa.blocks_mut().iter_mut().enumerate() {
+        match block.terminator_mut() {
+            BlockTerminator::Return(_) => {}
+            BlockTerminator::Jump(destination) => {
+                let destination = *destination;
 
-            changed = true;
+                if block.instructions().is_empty()
+                    || block.instructions().iter().all(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::NoOp
+                                | Instruction::ScopeStart
+                                | Instruction::PopN(0)
+                                | Instruction::FnLabel { .. }
+                        )
+                    })
+                {
+                    block_swaps[usize::try_from(u32::from(destination))
+                        .expect("this is verified fine by previous stages")] = Some(BlockIndex(
+                        u32::try_from(b).expect("this is verified fine by previous stages"),
+                    ));
+
+                    changed = true;
+                }
+            }
+            BlockTerminator::Branch {
+                condition,
+                when_true,
+                otherwise,
+            } => match condition {
+                Value::Boolean(true) => {
+                    let when_true = *when_true;
+
+                    *block.terminator_mut() = BlockTerminator::Jump(when_true);
+
+                    changed |= true;
+                }
+                Value::Boolean(false) => {
+                    let otherwise = *otherwise;
+
+                    *block.terminator_mut() = BlockTerminator::Jump(otherwise);
+
+                    changed |= true;
+                }
+                _ => {}
+            },
         }
     }
 
