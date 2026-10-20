@@ -50,7 +50,7 @@ pub enum Interrupt {
 
 /// # Errors
 /// Returns an `Interrupt` under the following conditions:
-/// - a `CopyableValue::Never` was passed to `Vm::dereference_value`, returning `Interrupt::Panic` (unreachable code was reached)
+/// - an `Instruction::Panic` was reached (`Interrupt::Panic`)
 ///
 /// # Panics
 /// Panics if passed a program that wasn't successfully compiled for the same version
