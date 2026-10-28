@@ -102,7 +102,7 @@ impl fmt::Display for Error {
 impl error::Error for Error {}
 
 pub struct Block {
-    call_argument_count: u16,
+    call_argument_count: u8,
     instructions: Vec<Instruction>,
     terminator: Option<BlockTerminator>,
 }
@@ -143,7 +143,7 @@ impl Block {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn call_argument_count(&self) -> u16 {
+    pub const fn call_argument_count(&self) -> u8 {
         self.call_argument_count
     }
 
@@ -261,9 +261,9 @@ impl Translator<'_> {
 enum Addresslike {
     Address(Address),
     Block(BlockIndex),
-    CallArgument(u16),
+    CallArgument(u8),
     NativeFn { name: Span, module_id: ModuleId },
-    CompoundField { index: u16, of: Address },
+    CompoundField { index: u8, of: Address },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -285,7 +285,7 @@ pub enum Value {
     Fn(BlockIndex),
     Address(Address),
     NativeFn { name: Span, module_id: ModuleId },
-    CallArgument(u16),
+    CallArgument(u8),
     Register(usize),
     Compound(Vec<Self>),
     TaggedCompound { fields: Vec<Self>, tag: u16 },
@@ -317,16 +317,16 @@ pub enum Instruction {
     Push(Value),
     Call {
         callee: Value,
-        arity: u16,
+        arity: u8,
         temporary: Value,
     },
     Access {
-        index: u16,
+        index: u8,
         of: Value,
         temporary: Value,
     },
     AccessAssign {
-        index: u16,
+        index: u8,
         of: Value,
         value: Value,
     },
@@ -628,7 +628,7 @@ impl<'a> Translator<'a> {
                 function_label,
             });
 
-            let mut parameter_count = 0u16;
+            let mut parameter_count = 0u8;
 
             for parameter in parameters {
                 self.addresses.insert(
@@ -1630,7 +1630,7 @@ impl Translator<'_> {
             })
             .collect::<Vec<_>>();
 
-        let mut arity = 0u16;
+        let mut arity = 0u8;
 
         for argument in arguments {
             self.push_instruction(Instruction::Push(argument));
@@ -1814,7 +1814,7 @@ impl Translator<'_> {
     fn find_field_index(
         (ast, _, types): (&Ast, &Names, &TypeChecker),
         (lhs, rhs): (ExprIndex, ExprIndex),
-    ) -> u16 {
+    ) -> u8 {
         let lhs_span = ast[lhs].span();
 
         match &types[types[lhs_span]] {
@@ -1826,7 +1826,7 @@ impl Translator<'_> {
                     let Some(field_index) = type_fields
                         .iter()
                         .position(|field| field.name() == name)
-                        .and_then(|index| u16::try_from(index).ok())
+                        .and_then(|index| u8::try_from(index).ok())
                     else {
                         unreachable!("type checking guarantees the field exists on the type");
                     };
@@ -2097,7 +2097,7 @@ impl Translator<'_> {
             })
             .collect::<Vec<_>>();
 
-        let mut arity = 0u16;
+        let mut arity = 0u8;
 
         for argument in arguments {
             self.push_instruction(Instruction::Push(argument));
@@ -2385,7 +2385,7 @@ impl Translator<'_> {
 
                         let field_index = field_types.iter()
                             .position(|field_type| field_type.name() == field_name.kind())
-                            .and_then(|index| u16::try_from(index).ok())
+                            .and_then(|index| u8::try_from(index).ok())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {
@@ -2490,7 +2490,7 @@ impl Translator<'_> {
 
                         let field_index = field_types.iter()
                             .position(|field_type| field_type.name() == field_name.kind())
-                            .and_then(|index| u16::try_from(index).ok())
+                            .and_then(|index| u8::try_from(index).ok())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
                         self.push_instruction(Instruction::Access {

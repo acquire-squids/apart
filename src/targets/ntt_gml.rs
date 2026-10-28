@@ -284,7 +284,8 @@ fn compile_block(
                 }
 
                 buffer.push_str(
-                    compile_location(mangled_prefix, Location::Register(Register(i))).as_str(),
+                    compile_location(mangled_prefix, Location::Register(Register(u16::from(i))))
+                        .as_str(),
                 );
             }
 
@@ -295,7 +296,7 @@ fn compile_block(
                 .map(|i| {
                     format!(
                         "{}{} = null",
-                        if i > block.call_argument_count() {
+                        if i > u16::from(block.call_argument_count()) {
                             ", "
                         } else {
                             ""
@@ -311,7 +312,7 @@ fn compile_block(
 
             locals.push(';');
 
-            buffer.push_str(format!(" {{ var {mangled_prefix}_block_index = {b};{} while true {{ switch {mangled_prefix}_block_index {{", if block.max_register_count() > block.call_argument_count() { locals.as_str() } else { "" }).as_str());
+            buffer.push_str(format!(" {{ var {mangled_prefix}_block_index = {b};{} while true {{ switch {mangled_prefix}_block_index {{", if block.max_register_count() > u16::from(block.call_argument_count()) { locals.as_str() } else { "" }).as_str());
         }
 
         let mut call_arguments = vec![];

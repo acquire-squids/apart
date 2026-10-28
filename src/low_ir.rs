@@ -60,7 +60,7 @@ impl<T> Ir<T> {
 
 pub struct Block<T> {
     instructions: Vec<Instruction<T>>,
-    call_argument_count: u16,
+    call_argument_count: u8,
     max_register_count: u16,
 }
 
@@ -68,7 +68,7 @@ impl<T> Block<T> {
     #[must_use]
     pub const fn new(
         instructions: Vec<Instruction<T>>,
-        call_argument_count: u16,
+        call_argument_count: u8,
         max_register_count: u16,
     ) -> Self {
         Self {
@@ -92,7 +92,7 @@ impl<T> Block<T> {
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn call_argument_count(&self) -> u16 {
+    pub const fn call_argument_count(&self) -> u8 {
         self.call_argument_count
     }
 }
@@ -266,18 +266,18 @@ pub enum Instruction<T> {
     },
     Push(ValueOrLocation<T>),
     Access {
-        index: u16,
+        index: u8,
         of: ValueOrLocation<T>,
         to: Location,
     },
     AccessAssign {
-        index: u16,
+        index: u8,
         of: ValueOrLocation<T>,
         value: ValueOrLocation<T>,
     },
     Call {
         callee: ValueOrLocation<T>,
-        arity: u16,
+        arity: u8,
         to: Location,
     },
     GetTag {

@@ -523,17 +523,17 @@ impl fmt::Display for Error {
             Self::TooManyArguments(got) => write!(
                 f,
                 "a function call may not exceed {} arguments (got {got})",
-                u16::MAX
+                u8::MAX
             ),
             Self::TooManyParameters(got) => write!(
                 f,
                 "a function definition may not exceed {} parameters (got {got})",
-                u16::MAX
+                u8::MAX
             ),
             Self::TooManyFields(got) => write!(
                 f,
                 "a product or sum variant may not have more than {} parameters (got {got})",
-                u16::MAX
+                u8::MAX
             ),
         }
     }
@@ -979,7 +979,7 @@ impl TypeChecker {
                         })
                         .collect::<Vec<_>>();
 
-                    if fields.len() > usize::from(u16::MAX) {
+                    if fields.len() > usize::from(u8::MAX) {
                         self.errors.push(Spanned::new(
                             Error::TooManyFields(fields.len()),
                             ast[*item].span(),
@@ -1556,7 +1556,7 @@ impl TypeChecker {
             ..
         } = ast[item].kind()
         {
-            if parameters.len() > usize::from(u16::MAX) {
+            if parameters.len() > usize::from(u8::MAX) {
                 self.errors.push(Spanned::new(
                     Error::TooManyParameters(parameters.len()),
                     name.span(),
@@ -2645,7 +2645,7 @@ impl TypeChecker {
         (callee_span, callee_type_index, arguments): (Span, TypeIndex, &[ExprIndex]),
         context: &[(String, TypeIndex)],
     ) -> Result<TypeIndex, Spanned<Error>> {
-        if arguments.len() > usize::from(u16::MAX) {
+        if arguments.len() > usize::from(u8::MAX) {
             return Err(Spanned::new(
                 Error::TooManyArguments(arguments.len()),
                 callee_span,
