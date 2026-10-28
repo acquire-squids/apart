@@ -11,8 +11,8 @@ use std::{
 
 struct CallFrame {
     fp: usize,
-    from: usize,
-    register_count: usize,
+    from: u32,
+    max_register_count: u16,
     to: Register,
 }
 
@@ -75,7 +75,7 @@ where
         call_frames: vec![CallFrame {
             fp: 0,
             from: 0,
-            register_count: 0,
+            max_register_count: 0,
             to: Register(0),
         }],
         function_labels: vec![],
@@ -1101,9 +1101,10 @@ impl Vm {
                         }
 
                         let call_frame = CallFrame {
-                            from: self.ip,
+                            from: u32::try_from(self.ip)
+                                .expect("return address was not a valid u32"),
                             fp: self.sp - usize::from(*arity),
-                            register_count: self.registers.len(),
+                            max_register_count,
                             to: *to,
                         };
 
@@ -1148,9 +1149,10 @@ impl Vm {
                         }
 
                         let call_frame = CallFrame {
-                            from: self.ip,
+                            from: u32::try_from(self.ip)
+                                .expect("return address was not a valid u32"),
                             fp: self.sp - usize::from(*arity),
-                            register_count: self.registers.len(),
+                            max_register_count,
                             to: *to,
                         };
 
@@ -1228,13 +1230,16 @@ impl Vm {
                 let value = self.get_register(*value);
 
                 if let Some(call_frame) = self.call_frames.pop() {
-                    self.ip = call_frame.from;
+                    self.ip = usize::try_from(call_frame.from)
+                        .expect("return address was not a valid usize");
 
                     self.fp = self.call_frames.last().map_or(0, |frame| frame.fp);
 
                     self.sp = call_frame.fp;
 
-                    self.registers.truncate(call_frame.register_count);
+                    self.registers.truncate(
+                        self.registers.len() - usize::from(call_frame.max_register_count),
+                    );
 
                     self.function_labels.pop();
 
@@ -1251,13 +1256,16 @@ impl Vm {
                 let value = self.dereference_value(*value, true);
 
                 if let Some(call_frame) = self.call_frames.pop() {
-                    self.ip = call_frame.from;
+                    self.ip = usize::try_from(call_frame.from)
+                        .expect("return address was not a valid usize");
 
                     self.fp = self.call_frames.last().map_or(0, |frame| frame.fp);
 
                     self.sp = call_frame.fp;
 
-                    self.registers.truncate(call_frame.register_count);
+                    self.registers.truncate(
+                        self.registers.len() - usize::from(call_frame.max_register_count),
+                    );
 
                     self.function_labels.pop();
 
