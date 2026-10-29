@@ -39,6 +39,13 @@ fn main() -> ExitCode {
                         compile(&options, sources).map_or(
                             ExitCode::FAILURE,
                             |compiled| {
+                                if options.run {
+                                    return apart::vm::run(
+                                        apart::targets::vm::compile(&options, &compiled).as_slice(),
+                                        &mut std::io::stdout().lock()
+                                    ).map_or(ExitCode::FAILURE, |()| ExitCode::SUCCESS);
+                                }
+
                                 let output_path = Path::new(options.output.as_str());
 
                                 if let Some(directory) = output_path.parent() && let Err(error) = fs::create_dir_all(directory) {
@@ -206,7 +213,10 @@ Description:
     -O, --optimize
         perform optimizations during compilation
 
-    -s, --strip-debug-info
+    -r, --run
+        also compile to bytecode and run the bytecode directly, without outputting to a file
+
+    -S, --strip-debug-info
         compile without including location data for panics
 
     -T, --target TARGET_NAME
@@ -229,6 +239,7 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
         strip_debug_info: false,
         optimize: false,
         target: Target::Vm,
+        run: false,
     };
 
     while let Some(argument) = arguments.peek() {
@@ -260,6 +271,11 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                 arguments.next();
 
                 options.optimize = true;
+            }
+            "-r" | "--run" => {
+                arguments.next();
+
+                options.run = true;
             }
             "-S" | "--strip-debug-info" => {
                 arguments.next();

@@ -44,6 +44,7 @@ pub enum Target {
 pub struct ApartOptions {
     pub output: String,
     pub optimize: bool,
+    pub run: bool,
     pub strip_debug_info: bool,
     pub target: Target,
 }
@@ -312,6 +313,7 @@ macro_rules! __test_vm_output_single_function {
             let options = $crate::ApartOptions {
                 output: String::new(),
                 optimize: $optimized,
+                run: true,
                 strip_debug_info: true,
                 target: $crate::Target::Vm,
             };
@@ -418,6 +420,7 @@ macro_rules! __test_compilation_errors {
                     &$crate::ApartOptions {
                         output: String::new(),
                         optimize: false,
+                        run: true,
                         strip_debug_info: true,
                         target: $crate::Target::Vm,
                     },
