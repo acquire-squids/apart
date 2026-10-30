@@ -1,0 +1,9 @@
+funky main() {
+	let
+		x = 2,
+		y = x,
+		z = 3 + x,
+	in {
+		print_u32(z);
+	};
+}

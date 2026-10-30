@@ -21,6 +21,8 @@ macro_rules! output_tests {
 
             apart::$test_macro!(callee_is_call, "callee_is_call.txt", Ok("true\n"));
 
+            apart::$test_macro!(copy_propagation, "copy_propagation.txt", Ok("5\n"));
+
             apart::$test_macro!(directive, "directive.txt", Ok("vm\n"));
 
             apart::$test_macro!(empty, "empty.txt", Ok(""));
