@@ -72,8 +72,8 @@ fn main() -> ExitCode {
 
                                         let mut errored = false;
 
-                                        for (ntt_output_path, ntt_output_source) in output {
-                                            ntt_gml_files.push(options.output.clone());
+                                        for (ntt_output_path, ntt_output_source) in &output {
+                                            ntt_gml_files.push(ntt_output_path);
 
                                             let ntt_output_path = output_path.join(ntt_output_path);
 
@@ -100,7 +100,7 @@ fn main() -> ExitCode {
                                             return ExitCode::FAILURE;
                                         }
 
-                                        if let Err(error) = fs::write(output_path.join("main.txt"), ntt_gml_files.iter().map(|ntt_gml_file| format!("/loadlive {ntt_gml_file}")).fold(String::new(), |mut accum, command| {
+                                        if let Err(error) = fs::write(output_path.join("main.txt"), ntt_gml_files.iter().map(|ntt_gml_file| format!("/loadlive {}", ntt_gml_file.display())).fold(String::new(), |mut accum, command| {
                                             accum.push_str(command.as_str());
 
                                             accum.push('\n');
@@ -160,9 +160,8 @@ fn compile<'a>(
                 let report_data = reporting::ReportData::new(
                     sources[source_index].1.1,
                     "error",
-                    source_index
-                        .checked_sub(1)
-                        .and_then(|source_index| sources.get(source_index))
+                    sources
+                        .get(source_index)
                         .map(|(_, (file_name, _))| file_name)
                         .copied()
                         .unwrap_or("core"),

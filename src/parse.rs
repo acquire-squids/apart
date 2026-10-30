@@ -672,7 +672,10 @@ pub enum Pattern {
 
 #[derive(Debug, Clone)]
 pub enum Item {
-    Primitive(Spanned<String>),
+    Primitive {
+        name: Spanned<String>,
+        generics: Vec<Spanned<String>>,
+    },
     NativeFn {
         visibility: Visibility,
         name: Spanned<String>,
@@ -902,10 +905,7 @@ impl Ast {
             | Expr::Unit
             | Expr::Name(_)
             | Expr::AsUnitNoValue
-            | Expr::BinaryNoLhs {
-                op: BinaryOp::Access | BinaryOp::PathAccess,
-                ..
-            }
+            | Expr::BinaryNoLhs { .. }
             | Expr::PathElement(_)
             | Expr::ProductNoName(_)
             | Expr::CallNoCallee(_)
@@ -913,9 +913,6 @@ impl Ast {
             | Expr::Never => {}
             Expr::Unary { expr, .. } | Expr::Group(expr) => {
                 f(self, *expr);
-            }
-            Expr::BinaryNoLhs { rhs, .. } => {
-                f(self, *rhs);
             }
             Expr::Binary {
                 op: BinaryOp::Access,
@@ -1360,6 +1357,8 @@ impl Parser<'_, '_> {
             .spanned_name()
             .map_err(|error| error.transmute(|_| Error::PrimitiveWithoutName))?;
 
+        let generics = self.parse_generics()?;
+
         let semicolon_span = self
             .consume_next(Token::Semicolon, Error::PrimitiveWithoutSemicolon)?
             .span();
@@ -1368,7 +1367,7 @@ impl Parser<'_, '_> {
             .combine_with(semicolon_span)
             .expect("these spans are from the same source");
 
-        Ok(ast.push_item(Spanned::new(Item::Primitive(name), span)))
+        Ok(ast.push_item(Spanned::new(Item::Primitive { name, generics }, span)))
     }
 
     fn parse_native_function(
@@ -1740,7 +1739,7 @@ impl Parser<'_, '_> {
             match &ast[item].kind() {
                 Item::Directive { item, .. }
                     if matches!(ast[*item].kind(), Item::NativeFn { .. } | Item::Fn { .. }) => {}
-                Item::Primitive(_)
+                Item::Primitive { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. }
                 | Item::Mod { .. }

@@ -12,6 +12,7 @@ pub primitive bool;
 pub primitive unit;
 pub primitive String;
 pub primitive never;
+pub primitive Vec[T];
 
 pub alias Option[T] = option~Option[T];
 pub alias Result[T, E] = result~Result[T, E];
@@ -44,6 +45,34 @@ pub mod string {
 		pub native funky floor_char_boundary = funky(Self, u64) -> u64;
 
 		pub native funky ceil_char_boundary = funky(Self, u64) -> u64;
+
+		pub funky is_empty(self <- Self) -> bool {
+			self.length() == 0
+		}
+	}
+}
+
+pub mod vec {
+	teach[T] Vec[T] {
+		pub native funky new = funky() -> Self;
+
+		pub native funky get = funky(Self, u64) -> root~Option[T];
+
+		pub native funky extend = funky(Self, Self) -> unit;
+
+		pub native funky slice = funky(Self, u64, u64) -> root~Option[Self];
+
+		pub native funky length = funky(Self) -> u64;
+
+		pub native funky truncate = funky(Self, u64) -> unit;
+
+		pub native funky push = funky(Self, T) -> unit;
+
+		pub native funky pop = funky(Self) -> root~Option[T];
+
+		pub funky is_empty(self <- Self) -> bool {
+			self.length() == 0
+		}
 	}
 }
 

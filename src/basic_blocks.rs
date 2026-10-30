@@ -13,6 +13,8 @@ pub mod modules {
     pub const MODULE_ROOT: u64 = super::ROOT_MODULE.is();
 
     pub const MODULE_STRING: u64 = 1;
+
+    pub const MODULE_VEC: u64 = 2;
 }
 
 pub fn translate(
@@ -369,7 +371,7 @@ impl<'a> Translator<'a> {
 
                 self.next_block().map(|_| ())
             }
-            Item::Primitive(_)
+            Item::Primitive { .. }
             | Item::Product { .. }
             | Item::Sum { .. }
             | Item::Directive { .. }
@@ -483,7 +485,7 @@ impl<'a> Translator<'a> {
                 {
                     self.label_function(ast, names, *item)?;
                 }
-                Item::Primitive(_)
+                Item::Primitive { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. }
                 | Item::Fn { .. }
@@ -506,7 +508,7 @@ impl<'a> Translator<'a> {
     ) -> Result<(), Error> {
         for item in items {
             match ast[*item].kind() {
-                Item::Primitive(_)
+                Item::Primitive { .. }
                 | Item::NativeFn { .. }
                 | Item::Product { .. }
                 | Item::Sum { .. }
@@ -693,7 +695,7 @@ impl Translator<'_> {
             }
             Expr::Integer(radix) => {
                 self.values.push(
-                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                    if let Type::Primitive { primitive, .. } = &types[types[ast[expr].span()]] {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
@@ -733,10 +735,15 @@ impl Translator<'_> {
                                 i64::from_str_radix(lexeme, *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
-                            _ => unreachable!("type checking guarantees integers are integers"),
+                            primitive => unreachable!(
+                                "type checking guarantees integers are integers {primitive:?}"
+                            ),
                         }
                     } else {
-                        unreachable!("type checking guarantees integers are primitives")
+                        unreachable!(
+                            "type checking guarantees integers are primitives {:?}",
+                            types.to_string(types[ast[expr].span()])
+                        );
                     },
                 );
 
@@ -748,7 +755,7 @@ impl Translator<'_> {
             }
             Expr::NegativeInteger(radix) => {
                 self.values.push(
-                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                    if let Type::Primitive { primitive, .. } = &types[types[ast[expr].span()]] {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
@@ -772,10 +779,15 @@ impl Translator<'_> {
                                 i64::from_str_radix(format!("-{lexeme}").as_str(), *radix)
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
-                            _ => unreachable!("type checking guarantees integers are integers"),
+                            primitive => unreachable!(
+                                "type checking guarantees integers are integers {primitive:?}"
+                            ),
                         }
                     } else {
-                        unreachable!("type checking guarantees integers are primitives")
+                        unreachable!(
+                            "type checking guarantees integers are primitives {:?}",
+                            types.to_string(types[ast[expr].span()])
+                        );
                     },
                 );
 
@@ -787,7 +799,7 @@ impl Translator<'_> {
             }
             Expr::Float => {
                 self.values.push(
-                    if let Type::Primitive(primitive) = &types[types[ast[expr].span()]] {
+                    if let Type::Primitive { primitive, .. } = &types[types[ast[expr].span()]] {
                         let lexeme = sources
                             .iter()
                             .find(|(source_id, _)| *source_id == ast[expr].span().source_id())
@@ -805,10 +817,15 @@ impl Translator<'_> {
                                     .parse::<f64>()
                                     .expect("type checking guarantees the conversion is valid"),
                             ),
-                            _ => unreachable!("type checking guarantees floats are floats"),
+                            primitive => unreachable!(
+                                "type checking guarantees floats are floats {primitive:?}"
+                            ),
                         }
                     } else {
-                        unreachable!("type checking guarantees floats are primitives")
+                        unreachable!(
+                            "type checking guarantees floats are primitives {:?}",
+                            types.to_string(types[ast[expr].span()])
+                        );
                     },
                 );
 
@@ -1194,7 +1211,7 @@ impl Translator<'_> {
                 matches!(op, BinaryOp::Divide)
                 && (
                     matches!(types[types[ast[expr].span()]], Type::Integer(_) | Type::NegativeInteger(_))
-                    || matches!(&types[types[ast[expr].span()]], Type::Primitive(primitive) if matches!(primitive.kind(), Primitive::U8 | Primitive::I8 | Primitive::U16 | Primitive::I16 | Primitive::U32 | Primitive::I32 | Primitive::U64 | Primitive::I64))
+                    || matches!(&types[types[ast[expr].span()]], Type::Primitive { primitive, .. } if matches!(primitive.kind(), Primitive::U8 | Primitive::I8 | Primitive::U16 | Primitive::I16 | Primitive::U32 | Primitive::I32 | Primitive::U64 | Primitive::I64))
                 )
             {
                 BinaryOp::IntegerDivide
@@ -1936,7 +1953,7 @@ impl Translator<'_> {
                 | Type::AnyOf { .. },
             )
             | None => None,
-            Some(Type::Primitive(primitive)) => Some(primitive.span()),
+            Some(Type::Primitive { primitive, .. }) => Some(primitive.span()),
             Some(Type::Product { name, .. } | Type::Sum { name, .. }) => Some(name.span()),
         };
 
@@ -2047,7 +2064,7 @@ impl Translator<'_> {
             | Type::AnyOf { .. } => {
                 unreachable!("type checking guarantees these types are not used for method calls");
             }
-            Type::Primitive(primitive) => primitive.span(),
+            Type::Primitive { primitive, .. } => primitive.span(),
             Type::Product { name, .. } | Type::Sum { name, .. } => name.span(),
         };
 
@@ -2261,7 +2278,7 @@ impl Translator<'_> {
             | Type::AnyOf { .. } => unreachable!(
                 "only integer primitives, booleans, unit, strings, and products can be patterns"
             ),
-            Type::Primitive(primitive) => {
+            Type::Primitive { primitive, .. } => {
                 let value = match (primitive.kind(), pattern.kind()) {
                     (_, Pattern::Integer(radix)) => {
                         let lexeme = sources

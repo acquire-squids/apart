@@ -247,6 +247,7 @@ where
         | Instruction::String
         | Instruction::F32
         | Instruction::Never
+        | Instruction::Vec
         | Instruction::Register => {}
         Instruction::NotValue { operand: value, .. }
         | Instruction::NegateValue { operand: value, .. }
@@ -458,7 +459,11 @@ where
             let value_index = *value_index;
 
             match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                Some(Value::Compound(values) | Value::TaggedCompound { fields: values, .. }) => {
+                Some(
+                    Value::Compound(values)
+                    | Value::TaggedCompound { fields: values, .. }
+                    | Value::Vec(values),
+                ) => {
                     let mut taken_values = std::mem::take(values);
 
                     let mut changed = false;
@@ -563,6 +568,7 @@ pub enum Value {
         tag: u16,
     },
     String(String),
+    Vec(Vec<CopyableValue>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1521,6 +1527,22 @@ where
 
                 bytes
             }
+            Self::Vec(values) => {
+                let mut bytes = vec![u8::from(Instruction::Vec)];
+
+                bytes.extend_from_slice(
+                    u64::try_from(values.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes()
+                        .as_slice(),
+                );
+
+                for value in values {
+                    bytes.extend_from_slice(value.assemble(assembler).as_slice());
+                }
+
+                bytes
+            }
             Self::Fn {
                 block_index,
                 max_register_count,
@@ -1959,6 +1981,23 @@ where
                 Self::ValueIndex(value_index)
             }
             Instruction::Never => Self::Never,
+            Instruction::Vec => {
+                let field_count = u64::disassemble(bytecode, disassembler);
+
+                let mut fields = vec![];
+
+                for _ in 0..field_count {
+                    fields.push(Self::disassemble(bytecode, disassembler));
+                }
+
+                disassembler.values_mut().push(Value::Vec(fields));
+
+                let value_index = ValueIndex(disassembler.values_mut().len() - 1);
+
+                disassembler.constants_mut().push(value_index);
+
+                Self::ValueIndex(value_index)
+            }
             Instruction::Register => Self::Register(u16::disassemble(bytecode, disassembler)),
             instruction => {
                 panic!("expected a value, but got {instruction:?}");
@@ -2020,6 +2059,21 @@ where
                 );
 
                 bytes.extend(value.as_bytes());
+
+                bytes
+            }
+            Self::Vec(values) => {
+                let mut bytes = Instruction::Vec.assemble(assembler);
+
+                bytes.extend(
+                    u64::try_from(values.len())
+                        .expect("128-bit usize not allowed!  sorry!")
+                        .to_le_bytes(),
+                );
+
+                for value in values {
+                    bytes.extend(value.assemble(assembler));
+                }
 
                 bytes
             }
@@ -2210,5 +2264,6 @@ instruction! {
     0xB2 String,
     0xB3 F32,
     0xB4 Never,
+    0xB5 Vec,
     0xE0 Register,
 }

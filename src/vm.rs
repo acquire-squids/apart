@@ -290,6 +290,23 @@ impl Vm {
                 Value::String(text) => {
                     format!("String({text:?})")
                 }
+                Value::Vec(values) => {
+                    let mut buffer = "Vec([".to_string();
+
+                    if let Some(first_value) = values.first() {
+                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+
+                        for value in values.iter().skip(1) {
+                            buffer.push_str(", ");
+
+                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                        }
+                    }
+
+                    buffer.push_str("])");
+
+                    buffer
+                }
             }
         } else {
             format!("{value:?}")
@@ -1295,6 +1312,7 @@ impl Vm {
             | Instruction::U64
             | Instruction::F32
             | Instruction::String
+            | Instruction::Vec
             | Instruction::Register
             | Instruction::Never => {
                 panic!("got a value where an instruction was expected")
@@ -1775,6 +1793,193 @@ impl Vm {
                     .as_secs_f64()
                     * 1000.0,
             ),
+            NativeFn::NewVec => {
+                let value = CopyableValue::ValueIndex(ValueIndex(self.values.len()));
+
+                self.values.push(Value::Vec(vec![]));
+
+                value
+            }
+            NativeFn::GetVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                let CopyableValue::U64(index) = &call_arguments[1] else {
+                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
+                };
+
+                let index = usize::try_from(*index).unwrap_or_else(|_| {
+                    panic!("{native_fn:?}: argument 1 is not a valid usize");
+                });
+
+                if let Some(value) = values.get(index).copied() {
+                    self.option_some(value)
+                } else {
+                    self.option_none()
+                }
+            }
+            NativeFn::ExtendVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[1] else {
+                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
+                };
+
+                let Value::Vec(extension) = &self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 1)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                let extension = extension.clone();
+
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                for value in &extension {
+                    self.allocated += mem::size_of_val(value);
+                }
+
+                values.extend(extension);
+
+                CopyableValue::Unit
+            }
+            NativeFn::SliceVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                let CopyableValue::U64(start) = &call_arguments[1] else {
+                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
+                };
+
+                let CopyableValue::U64(end) = &call_arguments[2] else {
+                    panic!("({native_fn:?} {:?} @ 2)", call_arguments[2]);
+                };
+
+                let start = usize::try_from(*start).unwrap_or_else(|_| {
+                    panic!("{native_fn:?}: argument 1 is not a valid usize");
+                });
+
+                let end = usize::try_from(*end).unwrap_or_else(|_| {
+                    panic!("{native_fn:?}: argument 2 is not a valid usize");
+                });
+
+                if let Some(values) = values.get(start..end) {
+                    self.values.push(Value::Vec(values.to_vec()));
+
+                    let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+
+                    self.allocated += self.size_of_value(value_index);
+
+                    self.option_some(value_index)
+                } else {
+                    self.option_none()
+                }
+            }
+            NativeFn::LengthVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                let length =
+                    u64::try_from(values.len()).expect("128-bit usize not allowed!  sorry!");
+
+                CopyableValue::U64(length)
+            }
+            NativeFn::TruncateVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                let CopyableValue::U64(end) = &call_arguments[1] else {
+                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
+                };
+
+                let end = usize::try_from(*end).unwrap_or_else(|_| {
+                    panic!("{native_fn:?}: argument 1 is not a valid usize");
+                });
+
+                for value in values.drain(end..) {
+                    self.allocated -= mem::size_of_val(&value);
+                }
+
+                CopyableValue::Unit
+            }
+            NativeFn::PushVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                values.push(call_arguments[1]);
+
+                self.allocated += mem::size_of_val(&call_arguments[1]);
+
+                CopyableValue::Unit
+            }
+            NativeFn::PopVec => {
+                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
+                    panic!(
+                        "({native_fn:?} {:?} @ 0)",
+                        self.values[usize::from(*value_index)]
+                    );
+                };
+
+                if let Some(value) = values.pop() {
+                    self.allocated -= mem::size_of_val(&value);
+
+                    self.option_some(value)
+                } else {
+                    self.option_none()
+                }
+            }
         }
     }
 
@@ -1870,7 +2075,9 @@ impl Vm {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
                 Value::String(_) => {}
-                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                Value::Compound(values)
+                | Value::TaggedCompound { fields: values, .. }
+                | Value::Vec(values) => {
                     for value in values {
                         self.mark_value(marked, *value, marked_count);
                     }
@@ -1897,21 +2104,17 @@ impl Vm {
         values.sort_by_key(|(index, _)| *index);
         values.dedup_by_key(|(index, _)| *index);
 
-        for v in 0..(self.values.len()) {
-            if marked.get(v).is_none_or(Option::is_none) {
-                self.allocated = self
-                    .allocated
-                    .checked_sub(self.size_of_value(CopyableValue::ValueIndex(ValueIndex(v))))
-                    .unwrap_or_else(|| {
-                        panic!("UNDERFLOW");
-                    });
-            }
-        }
+        self.allocated = 0;
 
         self.values = values
             .into_iter()
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>();
+            .fold(vec![], |mut accum, (value_index, value)| {
+                self.allocated += self.size_of_value(CopyableValue::ValueIndex(value_index));
+
+                accum.push(value);
+
+                accum
+            });
     }
 
     fn retain_value(
@@ -1928,6 +2131,14 @@ impl Vm {
                     match &self.values[usize::from(index)] {
                         Value::String(text) => replacement_values
                             .push((replacement_index, Value::String(text.clone()))),
+                        Value::Vec(values) => {
+                            let values = values
+                                .iter()
+                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((replacement_index, Value::Vec(values)));
+                        }
                         Value::Compound(values) => {
                             let values = values
                                 .iter()
@@ -1979,6 +2190,12 @@ impl Vm {
                 }
                 Value::String(text) => {
                     mem::size_of_val(text) + mem::size_of_val(&self.values[usize::from(index)])
+                }
+                Value::Vec(values) => {
+                    values
+                        .iter()
+                        .fold(0, |accum, value| accum + mem::size_of_val(value))
+                        + mem::size_of_val(&self.values[usize::from(index)])
                 }
             }
         } else {

@@ -147,6 +147,14 @@ crate::int_enum! {
     FloorCharBoundaryString => 0x10_04,
     CeilCharBoundaryString => 0x10_05,
     Clock => 0x20_00,
+    NewVec => 0x30_00,
+    GetVec => 0x30_01,
+    ExtendVec => 0x30_02,
+    SliceVec => 0x30_03,
+    LengthVec => 0x30_04,
+    TruncateVec => 0x30_05,
+    PushVec => 0x30_06,
+    PopVec => 0x30_07,
 }
 
 crate::int_enum! {
@@ -189,6 +197,7 @@ pub enum Value {
     Boolean(bool),
     Unit,
     String(String),
+    Vec(Vec<ValueOrLocation<Self>>),
     Fn {
         block_index: BlockIndex,
         max_register_count: u16,
@@ -454,6 +463,17 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     Some("floor_char_boundary") => NativeFn::FloorCharBoundaryString,
                     Some("ceil_char_boundary") => NativeFn::CeilCharBoundaryString,
                     _ => unreachable!("unknown native function in string module"),
+                },
+                module_id if *module_id == modules::MODULE_VEC => match lexeme {
+                    Some("new") => NativeFn::NewVec,
+                    Some("get") => NativeFn::GetVec,
+                    Some("extend") => NativeFn::ExtendVec,
+                    Some("slice") => NativeFn::SliceVec,
+                    Some("length") => NativeFn::LengthVec,
+                    Some("truncate") => NativeFn::TruncateVec,
+                    Some("push") => NativeFn::PushVec,
+                    Some("pop") => NativeFn::PopVec,
+                    _ => unreachable!("unknown native function in vec module"),
                 },
                 module_id if *module_id == modules::MODULE_ROOT => match lexeme {
                     Some("print_u8") => NativeFn::PrintU8,

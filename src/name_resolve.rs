@@ -521,7 +521,7 @@ impl NameResolver {
         for item in items {
             match ast[*item].kind() {
                 Item::NativeFn { .. } | Item::Directive { .. } => {}
-                Item::Primitive(name) => {
+                Item::Primitive { name, generics } => {
                     if self.resolve_name(name.kind()).is_some() {
                         self.errors
                             .push(Spanned::new(Error::DuplicatePrimitiveName, name.span()));
@@ -529,6 +529,23 @@ impl NameResolver {
 
                     self.declare_name(name.kind().clone(), name.span());
                     self.define_name(name.kind(), DefinitionKind::Type);
+
+                    self.associated_with.push(name.span());
+
+                    for generic in generics {
+                        self.associate_name(
+                            name.span(),
+                            generic.kind().clone(),
+                            Definition {
+                                kind: DefinitionKind::Type,
+                                visibility: Visibility::Public,
+                                span: generic.span(),
+                                module: self.current_mod.last().cloned().unwrap_or(ROOT_MODULE),
+                            },
+                        );
+                    }
+
+                    self.associated_with.pop();
                 }
                 Item::Fn { name, generics, .. } => {
                     self.associated_with.push(name.span());
@@ -797,7 +814,7 @@ impl NameResolver {
 
         for item in items {
             match ast[*item].kind() {
-                Item::Primitive(_)
+                Item::Primitive { .. }
                 | Item::NativeFn { .. }
                 | Item::Fn { .. }
                 | Item::Product { .. }
@@ -902,7 +919,7 @@ impl NameResolver {
     fn resolve_types(&mut self, ast: &Ast, items: &[ItemIndex]) {
         for item in items {
             match ast[*item].kind() {
-                Item::Primitive(_) | Item::Directive { .. } | Item::Alias { .. } => {}
+                Item::Primitive { .. } | Item::Directive { .. } | Item::Alias { .. } => {}
                 Item::NativeFn {
                     name,
                     signature,
@@ -1079,7 +1096,7 @@ impl NameResolver {
 
     fn resolve_item(&mut self, ast: &Ast, item: ItemIndex) {
         match ast[item].kind() {
-            Item::Primitive(_)
+            Item::Primitive { .. }
             | Item::NativeFn { .. }
             | Item::Product { .. }
             | Item::Sum { .. }

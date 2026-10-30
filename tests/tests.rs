@@ -224,6 +224,12 @@ macro_rules! output_tests {
             apart::$test_macro!(type_annotation, "type_annotation.txt", Ok("21\n"),);
 
             apart::$test_macro!(
+                vec,
+                "vec.txt",
+                Ok("[0,1,2,]\nPOP!\n2\n[0,1,]\nEXTEND!\n[0,1,0,1,]\nTRUNCATE!\n[]\nPOP!\n"),
+            );
+
+            apart::$test_macro!(
                 we_have_if_at_home,
                 "we_have_if_at_home.txt",
                 Ok("true\nfalse\n"),

@@ -115,6 +115,14 @@ fn print_value(disassembler: &Disassembler, value: CopyableValue) {
             NativeFn::FloorCharBoundaryString => print!("floor_char_boundary_string"),
             NativeFn::CeilCharBoundaryString => print!("ceil_char_boundary_string"),
             NativeFn::Clock => print!("clock"),
+            NativeFn::NewVec => print!("new_vec"),
+            NativeFn::GetVec => print!("get_vec"),
+            NativeFn::ExtendVec => print!("extend_vec"),
+            NativeFn::SliceVec => print!("slice_vec"),
+            NativeFn::LengthVec => print!("length_vec"),
+            NativeFn::TruncateVec => print!("truncate_vec"),
+            NativeFn::PushVec => print!("push_vec"),
+            NativeFn::PopVec => print!("pop_vec"),
         },
         CopyableValue::Register(index) => print!("r{index}"),
         CopyableValue::ValueIndex(value_index) => {
@@ -125,10 +133,11 @@ fn print_value(disassembler: &Disassembler, value: CopyableValue) {
             {
                 Value::String(text) => print!("\"{text}\""),
                 Value::Compound(values) => {
-                    print!("Compound([");
+                    print!("Compound([ ");
 
                     for value in values {
                         print_value(disassembler, *value);
+                        print!(", ");
                     }
 
                     print!("])");
@@ -137,13 +146,24 @@ fn print_value(disassembler: &Disassembler, value: CopyableValue) {
                     tag,
                     fields: values,
                 } => {
-                    print!("TaggedCompound {{ tag: {tag}, fields: [");
+                    print!("TaggedCompound {{ tag: {tag}, fields: [ ");
 
                     for value in values {
                         print_value(disassembler, *value);
+                        print!(", ");
                     }
 
                     print!("] }}");
+                }
+                Value::Vec(values) => {
+                    print!("Vec([ ");
+
+                    for value in values {
+                        print_value(disassembler, *value);
+                        print!(", ");
+                    }
+
+                    print!("])");
                 }
             }
         }
@@ -856,6 +876,7 @@ fn disassemble(bytecode: &[u8]) -> ExitCode {
             | Instruction::I32
             | Instruction::U64
             | Instruction::String
+            | Instruction::Vec
             | Instruction::F32
             | Instruction::Never
             | Instruction::Register => {}

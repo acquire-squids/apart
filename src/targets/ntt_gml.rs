@@ -145,7 +145,7 @@ pub fn compile(
                 "function {mangled_prefix}_extend_string(_a, _b) {{ _a[0] += _b[0]; return \"{{}}\"; }}"
             ),
             NativeFn::SliceString => format!(
-                "function {mangled_prefix}_slice_string(_text, _start, _end) {{ var _length = string_length(_text[0]); return (_start >= 0 && _end >= 0 && _start < _length && _end < _length ? {{ tag: {OPTION_SOME}, a0: [string_copy(_text[0], _start + 1, (_end - _start))] }} : {{ tag: {OPTION_NONE} }}); }}"
+                "function {mangled_prefix}_slice_string(_text, _start, _end) {{ var _length = string_length(_text[0]); return (_start >= 0 && _end >= 0 && _start <= _length && _end <= _length ? {{ tag: {OPTION_SOME}, a0: [string_copy(_text[0], _start + 1, (_end - _start))] }} : {{ tag: {OPTION_NONE} }}); }}"
             ),
             NativeFn::LengthString => format!(
                 "function {mangled_prefix}_length_string(_text) {{ return string_length(_text[0]); }}"
@@ -165,6 +165,30 @@ pub fn compile(
             }
             NativeFn::Clock => format!(
                 "function {mangled_prefix}_clock() {{ return get_timer_nonsync() / 1000.0; }}"
+            ),
+            NativeFn::NewVec => format!(
+                "function {mangled_prefix}_new_vec() {{ return {{ length: 0, values: [] }}; }}"
+            ),
+            NativeFn::GetVec => format!(
+                "function {mangled_prefix}_get_vec(_vec, _index) {{ if _index >= 0 && _index < _vec.length {{ return {{ tag: {OPTION_SOME}, a0: _vec.values[_index] }}; }} else {{ return {{ tag: {OPTION_NONE} }}; }} }}"
+            ),
+            NativeFn::ExtendVec => format!(
+                "function {mangled_prefix}_extend_vec(_a, _b) {{ array_copy(_a.values, _a.length, _b.values, 0, _b.length); _a.length += _b.length; return \"{{}}\"; }}"
+            ),
+            NativeFn::SliceVec => format!(
+                "function {mangled_prefix}_slice_vec(_vec, _start, _end) {{ if _start >= 0 && _end >= 0 && _start <= _vec.length && _end <= _vec.length {{ var _new = []; array_copy(_new, 0, _vec.values, 0, _vec.length); return {{ tag: {OPTION_SOME}, a0: {{ length: _end - _start, values: _new }} }}; }} else {{ return {{ tag: {OPTION_NONE} }}; }} }}"
+            ),
+            NativeFn::LengthVec => {
+                format!("function {mangled_prefix}_length_vec(_vec) {{ return _vec.length; }}")
+            }
+            NativeFn::TruncateVec => format!(
+                "function {mangled_prefix}_truncate_vec(_vec, _end) {{ var _new = []; array_copy(_new, 0, _vec.values, 0, _vec.length - _end); _vec.length = _end; _vec.values = _new; return \"{{}}\"; }}"
+            ),
+            NativeFn::PushVec => format!(
+                "function {mangled_prefix}_push_vec(_vec, _value) {{ array_push(_vec.values, _value); _vec.length += 1; return \"{{}}\"; }}"
+            ),
+            NativeFn::PopVec => format!(
+                "function {mangled_prefix}_pop_vec(_vec) {{ if _vec.length > 0 {{ var _popped = _vec.values[_vec.length - 1]; var _new = []; array_copy(_new, 0, _vec.values, 0, _vec.length); _vec.length -= 1; return {{ tag: {OPTION_SOME}, a0: _popped }} }} else {{ return {{ tag: {OPTION_NONE} }}; }} }}"
             ),
         };
 
@@ -653,6 +677,35 @@ fn compile_value(
             IrValue::Boolean(value) => value.to_string(),
             IrValue::Unit => "\"{}\"".to_string(),
             IrValue::String(value) => format!("[\"{value}\"]"),
+            IrValue::Vec(values) => {
+                let mut buffer = format!("{{ length: {}, values: [", values.len());
+
+                if let Some(value) = values.first() {
+                    buffer.push_str(
+                        compile_value(options, ssa, mangled_prefix, value, seen_native_functions)
+                            .as_str(),
+                    );
+
+                    for value in values.iter().skip(1) {
+                        buffer.push_str(", ");
+
+                        buffer.push_str(
+                            compile_value(
+                                options,
+                                ssa,
+                                mangled_prefix,
+                                value,
+                                seen_native_functions,
+                            )
+                            .as_str(),
+                        );
+                    }
+                }
+
+                buffer.push_str("] }");
+
+                buffer
+            }
             IrValue::Fn { block_index, .. } => {
                 if let Some(IrInstruction::FnLabel(function_label)) =
                     usize::try_from(u32::from(*block_index))
@@ -699,6 +752,18 @@ fn compile_value(
                         format!("{mangled_prefix}_ceil_char_boundary_string")
                     }
                     NativeFn::Clock => format!("{mangled_prefix}_clock"),
+                    NativeFn::NewVec => format!("{mangled_prefix}_new_vec"),
+                    NativeFn::GetVec => format!("{mangled_prefix}_get_vec"),
+                    NativeFn::ExtendVec => format!("{mangled_prefix}_extend_vec"),
+                    NativeFn::SliceVec => format!("{mangled_prefix}_slice_vec"),
+                    NativeFn::LengthVec => format!("{mangled_prefix}_length_vec"),
+                    NativeFn::TruncateVec => format!("{mangled_prefix}_truncate_vec"),
+                    NativeFn::PushVec => {
+                        format!("{mangled_prefix}_push_vec")
+                    }
+                    NativeFn::PopVec => {
+                        format!("{mangled_prefix}_pop_vec")
+                    }
                 }
             }
             IrValue::Compound(values) => {
@@ -777,7 +842,9 @@ fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &ValueOrLocation<
             IrValue::Fn { block_index, .. } => {
                 block_data.insert(*block_index);
             }
-            IrValue::Compound(values) | IrValue::TaggedCompound { fields: values, .. } => {
+            IrValue::Compound(values)
+            | IrValue::TaggedCompound { fields: values, .. }
+            | IrValue::Vec(values) => {
                 for value in values {
                     find_functions(block_data, value);
                 }

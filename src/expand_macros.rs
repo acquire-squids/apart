@@ -112,7 +112,7 @@ fn expand_item(
             }
             _ => Err(Spanned::new(Error::UnknownDirective, name.span())),
         },
-        Item::Primitive(_)
+        Item::Primitive { .. }
         | Item::NativeFn { .. }
         | Item::Product { .. }
         | Item::Sum { .. }
