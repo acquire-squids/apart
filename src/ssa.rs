@@ -91,33 +91,6 @@ impl Ssa {
             .ok()
             .and_then(|block_index| self.blocks.get_mut(block_index))
     }
-
-    #[allow(dead_code)]
-    pub fn for_children<F>(&self, block_index: BlockIndex, mut f: F)
-    where
-        F: FnMut(&Self, BlockIndex),
-    {
-        let Some(block) = self.get_block(block_index) else {
-            return;
-        };
-
-        match block.terminator() {
-            BlockTerminator::Jump(b) => {
-                f(self, *b);
-            }
-            BlockTerminator::Branch {
-                when_true,
-                otherwise,
-                ..
-            } => {
-                let (when_true, otherwise) = (*when_true, *otherwise);
-
-                f(self, when_true);
-                f(self, otherwise);
-            }
-            BlockTerminator::Return(_) => {}
-        }
-    }
 }
 
 pub struct Block {
@@ -188,35 +161,72 @@ impl Block {
     }
 }
 
+enum Successors {
+    Pair(BlockIndex, BlockIndex),
+    Some(BlockIndex),
+    None,
+}
+
+impl Successors {
+    const fn pop(&mut self) -> Option<BlockIndex> {
+        match self {
+            Self::Pair(first, second) => {
+                let second = *second;
+
+                *self = Self::Some(*first);
+
+                Some(second)
+            }
+            Self::Some(first) => {
+                let first = *first;
+
+                *self = Self::None;
+
+                Some(first)
+            }
+            Self::None => None,
+        }
+    }
+}
+
 impl Ssa {
     /// # Attribution
     /// Derived from `rustc_middle`'s `Postorder::visit`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L125-L134)
     fn visit(
         &self,
         block_index: BlockIndex,
-        stack: &mut Vec<(BlockIndex, Vec<BlockIndex>)>,
-        seen: &mut HashSet<BlockIndex>,
+        stack: &mut Vec<(BlockIndex, Successors)>,
+        seen: &mut [bool],
     ) {
-        if !seen.insert(block_index) {
+        let index = usize::try_from(u32::from(block_index))
+            .unwrap_or_else(|_| panic!("number of blocks may not exceed {}", u32::MAX));
+
+        if seen.get(index).is_some_and(|seen| *seen) {
             return;
         }
 
-        let mut children = vec![];
+        seen[index] = true;
 
-        self.for_children(block_index, |_, child_block_index| {
-            children.push(child_block_index);
-        });
-
-        stack.push((block_index, children));
+        match self.get_block(block_index).map(Block::terminator) {
+            Some(BlockTerminator::Jump(destination)) => {
+                stack.push((block_index, Successors::Some(*destination)));
+            }
+            Some(BlockTerminator::Branch {
+                when_true,
+                otherwise,
+                ..
+            }) => {
+                stack.push((block_index, Successors::Pair(*when_true, *otherwise)));
+            }
+            None | Some(BlockTerminator::Return(_)) => {
+                stack.push((block_index, Successors::None));
+            }
+        }
     }
 
     /// # Attribution
     /// Derived from `rustc_middle`'s `Postorder::traverse_successor`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L185-L187)
-    fn visit_successors(
-        &self,
-        stack: &mut Vec<(BlockIndex, Vec<BlockIndex>)>,
-        seen: &mut HashSet<BlockIndex>,
-    ) {
+    fn visit_successors(&self, stack: &mut Vec<(BlockIndex, Successors)>, seen: &mut [bool]) {
         while let Some(block_index) = stack
             .last_mut()
             .and_then(|(_, successors)| successors.pop())
@@ -229,7 +239,7 @@ impl Ssa {
     /// Derived from `rustc_middle`'s `<Postorder as Iterator>::next`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L195-L198)
     fn postorder(&self, block_index: BlockIndex) -> Vec<BlockIndex> {
         let mut stack = vec![];
-        let mut seen = HashSet::new();
+        let mut seen = vec![false; self.blocks().len()];
 
         let mut ordered = vec![];
 
