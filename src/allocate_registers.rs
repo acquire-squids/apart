@@ -1,7 +1,7 @@
 use crate::{
     ApartOptions,
     basic_blocks::{Address, BlockIndex, Instruction, Value},
-    ssa::{BlockTerminator, Ssa},
+    ssa::{BlockTerminator, DefUse, Liveness, Ssa},
 };
 
 use std::{collections::HashMap, error, fmt};
@@ -9,34 +9,42 @@ use std::{collections::HashMap, error, fmt};
 pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) -> Result<(), Vec<Error>> {
     let mut errors = vec![];
 
+    let def_use = ssa.def_use_analysis();
+    let def_use = def_use.as_slice();
+
+    let liveness = ssa.liveness_analysis(def_use);
+    let liveness = liveness.as_slice();
+
+    let graph = interference_graph(ssa, def_use, liveness);
+
     ssa.for_functions(|ssa, blocks| {
         let mut addresses = HashMap::new();
 
         let mut allocator = RegisterAllocator {
-            register_count: 0,
-            scope_register_counts: vec![],
-            max_register_count: 0,
+            registers: 0,
+            call_arguments: 0,
+            max_registers: 0,
         };
 
         if let Some(block) = blocks
             .first()
             .and_then(|block_index| ssa.get_block(*block_index))
         {
+            allocator.call_arguments = block.call_argument_count();
+
             for _ in 0..(block.call_argument_count()) {
                 allocator.allocate();
             }
         }
 
         for block_index in blocks.iter().copied() {
-            allocator.allocate_block(ssa, block_index, &mut addresses);
+            allocator.allocate_block(ssa, &graph, block_index, &mut addresses);
 
             if let Some(block) = ssa.get_block_mut(block_index) {
                 block.instructions_mut().retain(|instruction| {
                     !matches!(
                         instruction,
                         Instruction::NoOp
-                            | Instruction::ScopeStart
-                            | Instruction::PopN(0)
                             | Instruction::Assign {
                                 value: Value::Never,
                                 ..
@@ -50,10 +58,10 @@ pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) -> Result<(), Vec<Error>> {
             .first()
             .and_then(|block_index| ssa.get_block_mut(*block_index))
         {
-            if allocator.max_register_count > usize::from(u16::MAX) {
-                errors.push(Error::TooManyRegisters(allocator.max_register_count));
+            if allocator.max_registers > usize::from(u16::MAX) {
+                errors.push(Error::TooManyRegisters(allocator.max_registers));
             } else {
-                *block.max_register_count_mut() = u16::try_from(allocator.max_register_count)
+                *block.max_register_count_mut() = u16::try_from(allocator.max_registers)
                     .expect("verified fine by the if condition");
             }
         }
@@ -86,9 +94,9 @@ impl fmt::Display for Error {
 impl error::Error for Error {}
 
 struct RegisterAllocator {
-    register_count: usize,
-    scope_register_counts: Vec<usize>,
-    max_register_count: usize,
+    call_arguments: u8,
+    registers: usize,
+    max_registers: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -96,20 +104,160 @@ enum Allocation {
     Register(usize),
 }
 
-impl RegisterAllocator {
-    const fn allocate(&mut self) -> Allocation {
-        self.register_count += 1;
+#[derive(Debug)]
+struct InterferenceGraph {
+    nodes: Vec<Node>,
+    address_mapping: HashMap<Address, NodeIndex>,
+}
 
-        Allocation::Register(self.register_count - 1)
+impl InterferenceGraph {
+    #[allow(dead_code)]
+    #[must_use]
+    fn get_node(&self, node_index: NodeIndex) -> Option<&Node> {
+        self.nodes.get(usize::from(node_index))
     }
 
-    fn assign(&mut self, to: &mut Value, addresses: &mut HashMap<Address, Allocation>) {
+    #[allow(dead_code)]
+    #[must_use]
+    fn get_node_from_address(&self, address: &Address) -> Option<&Node> {
+        self.address_mapping
+            .get(address)
+            .copied()
+            .and_then(|node_index| self.get_node(node_index))
+    }
+}
+
+#[derive(Debug)]
+struct Node {
+    address: Address,
+    conflicts: Vec<NodeIndex>,
+}
+
+impl Node {
+    const fn conflicts(&self) -> &[NodeIndex] {
+        self.conflicts.as_slice()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct NodeIndex(usize);
+
+impl From<NodeIndex> for usize {
+    fn from(value: NodeIndex) -> Self {
+        value.0
+    }
+}
+
+#[allow(dead_code)]
+#[must_use]
+fn interference_graph(ssa: &Ssa, def_use: &[DefUse], liveness: &[Liveness]) -> InterferenceGraph {
+    let mut graph = InterferenceGraph {
+        nodes: vec![],
+        address_mapping: HashMap::new(),
+    };
+
+    for b in 0..(ssa.blocks().len()) {
+        for a in def_use
+            .get(b)
+            .into_iter()
+            .flat_map(|def_use| def_use.definitions().iter())
+            .copied()
+        {
+            graph
+                .address_mapping
+                .insert(a, NodeIndex(graph.nodes.len()));
+
+            graph.nodes.push(Node {
+                address: a,
+                conflicts: vec![],
+            });
+        }
+    }
+
+    for b in 0..(ssa.blocks().len()) {
+        for a in def_use
+            .get(b)
+            .into_iter()
+            .flat_map(|def_use| def_use.definitions().iter())
+        {
+            let conflicts = liveness
+                .get(b)
+                .into_iter()
+                .flat_map(|liveness| liveness.live_out().iter())
+                .chain(
+                    def_use
+                        .get(b)
+                        .into_iter()
+                        .flat_map(|def_use| def_use.definitions().iter()),
+                )
+                .chain(
+                    def_use
+                        .get(b)
+                        .into_iter()
+                        .flat_map(|def_use| def_use.uses().iter()),
+                )
+                .filter_map(|address| graph.address_mapping.get(address))
+                .copied()
+                .collect::<Vec<_>>();
+
+            let Some(node) = graph
+                .address_mapping
+                .get(a)
+                .copied()
+                .and_then(|node_index| graph.nodes.get_mut(usize::from(node_index)))
+            else {
+                panic!("all variables exist");
+            };
+
+            node.conflicts = conflicts;
+        }
+    }
+
+    graph
+}
+
+impl RegisterAllocator {
+    fn allocate(&mut self) -> Allocation {
+        self.registers += 1;
+
+        self.max_registers = self.max_registers.max(self.registers);
+
+        Allocation::Register(self.registers - 1)
+    }
+
+    fn assign(
+        &mut self,
+        graph: &InterferenceGraph,
+        to: &mut Value,
+        addresses: &mut HashMap<Address, Allocation>,
+    ) {
         match to {
             Value::CallArgument(index) => {
                 *to = Value::Register(usize::from(*index));
             }
             Value::Address(to_address) => {
                 let to_address = *to_address;
+
+                let conflicts = graph
+                    .get_node_from_address(&to_address)
+                    .into_iter()
+                    .flat_map(|node| node.conflicts().iter())
+                    .copied()
+                    .filter_map(|node_index| graph.get_node(node_index))
+                    .map(|node| node.address)
+                    .filter_map(|address| addresses.get(&address))
+                    .copied()
+                    .collect::<Vec<_>>();
+
+                for i in (usize::from(self.call_arguments))..(self.registers) {
+                    if !conflicts.contains(&Allocation::Register(i)) {
+                        addresses
+                            .entry(to_address)
+                            .or_insert_with(|| Allocation::Register(i));
+
+                        break;
+                    }
+                }
 
                 addresses
                     .entry(to_address)
@@ -132,6 +280,7 @@ impl RegisterAllocator {
     fn allocate_block(
         &mut self,
         ssa: &mut Ssa,
+        graph: &InterferenceGraph,
         block_index: BlockIndex,
         addresses: &mut HashMap<Address, Allocation>,
     ) {
@@ -139,25 +288,6 @@ impl RegisterAllocator {
             for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                 match instruction {
                     Instruction::NoOp | Instruction::FnLabel { .. } | Instruction::Panic => {}
-                    Instruction::ScopeStart => {
-                        self.scope_register_counts.push(self.register_count);
-                    }
-                    Instruction::PopN(count) => {
-                        let register_count = self.register_count;
-
-                        *count = register_count
-                            - self
-                                .scope_register_counts
-                                .last()
-                                .map_or(0, |register_count| *register_count);
-
-                        self.register_count = self
-                            .scope_register_counts
-                            .last()
-                            .map_or(0, |register_count| *register_count);
-
-                        self.max_register_count = self.max_register_count.max(register_count);
-                    }
                     Instruction::Push(value) => {
                         self.allocate();
 
@@ -173,13 +303,12 @@ impl RegisterAllocator {
                         temporary: to,
                         arity,
                     } => {
+                        self.registers -= usize::from(*arity);
+                        self.max_registers -= usize::from(*arity);
+
                         self.value_to_allocation(value, (block_index, i), addresses);
 
-                        self.max_register_count = self.max_register_count.max(self.register_count);
-
-                        self.register_count -= usize::from(*arity);
-
-                        self.assign(to, addresses);
+                        self.assign(graph, to, addresses);
                     }
                     Instruction::Unary {
                         operand: value,
@@ -198,7 +327,7 @@ impl RegisterAllocator {
                     } => {
                         self.value_to_allocation(value, (block_index, i), addresses);
 
-                        self.assign(to, addresses);
+                        self.assign(graph, to, addresses);
                     }
                     Instruction::Binary {
                         lhs,
@@ -210,7 +339,7 @@ impl RegisterAllocator {
 
                         self.value_to_allocation(rhs, (block_index, i), addresses);
 
-                        self.assign(to, addresses);
+                        self.assign(graph, to, addresses);
                     }
                 }
             }
@@ -235,11 +364,7 @@ impl RegisterAllocator {
         }
     }
 
-    #[allow(
-        clippy::unused_self,
-        clippy::only_used_in_recursion,
-        clippy::self_only_used_in_recursion
-    )]
+    #[allow(clippy::only_used_in_recursion, clippy::self_only_used_in_recursion)]
     fn value_to_allocation(
         &mut self,
         value: &mut Value,

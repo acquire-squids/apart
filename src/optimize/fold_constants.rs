@@ -17,9 +17,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     | Instruction::Assign { .. }
                     | Instruction::Push(_)
                     | Instruction::Call { .. }
-                    | Instruction::AccessAssign { .. }
-                    | Instruction::ScopeStart
-                    | Instruction::PopN(_) => {}
+                    | Instruction::AccessAssign { .. } => {}
                     Instruction::Unary { .. } => {
                         fold_unary(block_index, i, instruction, &mut changed);
                     }

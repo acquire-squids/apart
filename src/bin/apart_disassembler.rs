@@ -792,9 +792,6 @@ fn disassemble(bytecode: &[u8]) -> ExitCode {
 
                 println!();
             }
-            Instruction::PopN { count } => {
-                println!("    pop_n {count}");
-            }
             Instruction::CallRegister { to, arity, callee } => {
                 print!("    call ");
 

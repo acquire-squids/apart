@@ -336,8 +336,6 @@ pub enum Instruction {
         of: Value,
         temporary: Value,
     },
-    ScopeStart,
-    PopN(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1099,8 +1097,6 @@ impl Translator<'_> {
 
         self.last_in_fn = false;
 
-        self.push_instruction(Instruction::ScopeStart);
-
         for expr in exprs.iter().rev().skip(1).rev() {
             self.translate_expr(options, sources, (ast, names, types), *expr)?;
 
@@ -1119,8 +1115,6 @@ impl Translator<'_> {
                 .last()
                 .expect("`translate_block` in only called on blocks that aren't empty"),
         )?;
-
-        self.push_instruction(Instruction::PopN(0));
 
         Ok(())
     }
@@ -2171,8 +2165,6 @@ impl Translator<'_> {
             let backpatch_these =
                 self.translate_pattern(sources, types, expr_address, case.pattern())?;
 
-            self.push_instruction(Instruction::ScopeStart);
-
             self.translate_expr(options, sources, (ast, names, types), case.case())?;
 
             let case_value = self
@@ -2190,8 +2182,6 @@ impl Translator<'_> {
                     version: address_version,
                 }),
             });
-
-            self.push_instruction(Instruction::PopN(0));
 
             backpatch_successes.push(
                 self.current_block

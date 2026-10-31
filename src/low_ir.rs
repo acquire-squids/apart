@@ -293,7 +293,6 @@ pub enum Instruction<T> {
         of: ValueOrLocation<T>,
         to: Location,
     },
-    PopN(usize),
     Jump(BlockIndex),
     Branch {
         condition: ValueOrLocation<T>,
@@ -329,7 +328,7 @@ fn lower_instruction(
     instruction: &IrInstruction,
 ) -> Instruction<Value> {
     match instruction {
-        IrInstruction::NoOp | IrInstruction::ScopeStart => Instruction::NoOp,
+        IrInstruction::NoOp => Instruction::NoOp,
         IrInstruction::Panic => Instruction::Panic,
         IrInstruction::FnLabel {
             file_name,
@@ -338,7 +337,6 @@ fn lower_instruction(
             file_name: file_name.clone(),
             function_label: function_label.clone(),
         })),
-        IrInstruction::PopN(count) => Instruction::PopN(*count),
         IrInstruction::Unary {
             op,
             operand,

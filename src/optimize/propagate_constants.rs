@@ -36,11 +36,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     .and_then(|block| block.instructions().get(i))
                 {
                     match instruction {
-                        Instruction::FnLabel { .. }
-                        | Instruction::Panic
-                        | Instruction::NoOp
-                        | Instruction::ScopeStart
-                        | Instruction::PopN(_) => {}
+                        Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                         Instruction::Unary { operand: value, .. }
                         | Instruction::Assign { value, .. }
                         | Instruction::Push(value)

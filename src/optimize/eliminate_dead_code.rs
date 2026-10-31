@@ -35,9 +35,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 | Instruction::NoOp
                 | Instruction::Push(_)
                 | Instruction::AccessAssign { .. }
-                | Instruction::Call { .. }
-                | Instruction::ScopeStart
-                | Instruction::PopN(_) => {}
+                | Instruction::Call { .. } => {}
                 Instruction::Unary { temporary: to, .. }
                 | Instruction::Assign { to, .. }
                 | Instruction::Access { temporary: to, .. }
@@ -154,11 +152,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<Address> {
     for block in ssa.blocks() {
         for instruction in block.instructions() {
             match instruction {
-                Instruction::FnLabel { .. }
-                | Instruction::Panic
-                | Instruction::NoOp
-                | Instruction::ScopeStart
-                | Instruction::PopN(_) => {}
+                Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                 Instruction::Push(value)
                 | Instruction::Unary { operand: value, .. }
                 | Instruction::Assign { value, .. }

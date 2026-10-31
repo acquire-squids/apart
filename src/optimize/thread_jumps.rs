@@ -17,13 +17,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
                 if block.instructions().is_empty()
                     || block.instructions().iter().all(|instruction| {
-                        matches!(
-                            instruction,
-                            Instruction::NoOp
-                                | Instruction::ScopeStart
-                                | Instruction::PopN(0)
-                                | Instruction::FnLabel { .. }
-                        )
+                        matches!(instruction, Instruction::NoOp | Instruction::FnLabel { .. })
                     })
                 {
                     block_swaps[usize::try_from(u32::from(destination))

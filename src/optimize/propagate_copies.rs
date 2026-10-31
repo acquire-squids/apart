@@ -31,11 +31,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         if let Some(block) = ssa.get_block_mut(block_index) {
             for instruction in block.instructions_mut() {
                 match instruction {
-                    Instruction::FnLabel { .. }
-                    | Instruction::Panic
-                    | Instruction::NoOp
-                    | Instruction::ScopeStart
-                    | Instruction::PopN(_) => {}
+                    Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                     Instruction::Unary { operand: value, .. }
                     | Instruction::Assign { value, .. }
                     | Instruction::Push(value)

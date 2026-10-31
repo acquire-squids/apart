@@ -227,7 +227,6 @@ where
         | Instruction::AccessAssignRegisterRegister { .. }
         | Instruction::CallRegister { .. }
         | Instruction::GetTagRegister { .. }
-        | Instruction::PopN { .. }
         | Instruction::ReturnRegister { .. }
         | Instruction::I64
         | Instruction::F64
@@ -1353,10 +1352,6 @@ where
                     .assemble(assembler)
                 }
             },
-            Self::PopN(count) => Instruction::PopN {
-                count: u16::try_from(*count).expect("max register count must fit within a u16"),
-            }
-            .assemble(assembler),
             Self::Jump(destination) => Instruction::Jump {
                 destination: u32::from(*destination),
             }
@@ -2239,7 +2234,6 @@ instruction! {
     0x5F CallValue => { to: Register, arity: u8, callee: CopyableValue },
     0x60 GetTagRegister => { to: Register, of: Register },
     0x61 GetTagValue => { to: Register, of: CopyableValue },
-    0x62 PopN => { count: u16 },
     0x63 Jump => { destination: u32 },
     0x64 BranchRegister => { condition: Register, when_true: u32, otherwise: u32 },
     0x65 BranchValue => { condition: CopyableValue, when_true: u32, otherwise: u32 },

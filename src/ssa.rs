@@ -189,6 +189,46 @@ impl Successors {
     }
 }
 
+#[derive(Debug)]
+pub struct DefUse {
+    definitions: HashSet<Address>,
+    uses: HashSet<Address>,
+}
+
+impl DefUse {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn definitions(&self) -> &HashSet<Address> {
+        &self.definitions
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn uses(&self) -> &HashSet<Address> {
+        &self.uses
+    }
+}
+
+#[derive(Debug)]
+pub struct Liveness {
+    live_in: HashSet<Address>,
+    live_out: HashSet<Address>,
+}
+
+impl Liveness {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn live_in(&self) -> &HashSet<Address> {
+        &self.live_in
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn live_out(&self) -> &HashSet<Address> {
+        &self.live_out
+    }
+}
+
 impl Ssa {
     /// # Attribution
     /// Derived from `rustc_middle`'s `Postorder::visit`, found [here](https://github.com/rust-lang/rust/blob/260f1acad9d7f70b5b56a636a9dc5a7f76150417/compiler/rustc_middle/src/mir/traversal.rs#L125-L134)
@@ -255,6 +295,279 @@ impl Ssa {
         ordered
     }
 
+    #[allow(dead_code, clippy::too_many_lines)]
+    #[must_use]
+    pub fn def_use_analysis(&self) -> Vec<DefUse> {
+        let mut def_use = vec![];
+
+        def_use.resize_with(self.blocks().len(), || DefUse {
+            definitions: HashSet::new(),
+            uses: HashSet::new(),
+        });
+
+        for (b, block) in self.blocks.iter().enumerate().rev() {
+            for instruction in block.instructions() {
+                match instruction {
+                    Instruction::Panic | Instruction::FnLabel { .. } | Instruction::NoOp => {}
+                    Instruction::Push(value) => {
+                        if let Value::Address(address) = value
+                            && address.block_index
+                                != BlockIndex(
+                                    u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }),
+                                )
+                            && let Some(def_use) = def_use.get_mut(b)
+                            && !def_use.uses.contains(address)
+                        {
+                            def_use.uses.insert(*address);
+                        }
+                    }
+                    Instruction::Unary {
+                        operand: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::Assign { value, to }
+                    | Instruction::Call {
+                        callee: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::Access {
+                        of: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::GetTag {
+                        of: value,
+                        temporary: to,
+                    } => {
+                        if let Value::Address(address) = to
+                            && address.block_index
+                                == BlockIndex(
+                                    u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }),
+                                )
+                            && let Some(def_use) = def_use.get_mut(b)
+                            && !def_use.definitions.contains(address)
+                        {
+                            def_use.definitions.insert(*address);
+                        }
+
+                        if let Value::Address(address) = value
+                            && address.block_index
+                                != BlockIndex(
+                                    u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }),
+                                )
+                            && let Some(def_use) = def_use.get_mut(b)
+                            && !def_use.uses.contains(address)
+                        {
+                            def_use.uses.insert(*address);
+                        }
+                    }
+                    Instruction::Binary {
+                        lhs,
+                        rhs,
+                        temporary: to,
+                        ..
+                    } => {
+                        if let Value::Address(address) = to
+                            && address.block_index
+                                == BlockIndex(
+                                    u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }),
+                                )
+                            && let Some(def_use) = def_use.get_mut(b)
+                            && !def_use.definitions.contains(address)
+                        {
+                            def_use.definitions.insert(*address);
+                        }
+
+                        for value in [lhs, rhs] {
+                            if let Value::Address(address) = value
+                                && address.block_index
+                                    != BlockIndex(u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }))
+                                && let Some(def_use) = def_use.get_mut(b)
+                                && !def_use.uses.contains(address)
+                            {
+                                def_use.uses.insert(*address);
+                            }
+                        }
+                    }
+                    Instruction::AccessAssign { of, value, .. } => {
+                        for value in [of, value] {
+                            if let Value::Address(address) = value
+                                && address.block_index
+                                    != BlockIndex(u32::try_from(b).unwrap_or_else(|_| {
+                                        panic!("block index was not a valid u32")
+                                    }))
+                                && let Some(def_use) = def_use.get_mut(b)
+                                && !def_use.uses.contains(address)
+                            {
+                                def_use.uses.insert(*address);
+                            }
+                        }
+                    }
+                }
+            }
+
+            match block.terminator() {
+                BlockTerminator::Jump(_) => {}
+                BlockTerminator::Branch {
+                    condition: value, ..
+                }
+                | BlockTerminator::Return(value) => {
+                    if let Value::Address(address) = value
+                        && address.block_index
+                            != BlockIndex(
+                                u32::try_from(b)
+                                    .unwrap_or_else(|_| panic!("block index was not a valid u32")),
+                            )
+                        && let Some(def_use) = def_use.get_mut(b)
+                        && !def_use.uses.contains(address)
+                    {
+                        def_use.uses.insert(*address);
+                    }
+                }
+            }
+        }
+
+        def_use
+    }
+
+    #[allow(dead_code, clippy::too_many_lines)]
+    #[must_use]
+    pub fn liveness_analysis(&self, def_use: &[DefUse]) -> Vec<Liveness> {
+        let mut liveness = vec![];
+
+        liveness.resize_with(self.blocks().len(), || Liveness {
+            live_in: HashSet::new(),
+            live_out: HashSet::new(),
+        });
+
+        let mut changed = true;
+
+        while changed {
+            changed = false;
+
+            for (b, block) in self.blocks().iter().enumerate().rev() {
+                match block.terminator() {
+                    BlockTerminator::Return(_) => {}
+                    BlockTerminator::Jump(destination) => {
+                        let live =
+                            liveness
+                                .get(usize::try_from(u32::from(*destination)).unwrap_or_else(
+                                    |_| panic!("block index was not a valid usize"),
+                                ))
+                                .into_iter()
+                                .flat_map(|liveness| liveness.live_in.iter())
+                                .filter(|live_in| {
+                                    !matches!(liveness
+                                        .get(b).map(|liveness| &liveness.live_out), Some(live_out) if live_out.contains(live_in))
+                                })
+                                .copied()
+                                .collect::<Vec<_>>();
+
+                        let Some(live_out) =
+                            liveness.get_mut(b).map(|liveness| &mut liveness.live_out)
+                        else {
+                            panic!("there is a set for each block");
+                        };
+
+                        changed |= !live.is_empty();
+
+                        live_out.extend(live);
+                    }
+                    BlockTerminator::Branch {
+                        when_true,
+                        otherwise,
+                        ..
+                    } => {
+                        for destination in [when_true, otherwise] {
+                            let live = liveness
+                                .get(usize::try_from(u32::from(*destination)).unwrap_or_else(
+                                    |_| panic!("block index was not a valid usize"),
+                                ))
+                                .into_iter()
+                                .flat_map(|liveness| liveness.live_in.iter())
+                                .filter(|live_in| {
+                                    !matches!(liveness
+                                        .get(b).map(|liveness| &liveness.live_out), Some(live_out) if live_out.contains(live_in))
+                                })
+                                .copied()
+                                .collect::<Vec<_>>();
+
+                            let Some(live_out) =
+                                liveness.get_mut(b).map(|liveness| &mut liveness.live_out)
+                            else {
+                                panic!("there is a set for each block");
+                            };
+
+                            changed |= !live.is_empty();
+
+                            live_out.extend(live);
+                        }
+                    }
+                }
+
+                let uses = def_use
+                    .get(b)
+                    .into_iter()
+                    .flat_map(|def_use| def_use.uses().iter())
+                    .filter(|used| {
+                        !matches!(
+                            liveness
+                                .get(b)
+                                .map(Liveness::live_in),
+                            Some(live_in)
+                                if live_in.contains(used)
+                        )
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+
+                let outs = liveness
+                    .get(b)
+                    .into_iter()
+                    .flat_map(|liveness| liveness.live_out().iter())
+                    .filter(|live_out| {
+                        !matches!(
+                            liveness.get(b)
+                                .map(Liveness::live_in),
+                            Some(live_in)
+                                if live_in.contains(live_out)
+                        ) && !matches!(
+                            def_use.get(b)
+                                .map(DefUse::definitions),
+                            Some(definitions)
+                                if definitions.contains(live_out)
+                        ) && !uses.iter().any(|used| used != *live_out)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+
+                let Some(live_in) = liveness.get_mut(b).map(|liveness| &mut liveness.live_in)
+                else {
+                    panic!("there is a set for each block");
+                };
+
+                changed |= !uses.is_empty() || !outs.is_empty();
+
+                live_in.extend(uses);
+                live_in.extend(outs);
+            }
+        }
+
+        liveness
+    }
+
     #[allow(dead_code)]
     pub fn for_functions<F>(&mut self, mut f: F)
     where
@@ -283,9 +596,7 @@ impl Ssa {
                         match instruction {
                             Instruction::FnLabel { .. }
                             | Instruction::Panic
-                            | Instruction::NoOp
-                            | Instruction::ScopeStart
-                            | Instruction::PopN(_) => {}
+                            | Instruction::NoOp => {}
                             Instruction::Push(value) => {
                                 Self::value_uses_block(value, &mut frontier);
                             }
@@ -378,9 +689,7 @@ impl Ssa {
                         match instruction {
                             Instruction::FnLabel { .. }
                             | Instruction::Panic
-                            | Instruction::NoOp
-                            | Instruction::ScopeStart
-                            | Instruction::PopN(_) => {}
+                            | Instruction::NoOp => {}
                             Instruction::Push(value) => {
                                 Self::value_uses_block(value, &mut frontier);
                             }
@@ -483,11 +792,7 @@ impl Ssa {
         if let Some(block) = self.get_block_mut(block_index) {
             for instruction in block.instructions_mut() {
                 match instruction {
-                    Instruction::FnLabel { .. }
-                    | Instruction::Panic
-                    | Instruction::NoOp
-                    | Instruction::ScopeStart
-                    | Instruction::PopN(_) => {}
+                    Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                     Instruction::Push(value) => {
                         Self::nested_values(value, &mut f);
                     }
@@ -586,9 +891,7 @@ impl Ssa {
                         | Instruction::Panic
                         | Instruction::NoOp
                         | Instruction::Push(_)
-                        | Instruction::AccessAssign { .. }
-                        | Instruction::ScopeStart
-                        | Instruction::PopN(_) => {}
+                        | Instruction::AccessAssign { .. } => {}
                         Instruction::Unary { temporary: to, .. }
                         | Instruction::Call { temporary: to, .. }
                         | Instruction::Access { temporary: to, .. }
@@ -628,11 +931,7 @@ impl Ssa {
             if let Some(block) = ssa.get_block_mut(block_index) {
                 for instruction in block.instructions_mut() {
                     match instruction {
-                        Instruction::FnLabel { .. }
-                        | Instruction::Panic
-                        | Instruction::NoOp
-                        | Instruction::ScopeStart
-                        | Instruction::PopN(_) => {}
+                        Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                         Instruction::Push(value)
                         | Instruction::Unary { operand: value, .. }
                         | Instruction::Call { callee: value, .. }

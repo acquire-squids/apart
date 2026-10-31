@@ -12,7 +12,6 @@ use std::{
 struct CallFrame {
     fp: usize,
     from: u32,
-    max_register_count: u16,
     to: Register,
 }
 
@@ -25,7 +24,7 @@ struct Vm {
     function_labels: Vec<FnLabel>,
     constants: Vec<ValueIndex>,
     ip: usize,
-    sp: usize,
+    sp: Option<usize>,
     fp: usize,
 }
 
@@ -75,13 +74,12 @@ where
         call_frames: vec![CallFrame {
             fp: 0,
             from: 0,
-            max_register_count: 0,
             to: Register(0),
         }],
         function_labels: vec![],
         constants: vec![],
         ip: 0,
-        sp: 0,
+        sp: None,
         fp: 0,
     };
 
@@ -930,22 +928,23 @@ impl Vm {
 
                 self.assign(*to, operand);
             }
-            Instruction::PopN { count } => {
-                self.sp -= usize::from(*count);
-            }
             Instruction::PushRegister { operand } => {
                 let operand = self.get_register(*operand);
 
-                self.registers[self.sp] = operand;
+                if self.sp.is_none() {
+                    self.sp = Some(self.registers.len());
+                }
 
-                self.sp += 1;
+                self.registers.push(operand);
             }
             Instruction::PushValue { operand } => {
                 let operand = self.dereference_value(*operand, true);
 
-                self.registers[self.sp] = operand;
+                if self.sp.is_none() {
+                    self.sp = Some(self.registers.len());
+                }
 
-                self.sp += 1;
+                self.registers.push(operand);
             }
             Instruction::AccessRegister { to, index, of } => {
                 let of = self.get_register(*of);
@@ -1105,8 +1104,10 @@ impl Vm {
 
                 self.assign(*to, value);
             }
-            Instruction::CallRegister { to, arity, callee } => {
+            Instruction::CallRegister { to, callee, .. } => {
                 let callee = self.get_register(*callee);
+
+                let sp = self.sp.take().unwrap_or(self.registers.len());
 
                 match callee {
                     CopyableValue::Fn {
@@ -1120,15 +1121,14 @@ impl Vm {
                         let call_frame = CallFrame {
                             from: u32::try_from(self.ip)
                                 .expect("return address was not a valid u32"),
-                            fp: self.sp - usize::from(*arity),
-                            max_register_count,
+                            fp: sp,
                             to: *to,
                         };
 
                         self.ip =
                             usize::try_from(address).expect("call address was not a valid usize");
 
-                        self.fp = self.sp - usize::from(*arity);
+                        self.fp = sp;
 
                         self.call_frames.push(call_frame);
 
@@ -1138,13 +1138,12 @@ impl Vm {
                         );
                     }
                     CopyableValue::NativeFn(index) => {
-                        let call_arguments =
-                            self.registers[(self.sp - usize::from(*arity))..(self.sp)].to_vec();
-
-                        self.sp -= usize::from(*arity);
+                        let call_arguments = self.registers[sp..].to_vec();
 
                         let value =
                             self.native_fn_call(call_arguments.as_slice(), u16::from(index), out);
+
+                        self.registers.truncate(sp);
 
                         self.assign(*to, value);
                     }
@@ -1153,8 +1152,10 @@ impl Vm {
                     }
                 }
             }
-            Instruction::CallValue { to, arity, callee } => {
+            Instruction::CallValue { to, callee, .. } => {
                 let callee = self.dereference_value(*callee, true);
+
+                let sp = self.sp.take().unwrap_or(self.registers.len());
 
                 match callee {
                     CopyableValue::Fn {
@@ -1168,15 +1169,14 @@ impl Vm {
                         let call_frame = CallFrame {
                             from: u32::try_from(self.ip)
                                 .expect("return address was not a valid u32"),
-                            fp: self.sp - usize::from(*arity),
-                            max_register_count,
+                            fp: sp,
                             to: *to,
                         };
 
                         self.ip =
                             usize::try_from(address).expect("call address was not a valid usize");
 
-                        self.fp = self.sp - usize::from(*arity);
+                        self.fp = sp;
 
                         self.call_frames.push(call_frame);
 
@@ -1186,13 +1186,12 @@ impl Vm {
                         );
                     }
                     CopyableValue::NativeFn(index) => {
-                        let call_arguments =
-                            self.registers[(self.sp - usize::from(*arity))..(self.sp)].to_vec();
-
-                        self.sp -= usize::from(*arity);
+                        let call_arguments = self.registers[sp..].to_vec();
 
                         let value =
                             self.native_fn_call(call_arguments.as_slice(), u16::from(index), out);
+
+                        self.registers.truncate(sp);
 
                         self.assign(*to, value);
                     }
@@ -1252,11 +1251,7 @@ impl Vm {
 
                     self.fp = self.call_frames.last().map_or(0, |frame| frame.fp);
 
-                    self.sp = call_frame.fp;
-
-                    self.registers.truncate(
-                        self.registers.len() - usize::from(call_frame.max_register_count),
-                    );
+                    self.registers.truncate(call_frame.fp);
 
                     self.function_labels.pop();
 
@@ -1278,11 +1273,7 @@ impl Vm {
 
                     self.fp = self.call_frames.last().map_or(0, |frame| frame.fp);
 
-                    self.sp = call_frame.fp;
-
-                    self.registers.truncate(
-                        self.registers.len() - usize::from(call_frame.max_register_count),
-                    );
+                    self.registers.truncate(call_frame.fp);
 
                     self.function_labels.pop();
 
@@ -1326,8 +1317,6 @@ impl Vm {
         let offset = self.fp + usize::from(u16::from(to));
 
         self.registers[offset] = value;
-
-        self.sp = self.sp.max(offset + 1);
     }
 
     #[allow(clippy::inline_always)]

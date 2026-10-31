@@ -32,7 +32,6 @@ pub fn compile(
                 IrInstruction::FnLabel(_)
                 | IrInstruction::NoOp
                 | IrInstruction::Panic
-                | IrInstruction::PopN(_)
                 | IrInstruction::Jump(_) => {}
                 IrInstruction::Unary { operand: value, .. }
                 | IrInstruction::Assign { value, .. }
@@ -347,7 +346,7 @@ fn compile_block(
 
         for instruction in block.instructions() {
             match instruction {
-                IrInstruction::FnLabel(_) | IrInstruction::NoOp | IrInstruction::PopN(_) => {}
+                IrInstruction::FnLabel(_) | IrInstruction::NoOp => {}
                 IrInstruction::Panic => {
                     buffer.push_str(" throw \"panicked!\";");
                 }
