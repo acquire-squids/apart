@@ -29,10 +29,7 @@ fn main() -> ExitCode {
                         eprintln!("error while reading \"{input_path}\": {error}");
                         ExitCode::FAILURE
                     }
-                    Ok(bytecode) => {
-                        disassemble(bytecode.as_slice());
-                        ExitCode::SUCCESS
-                    }
+                    Ok(bytecode) => disassemble(bytecode.as_slice()),
                 }
             }
         },
