@@ -49,12 +49,12 @@ pub const ROOT_MODULE: Module = Module {
 
 struct NameResolver {
     variable_scopes: Vec<HashMap<String, Span>>,
-    associations: HashMap<Span, HashMap<String, Vec<Span>>>,
-    definitions: HashMap<Span, Definition>,
+    associations: Associations,
+    definitions: Definitions,
     associated_with: Vec<Span>,
     current_mod: Vec<Module>,
     errors: Vec<Spanned<Error>>,
-    names: HashMap<Span, Span>,
+    names: ResolvedNames,
     module_id: ModuleId,
     current_visibility: Vec<Visibility>,
     current_type: Vec<Span>,
@@ -274,10 +274,14 @@ impl Definition {
     }
 }
 
+pub type Associations = HashMap<Span, HashMap<String, Vec<Span>>>;
+pub type Definitions = HashMap<Span, Definition>;
+pub type ResolvedNames = HashMap<Span, Span>;
+
 pub struct Names {
-    resolved: HashMap<Span, Span>,
-    associations: HashMap<Span, HashMap<String, Vec<Span>>>,
-    definitions: HashMap<Span, Definition>,
+    resolved: ResolvedNames,
+    associations: Associations,
+    definitions: Definitions,
 }
 
 impl Index<Span> for Names {
@@ -313,6 +317,12 @@ impl Names {
         self.get(span)
             .map_or(Some(span), Some)
             .and_then(|span| self.definitions.get(&span))
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn take(self) -> (Associations, Definitions) {
+        (self.associations, self.definitions)
     }
 }
 
@@ -1546,7 +1556,9 @@ impl NameResolver {
                         self.errors
                             .push(Spanned::new(Error::PathCannotAssociate, span));
                     }
-                    Ok(_) => {}
+                    Ok(definition) => {
+                        self.names.insert(span, definition.span);
+                    }
                 }
             }
         }

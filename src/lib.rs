@@ -1,6 +1,7 @@
 mod allocate_registers;
 mod basic_blocks;
 mod expand_macros;
+mod high_ir;
 mod lex;
 mod low_ir;
 mod name_resolve;
@@ -200,43 +201,44 @@ pub fn compile<'a>(
             .collect::<Vec<_>>(),
     })?;
 
-    let types = type_check::check_types(options, sources_with_core.as_slice(), &ast, &names)
-        .map_err(|errors| Compiled {
-            sources_with_core: sources_with_core.clone(),
-            result: errors
-                .into_iter()
-                .map(|error| error.transmute(Error::TypeCheck))
-                .collect::<Vec<_>>(),
+    let hir = high_ir::lower(&ast, names);
+
+    let types =
+        type_check::check_types(options, sources_with_core.as_slice(), &hir).map_err(|errors| {
+            Compiled {
+                sources_with_core: sources_with_core.clone(),
+                result: errors
+                    .into_iter()
+                    .map(|error| error.transmute(Error::TypeCheck))
+                    .collect::<Vec<_>>(),
+            }
         })?;
 
-    let basic_blocks = match basic_blocks::translate(
-        options,
-        sources_with_core.as_slice(),
-        (&ast, &names, &types),
-    ) {
-        Ok(basic_blocks) => basic_blocks,
-        Err(error) => {
-            // TODO: it'd be nice to have a span for the cfg error somehow
-            let span = sources_with_core.get(1).map_or_else(
-                || {
-                    Span::new(
-                        *sources_with_core
-                            .first()
-                            .map(|(source_id, (_, _))| source_id)
-                            .expect("there is always at least the core"),
-                        0,
-                        0,
-                    )
-                },
-                |(source_id, (_, _))| Span::new(*source_id, 0, 0),
-            );
+    let basic_blocks =
+        match basic_blocks::translate(options, sources_with_core.as_slice(), (&hir, &types)) {
+            Ok(basic_blocks) => basic_blocks,
+            Err(error) => {
+                // TODO: it'd be nice to have a span for the cfg error somehow
+                let span = sources_with_core.get(1).map_or_else(
+                    || {
+                        Span::new(
+                            *sources_with_core
+                                .first()
+                                .map(|(source_id, (_, _))| source_id)
+                                .expect("there is always at least the core"),
+                            0,
+                            0,
+                        )
+                    },
+                    |(source_id, (_, _))| Span::new(*source_id, 0, 0),
+                );
 
-            return Err(Compiled {
-                sources_with_core,
-                result: vec![Spanned::new(Error::BasicBlocks(error), span)],
-            });
-        }
-    };
+                return Err(Compiled {
+                    sources_with_core,
+                    result: vec![Spanned::new(Error::BasicBlocks(error), span)],
+                });
+            }
+        };
 
     if cfg!(feature = "print_blocks") {
         print!("{basic_blocks}");

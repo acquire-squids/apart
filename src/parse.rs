@@ -739,6 +739,18 @@ pub struct Field {
 }
 
 impl Field {
+    pub const fn new(
+        name: Spanned<String>,
+        type_signature: Spanned<TypeSignature>,
+        visibility: Visibility,
+    ) -> Self {
+        Self {
+            name,
+            type_signature,
+            visibility,
+        }
+    }
+
     pub const fn name(&self) -> &Spanned<String> {
         &self.name
     }
@@ -759,6 +771,13 @@ pub struct Parameter {
 }
 
 impl Parameter {
+    pub const fn new(name: Spanned<String>, type_signature: Spanned<TypeSignature>) -> Self {
+        Self {
+            name,
+            type_signature,
+        }
+    }
+
     pub const fn name(&self) -> &Spanned<String> {
         &self.name
     }
