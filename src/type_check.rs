@@ -2165,11 +2165,23 @@ impl TypeChecker {
                     | BinaryOp::Remainder
                     | BinaryOp::Add
                     | BinaryOp::Subtract => {
-                        changed |= self.propagate(sources, ir, *lhs, Some(self[span]));
-                        changed |= self.propagate(sources, ir, *rhs, Some(self[span]));
+                        changed |= self.propagate(sources, ir, *lhs, type_index);
+                        changed |= self.propagate(sources, ir, *rhs, type_index);
+
+                        let lhs_span = ir[*lhs].resolved();
+                        let rhs_span = ir[*rhs].resolved();
+
+                        changed |= self.propagate(sources, ir, *lhs, Some(self[rhs_span]));
+                        changed |= self.propagate(sources, ir, *rhs, Some(self[lhs_span]));
+
+                        changed |= self.propagate_overwrite(ir, expr, Some(self[lhs_span]));
+                        changed |= self.propagate_overwrite(ir, expr, Some(self[rhs_span]));
                     }
-                    BinaryOp::PathAccess
-                    | BinaryOp::Access
+                    BinaryOp::PathAccess => {
+                        changed |= self.propagate(sources, ir, *lhs, None);
+                        changed |= self.propagate(sources, ir, *rhs, None);
+                    }
+                    BinaryOp::Access
                     | BinaryOp::Less
                     | BinaryOp::Greater
                     | BinaryOp::LessOrEqual
@@ -2180,15 +2192,11 @@ impl TypeChecker {
                     | BinaryOp::Or
                     | BinaryOp::Assign => {
                         let lhs_span = ir[*lhs].resolved();
-
-                        if self.get_type(lhs_span).is_some() {
-                            changed |= self.propagate(sources, ir, *lhs, Some(self[lhs_span]));
-                        }
-
                         let rhs_span = ir[*rhs].resolved();
 
-                        if self.get_type(rhs_span).is_some() {
-                            changed |= self.propagate(sources, ir, *rhs, Some(self[rhs_span]));
+                        if self.get_type(lhs_span).is_some() && self.get_type(rhs_span).is_some() {
+                            changed |= self.propagate(sources, ir, *lhs, Some(self[rhs_span]));
+                            changed |= self.propagate(sources, ir, *rhs, Some(self[lhs_span]));
                         }
                     }
                 },
@@ -2207,6 +2215,18 @@ impl TypeChecker {
                             .expect("the above match arm guarantees this block isn't empty"),
                         type_index,
                     );
+
+                    changed |= self.propagate_overwrite(
+                        ir,
+                        expr,
+                        Some(
+                            self[ir[exprs
+                                .last()
+                                .copied()
+                                .expect("the above match arm guarantees it's not empty")]
+                            .resolved()],
+                        ),
+                    );
                 }
                 Expr::If {
                     condition,
@@ -2217,6 +2237,25 @@ impl TypeChecker {
 
                     changed |= self.propagate(sources, ir, *when_true, type_index);
                     changed |= self.propagate(sources, ir, *otherwise, type_index);
+
+                    changed |= self.propagate(
+                        sources,
+                        ir,
+                        *when_true,
+                        Some(self[ir[*otherwise].resolved()]),
+                    );
+
+                    changed |= self.propagate(
+                        sources,
+                        ir,
+                        *otherwise,
+                        Some(self[ir[*when_true].resolved()]),
+                    );
+
+                    changed |=
+                        self.propagate_overwrite(ir, expr, Some(self[ir[*when_true].resolved()]));
+                    changed |=
+                        self.propagate_overwrite(ir, expr, Some(self[ir[*otherwise].resolved()]));
                 }
                 Expr::While {
                     condition,
@@ -2325,27 +2364,40 @@ impl TypeChecker {
                     }
                 }
                 Expr::Match {
-                    expr,
+                    expr: match_against,
                     cases,
                     fallback,
                 } => {
+                    changed |= self.propagate(sources, ir, *match_against, None);
+
                     for case in cases {
                         changed |= self.propagate(sources, ir, case.case(), type_index);
+
+                        changed |= self.propagate(
+                            sources,
+                            ir,
+                            case.case(),
+                            cases
+                                .first()
+                                .map(MatchCase::case)
+                                .map(|expr| self[ir[expr].resolved()]),
+                        );
+
                         changed |= self.propagate_pattern(case.pattern());
                     }
-
-                    changed |= self.propagate(sources, ir, *fallback, type_index);
 
                     changed |= self.propagate(
                         sources,
                         ir,
-                        *expr,
+                        *fallback,
                         cases
                             .first()
-                            .map(MatchCase::pattern)
-                            .map(Resolved::span)
-                            .map(|span| self[span]),
+                            .map(MatchCase::case)
+                            .map(|expr| self[ir[expr].resolved()]),
                     );
+
+                    changed |=
+                        self.propagate_overwrite(ir, expr, Some(self[ir[*fallback].resolved()]));
                 }
                 Expr::Let { name, value, .. } => {
                     changed |= self.propagate(sources, ir, *value, Some(self[name.span()]));
@@ -3797,7 +3849,27 @@ impl TypeChecker {
     }
 
     fn overwrite_with(&mut self, ir: &Ir, expr: ExprIndex, should_be: TypeIndex) -> TypeIndex {
-        self.type_map.insert(ir[expr].resolved(), should_be);
+        match (self.get_type(ir[expr].resolved()), &self[should_be]) {
+            (
+                Some(Type::Integer(radix) | Type::NegativeInteger(radix)),
+                Type::Integer(should_be_radix) | Type::NegativeInteger(should_be_radix),
+            ) => {
+                if should_be_radix.span() == radix.span() {
+                    self.type_map.insert(ir[expr].resolved(), should_be);
+                    self.type_map.insert(ir[expr].span(), should_be);
+                }
+            }
+            (Some(Type::Float(span)), Type::Float(should_be_span)) => {
+                if should_be_span == span {
+                    self.type_map.insert(ir[expr].resolved(), should_be);
+                    self.type_map.insert(ir[expr].span(), should_be);
+                }
+            }
+            (_, _) => {
+                self.type_map.insert(ir[expr].resolved(), should_be);
+                self.type_map.insert(ir[expr].span(), should_be);
+            }
+        }
 
         self[ir[expr].resolved()]
     }
@@ -3972,25 +4044,33 @@ impl TypeChecker {
                 let alternatives = alternatives.clone();
                 let span = *span;
 
+                let mut checked = vec![];
+
                 for alternative in alternatives {
-                    self.check_inferred(sources, alternative, inferred, context)?;
+                    checked.push(self.check_inferred(sources, alternative, inferred, context)?);
                 }
 
-                self.type_map.insert(span, inferred);
+                let type_index = checked.first().copied().unwrap_or(should_be);
 
-                Ok(inferred)
+                self.type_map.insert(span, type_index);
+
+                Ok(type_index)
             }
             (Type::AnyOf { alternatives, span }, _) => {
                 let alternatives = alternatives.clone();
                 let span = *span;
 
+                let mut checked = vec![];
+
                 for alternative in alternatives {
-                    self.check_inferred(sources, alternative, should_be, context)?;
+                    checked.push(self.check_inferred(sources, alternative, should_be, context)?);
                 }
 
-                self.type_map.insert(span, should_be);
+                let type_index = checked.first().copied().unwrap_or(inferred);
 
-                Ok(should_be)
+                self.type_map.insert(span, type_index);
+
+                Ok(type_index)
             }
             (
                 Type::Primitive {
