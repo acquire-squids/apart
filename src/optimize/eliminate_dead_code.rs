@@ -6,7 +6,7 @@ use crate::{
 use std::collections::HashSet;
 
 #[allow(clippy::too_many_lines)]
-pub fn optimize(ssa: &mut Ssa) -> bool {
+pub fn optimize(ssa: &mut Ssa, eliminate_instructions: bool) -> bool {
     let mut changed = false;
 
     let blocks_used = collect_used_blocks(ssa);
@@ -25,28 +25,30 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         }
     }
 
-    let addresses_used = collect_used_addresses(ssa);
+    if eliminate_instructions {
+        let addresses_used = collect_used_addresses(ssa);
 
-    for block in ssa.blocks_mut() {
-        for instruction in block.instructions_mut() {
-            match instruction {
-                Instruction::FnLabel { .. }
-                | Instruction::Panic
-                | Instruction::NoOp
-                | Instruction::Push(_)
-                | Instruction::AccessAssign { .. }
-                | Instruction::Call { .. } => {}
-                Instruction::Unary { temporary: to, .. }
-                | Instruction::Assign { to, .. }
-                | Instruction::Access { temporary: to, .. }
-                | Instruction::GetTag { temporary: to, .. }
-                | Instruction::Binary { temporary: to, .. } => {
-                    if let Value::Address(to_address) = to
-                        && !addresses_used.contains(to_address)
-                    {
-                        *instruction = Instruction::NoOp;
+        for block in ssa.blocks_mut() {
+            for instruction in block.instructions_mut() {
+                match instruction {
+                    Instruction::FnLabel { .. }
+                    | Instruction::Panic
+                    | Instruction::NoOp
+                    | Instruction::Push(_)
+                    | Instruction::AccessAssign { .. }
+                    | Instruction::Call { .. } => {}
+                    Instruction::Unary { temporary: to, .. }
+                    | Instruction::Assign { to, .. }
+                    | Instruction::Access { temporary: to, .. }
+                    | Instruction::GetTag { temporary: to, .. }
+                    | Instruction::Binary { temporary: to, .. } => {
+                        if let Value::Address(to_address) = to
+                            && !addresses_used.contains(to_address)
+                        {
+                            *instruction = Instruction::NoOp;
 
-                        changed = true;
+                            changed = true;
+                        }
                     }
                 }
             }

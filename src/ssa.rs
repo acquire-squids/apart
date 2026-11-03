@@ -4,6 +4,7 @@ use crate::{
         Address, BasicBlocks, BlockIndex, BlockTerminator as BasicBlockTerminator, Instruction,
         Value,
     },
+    optimize::eliminate_dead_code,
 };
 
 use std::{collections::HashSet, fmt};
@@ -33,6 +34,12 @@ pub fn convert(_: &ApartOptions, basic_blocks: &BasicBlocks) -> Ssa {
     }
 
     ssa.liveliness();
+
+    let mut changed = true;
+
+    while changed {
+        changed = eliminate_dead_code::optimize(&mut ssa, false);
+    }
 
     ssa
 }
@@ -855,29 +862,6 @@ impl Ssa {
         let addresses = self.find_addresses();
 
         self.map_addresses(addresses.as_slice());
-
-        let mut blocks_used = HashSet::new();
-
-        self.for_live_blocks(|_, b| {
-            blocks_used.insert(b);
-        });
-
-        self.clean_dead_blocks(&blocks_used);
-    }
-
-    fn clean_dead_blocks(&mut self, blocks_used: &HashSet<BlockIndex>) {
-        for b in (0..(self.blocks.len()))
-            .filter_map(|index| u32::try_from(index).ok())
-            .map(BlockIndex)
-        {
-            if !blocks_used.contains(&b)
-                && let Some(block) = self.get_block_mut(b)
-            {
-                block.instructions.clear();
-
-                block.terminator = BlockTerminator::Return(Value::Never);
-            }
-        }
     }
 
     fn find_addresses(&mut self) -> Vec<(Address, Address)> {
