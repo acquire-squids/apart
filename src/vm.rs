@@ -28,6 +28,8 @@ struct Vm {
     fp: usize,
 }
 
+const DEFAULT_NEXT_GC: usize = 1_000_000;
+
 impl Instructive for Vm {
     fn ip_mut(&mut self) -> &mut usize {
         &mut self.ip
@@ -70,7 +72,7 @@ where
         registers,
         values: vec![],
         allocated: 0,
-        next_gc: 1_000_000,
+        next_gc: DEFAULT_NEXT_GC,
         call_frames: vec![CallFrame {
             fp: 0,
             from: 0,
@@ -418,6 +420,8 @@ impl Vm {
             self.step(instruction, out).inspect_err(|_| {
                 self.registers.clear();
 
+                self.constants.clear();
+
                 self.gc();
 
                 assert_eq!(self.allocated, 0, "{} BYTES LEAKED", self.allocated);
@@ -429,6 +433,8 @@ impl Vm {
         }
 
         self.registers.clear();
+
+        self.constants.clear();
 
         self.gc();
 
@@ -2191,7 +2197,7 @@ impl Vm {
 
         self.sweep(marked.as_slice(), marked_count);
 
-        self.next_gc *= 2;
+        self.next_gc = (self.allocated * 2).max(DEFAULT_NEXT_GC);
     }
 
     fn mark(&self) -> (Vec<Option<ValueIndex>>, usize) {
@@ -2241,6 +2247,10 @@ impl Vm {
 
     fn sweep(&mut self, marked: &[Option<ValueIndex>], marked_count: usize) {
         let mut values = Vec::with_capacity(marked_count);
+
+        for value_index in &self.constants {
+            self.retain_value(&mut values, CopyableValue::ValueIndex(*value_index), marked);
+        }
 
         self.registers = self
             .registers
