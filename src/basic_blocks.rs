@@ -428,26 +428,6 @@ impl<'a> Translator<'a> {
         }
     }
 
-    fn assign_if_not_address(&mut self) -> Address {
-        let value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
-
-        if let Value::Address(address) = value {
-            address
-        } else {
-            let address = self.next_address();
-
-            self.push_instruction(Instruction::Assign {
-                value,
-                to: Value::Address(address),
-            });
-
-            address
-        }
-    }
-
     fn push_instruction(&mut self, instruction: Instruction) {
         let block = self
             .current_block
@@ -1290,7 +1270,17 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let address = self.assign_if_not_address();
+        let value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
 
         let current_block = self
             .current_block
@@ -1371,7 +1361,17 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let address = self.assign_if_not_address();
+        let value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
 
         let current_block = self
             .current_block
@@ -2081,7 +2081,17 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), expr)?;
 
-        let expr_address = self.assign_if_not_address();
+        let value = self
+            .values
+            .pop()
+            .expect("every expression produces a value");
+
+        let expr_address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(expr_address),
+        });
 
         let address = self.next_address();
 
