@@ -1,5 +1,5 @@
 use crate::{
-    basic_blocks::{Address, BlockIndex, Instruction, Value},
+    basic_blocks::{Instruction, Value},
     ssa::{Block, BlockTerminator, Ssa},
 };
 
@@ -45,8 +45,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         | Instruction::Binary { lhs: value, .. }
                         | Instruction::AccessAssign { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
-                            if let Some(propagated_value) =
-                                clone_constant(ssa, value, &address_to_ip)
+                            if let Some(propagated_value) = clone_constant(value)
                                 && let Some(
                                     Instruction::Unary { operand: value, .. }
                                     | Instruction::Assign { value, .. }
@@ -72,7 +71,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 if let Some(Instruction::Binary { rhs: value, .. }) = ssa
                     .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
-                    && let Some(propagated_value) = clone_constant(ssa, value, &address_to_ip)
+                    && let Some(propagated_value) = clone_constant(value)
                     && let Some(Instruction::Binary { rhs: value, .. }) = ssa
                         .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
@@ -86,7 +85,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 if let Some(Instruction::AccessAssign { value, .. }) = ssa
                     .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
-                    && let Some(propagated_value) = clone_constant(ssa, value, &address_to_ip)
+                    && let Some(propagated_value) = clone_constant(value)
                     && let Some(Instruction::AccessAssign { value, .. }) = ssa
                         .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
@@ -102,7 +101,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 match block.terminator() {
                     BlockTerminator::Jump(_) => {}
                     BlockTerminator::Return(value) => {
-                        if let Some(propagated_value) = clone_constant(ssa, value, &address_to_ip)
+                        if let Some(propagated_value) = clone_constant(value)
                             && let Some(BlockTerminator::Return(value)) =
                                 ssa.get_block_mut(block_index).map(Block::terminator_mut)
                             && propagated_value != *value
@@ -115,7 +114,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     BlockTerminator::Branch {
                         condition: value, ..
                     } => {
-                        if let Some(propagated_value) = clone_constant(ssa, value, &address_to_ip)
+                        if let Some(propagated_value) = clone_constant(value)
                             && let Some(BlockTerminator::Branch {
                                 condition: value, ..
                             }) = ssa.get_block_mut(block_index).map(Block::terminator_mut)
@@ -134,11 +133,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     changed
 }
 
-fn clone_constant(
-    ssa: &Ssa,
-    value: &Value,
-    address_to_ip: &HashMap<Address, Option<(BlockIndex, usize)>>,
-) -> Option<Value> {
+fn clone_constant(value: &Value) -> Option<Value> {
     match value {
         Value::U8(_)
         | Value::I8(_)
@@ -155,27 +150,11 @@ fn clone_constant(
         | Value::Fn(_)
         | Value::NativeFn { .. }
         | Value::CallArgument(_) => Some(value.clone()),
-        Value::Address(address) => clone_constant_from_address(ssa, address, address_to_ip),
-        Value::Register(_)
+        Value::Address(_)
+        | Value::Register(_)
         | Value::Compound(_)
         | Value::TaggedCompound { .. }
         | Value::String(_)
         | Value::Never => None,
-    }
-}
-
-fn clone_constant_from_address(
-    ssa: &Ssa,
-    address: &Address,
-    address_to_ip: &HashMap<Address, Option<(BlockIndex, usize)>>,
-) -> Option<Value> {
-    if let Some((block_index, i)) = address_to_ip.get(address).and_then(|ip| *ip)
-        && let Some(Instruction::Assign { value, .. }) = ssa
-            .get_block(block_index)
-            .and_then(|block| block.instructions().get(i))
-    {
-        clone_constant(ssa, value, address_to_ip)
-    } else {
-        None
     }
 }

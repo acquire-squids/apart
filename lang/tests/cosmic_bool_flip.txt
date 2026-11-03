@@ -1,0 +1,35 @@
+funky main() {
+	let
+		width = 800,
+		height = 800,
+		cols = 100,
+		rows = 40,
+		step_x = width / cols,
+		step_y = height / rows,
+		y = 0,
+		row = "",
+	in {
+		while y < height {
+			row.truncate(0);
+
+			let
+				sampled_row = y % step_y == 0,
+				x = 0,
+			in {
+				while x < width {
+					if sampled_row && x % step_x == 0 {
+						row.extend("a");
+					}
+
+					x = x + 1;
+				}
+
+				if sampled_row {
+					print_string(row);
+				}
+			};
+
+			y = y + 1;
+		}
+	}
+}

@@ -23,6 +23,16 @@ macro_rules! output_tests {
 
             apart::$test_macro!(copy_propagation, "copy_propagation.txt", Ok("5\n"));
 
+            apart::$test_macro!(
+                cosmic_bool_flip,
+                "cosmic_bool_flip.txt",
+                Ok(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/lang/tests/",
+                    "saved_outputs/cosmic_bool_flip_output.txt"
+                )))
+            );
+
             apart::$test_macro!(directive, "directive.txt", Ok("vm\n"));
 
             apart::$test_macro!(empty, "empty.txt", Ok(""));
