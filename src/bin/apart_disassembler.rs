@@ -83,8 +83,8 @@ fn print_value(disassembler: &Disassembler, value: CopyableValue) {
         CopyableValue::I32(value) => print!("{value}i32"),
         CopyableValue::U64(value) => print!("{value}u64"),
         CopyableValue::I64(value) => print!("{value}i64"),
-        CopyableValue::F32(value) => print!("{value}f32"),
-        CopyableValue::F64(value) => print!("{value}f64"),
+        CopyableValue::F32(value) => print!("{value:?}f32"),
+        CopyableValue::F64(value) => print!("{value:?}f64"),
         CopyableValue::Boolean(value) => print!("{value}"),
         CopyableValue::Unit => print!("{{}}"),
         CopyableValue::Fn {
