@@ -1,0 +1,36 @@
+funky main() {
+	let
+		count = 0,
+		at = 2,
+	in {
+		while at < 10_000 {
+			if is_prime(at) {
+				count = count + 1;
+			}
+
+			at = at + 1;
+		}
+
+		print_u64(count);
+	};
+}
+
+funky is_prime(n <- u64) -> bool {
+	if n < 2 || (n != 2 && n % 2 == 0) {
+		return false;
+	}
+
+	let
+		i = 3,
+	in {
+		while i < n {
+			if n % i == 0 {
+				return false;
+			}
+
+			i = i + 2;
+		}
+	};
+
+	true
+}

@@ -123,6 +123,8 @@ macro_rules! output_tests {
                 Ok("true\n"),
             );
 
+            apart::$test_macro!(primes, "primes.txt", Ok("1229\n"));
+
             apart::$test_macro!(product, "product.txt", Ok(""));
 
             apart::$test_macro!(

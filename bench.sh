@@ -27,3 +27,9 @@ hyperfine \
   "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/mandelbrot.txt" \
   "python3 bench_comparison/mandelbrot.py" \
   "lua bench_comparison/mandelbrot.lua"
+
+hyperfine \
+  --warmup 3 \
+  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/primes.txt" \
+  "python3 bench_comparison/primes.py" \
+  "lua bench_comparison/primes.lua"
