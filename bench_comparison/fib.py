@@ -13,7 +13,6 @@ def main():
     
     print(fib(n))
 
-    # 0.757 seconds Python 3.12.3
     print(time.perf_counter() - start_time)
 
 main()

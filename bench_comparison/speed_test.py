@@ -8,7 +8,6 @@ def main():
     while x > 0:
         x -= 1
 
-    # 0.016 seconds Python 3.12.3
     print(time.perf_counter() - start_time)
 
 main()

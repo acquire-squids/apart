@@ -52,7 +52,6 @@ local function main()
 
   print(total)
 
-  -- 1.425 seconds Lua 5.4.6
   print(os.clock() - start_time)
 end
 

@@ -76,6 +76,18 @@ pub mod vec {
 	}
 }
 
+pub mod math_f64 {
+	teach f64 {
+		pub native funky log = funky(Self) -> Self;
+
+		pub native funky floor = funky(Self) -> Self;
+
+		pub native funky to_u64 = funky(Self) -> u64;
+
+		pub native funky from_u64 = funky(u64) -> Self;
+	}
+}
+
 pub funky panic(message <- String) -> never {
 	print_string(message);
 	#never

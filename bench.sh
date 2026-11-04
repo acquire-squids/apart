@@ -6,7 +6,7 @@ cargo build --release
 
 hyperfine \
   --warmup 3 \
-  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/fibonacci_bench.txt" \
+  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/fib.txt" \
   "python3 bench_comparison/fib.py" \
   "lua bench_comparison/fib.lua"
 
@@ -18,6 +18,12 @@ hyperfine \
 
 hyperfine \
   --warmup 3 \
-  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/zoo_bench.txt" \
+  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/zoo.txt" \
   "python3 bench_comparison/zoo.py" \
   "lua bench_comparison/zoo.lua"
+
+hyperfine \
+  --warmup 3 \
+  "./target/release/apart_c --optimize --strip-debug-info --run lang/bench/mandelbrot.txt" \
+  "python3 bench_comparison/mandelbrot.py" \
+  "lua bench_comparison/mandelbrot.lua"

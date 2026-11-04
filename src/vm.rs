@@ -1945,6 +1945,40 @@ impl Vm {
                     .as_secs_f64()
                     * 1000.0,
             ),
+            NativeFn::LogF64 => {
+                let CopyableValue::F64(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                CopyableValue::F64(f64::log(*value, core::f64::consts::E))
+            }
+            NativeFn::FloorF64 => {
+                let CopyableValue::F64(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                CopyableValue::F64(f64::floor(*value))
+            }
+            NativeFn::ToU64F64 => {
+                let CopyableValue::F64(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let value = *value as u64;
+
+                CopyableValue::U64(value)
+            }
+            NativeFn::FromU64F64 => {
+                let CopyableValue::U64(value) = &call_arguments[0] else {
+                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
+                };
+
+                #[allow(clippy::cast_precision_loss)]
+                let value = *value as f64;
+
+                CopyableValue::F64(value)
+            }
             NativeFn::NewVec => {
                 let value = CopyableValue::ValueIndex(ValueIndex(self.values.len()));
 

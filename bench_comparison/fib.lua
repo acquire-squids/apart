@@ -13,7 +13,6 @@ local function main()
 
   print(fib(n))
 
-  -- 0.359 seconds Lua 5.4.6
   print(os.clock() - start_time)
 end
 

@@ -43,7 +43,6 @@ def main():
 
     print(total)
 
-    # 2.079 seconds Python 3.12.3
     print(time.perf_counter() - start_time)
 
 main()

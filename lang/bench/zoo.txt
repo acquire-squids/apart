@@ -18,7 +18,6 @@ funky main() {
 		let
 			end_time = clock() - start_time,
 		in {
-			"2.694 seconds";
 			print_f64(end_time / 1000.0);
 		};
 	};

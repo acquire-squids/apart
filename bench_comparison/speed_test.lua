@@ -7,7 +7,6 @@ local function main()
     x = x - 1
   end
 
-  -- 0.004 seconds Lua 5.4.6
   print(os.clock() - start_time)
 end
 

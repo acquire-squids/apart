@@ -147,6 +147,11 @@ crate::int_enum! {
     FloorCharBoundaryString => 0x10_04,
     CeilCharBoundaryString => 0x10_05,
     Clock => 0x20_00,
+    LogF64 => 0x20_01,
+    FloorF64 => 0x20_02,
+    // TODO: remove this with a trait implementation
+    ToU64F64 => 0x20_03,
+    FromU64F64 => 0x20_04,
     NewVec => 0x30_00,
     GetVec => 0x30_01,
     ExtendVec => 0x30_02,
@@ -472,6 +477,13 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                     Some("push") => NativeFn::PushVec,
                     Some("pop") => NativeFn::PopVec,
                     _ => unreachable!("unknown native function in vec module"),
+                },
+                module_id if *module_id == modules::MODULE_MATH_F64 => match lexeme {
+                    Some("log") => NativeFn::LogF64,
+                    Some("floor") => NativeFn::FloorF64,
+                    Some("to_u64") => NativeFn::ToU64F64,
+                    Some("from_u64") => NativeFn::FromU64F64,
+                    _ => unreachable!("unknown native function in f64 module"),
                 },
                 module_id if *module_id == modules::MODULE_ROOT => match lexeme {
                     Some("print_u8") => NativeFn::PrintU8,

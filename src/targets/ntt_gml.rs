@@ -136,7 +136,11 @@ pub fn compile(
             | NativeFn::PrintU32
             | NativeFn::PrintI32
             | NativeFn::PrintU64
-            | NativeFn::PrintF32 => String::new(),
+            | NativeFn::PrintF32
+            | NativeFn::LogF64
+            | NativeFn::FloorF64
+            | NativeFn::ToU64F64
+            | NativeFn::FromU64F64 => String::new(),
             NativeFn::PrintString => format!(
                 "function {mangled_prefix}_print_string(_text) {{ trace(_text[0]); return \"{{}}\"; }}"
             ),
@@ -739,6 +743,9 @@ fn compile_value(
                     | NativeFn::PrintI32
                     | NativeFn::PrintU64
                     | NativeFn::PrintF32 => "trace".to_string(),
+                    NativeFn::LogF64 => "log".to_string(),
+                    NativeFn::FloorF64 | NativeFn::ToU64F64 => "floor".to_string(),
+                    NativeFn::FromU64F64 => "real".to_string(),
                     NativeFn::PrintString => format!("{mangled_prefix}_print_string"),
                     NativeFn::ExtendString => format!("{mangled_prefix}_extend_string"),
                     NativeFn::SliceString => format!("{mangled_prefix}_slice_string"),

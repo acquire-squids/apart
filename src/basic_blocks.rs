@@ -15,6 +15,8 @@ pub mod modules {
     pub const MODULE_STRING: u64 = 1;
 
     pub const MODULE_VEC: u64 = 2;
+
+    pub const MODULE_MATH_F64: u64 = 3;
 }
 
 pub fn translate(

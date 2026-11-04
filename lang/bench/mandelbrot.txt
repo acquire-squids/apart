@@ -1,0 +1,137 @@
+funky main() {
+	"# Attribution:";
+	"this file was ported from here:";
+	"https://github.com/xacrimon/tcvm/blob/a821dc0b433de3ce33a106cc1c01c3eeae066300/test-files/mandel_bench2.lua";
+	let
+		start_time = clock(),
+	in {
+		print_u64(mandelbrot());
+
+		let
+			end_time = clock() - start_time,
+		in {
+			print_f64(end_time / 1000.0);
+		};
+	};
+}
+
+product Pixel {
+	x <- f64,
+	y <- f64,
+	iteration <- u64,
+}
+
+funky mandelbrot_pixel(x0 <- f64, y0 <- f64) -> Pixel {
+	let
+		width = 800.0,
+		height = 800.0,
+		max_iteration = 100,
+	in {
+		let
+			x = 0.0,
+			y = 0.0,
+			x2 = 0.0,
+			y2 = 0.0,
+			w = 0.0,
+			iteration = 0,
+			x_min = -2.00,
+			y_min = -1.125,
+			x_max = 0.475,
+			y_max = 1.125,
+			x0 = x_min + (x0 * (x_max - x_min) / width),
+			y0 = y_min + (y0 * (y_max - y_min) / height),
+		in {
+			while x2 + y2 <= 4.0 && iteration < max_iteration {
+				x = x2 - y2 + x0;
+				y = w - x2 - y2 + y0;
+				x2 = x * x;
+				y2 = y * y;
+				w = (x + y) * (x + y);
+
+				iteration = iteration + 1;
+			}
+
+			Pixel {
+				x,
+				y,
+				iteration,
+			}
+		}
+	}
+}
+
+funky mandelbrot() -> u64 {
+	let
+		width = 800,
+		height = 800,
+		max_iteration = 100,
+	in {
+		let
+			cols = 100,
+			rows = 40,
+			step_x = width / cols,
+			step_y = height / rows,
+			ramp = " .,:;-~+=*oxOX%#&@",
+			levels = ramp.length(),
+			log_max = f64~log(f64~from_u64(max_iteration + 1)),
+			total_iterations = 0,
+			row = "",
+		in {
+			let
+				y = 0,
+			in {
+				while y < height {
+					row.truncate(0);
+
+					let
+						sampled_row = y % step_y == 0,
+						x = 0,
+					in {
+						while x < width {
+							let
+								pixel = mandelbrot_pixel(f64~from_u64(x), f64~from_u64(y)),
+							in {
+								total_iterations = total_iterations + pixel.iteration;
+
+								if sampled_row && x % step_x == 0 {
+									let
+										index = if pixel.iteration >= max_iteration {
+											levels
+										} else {
+											f64~to_u64(
+												f64~floor(
+													f64~log(
+														f64~from_u64(pixel.iteration + 1)
+													) / log_max * f64~from_u64(levels - 1)
+												)
+											) + 1
+										},
+									in {
+										match ramp.slice(index - 1, index) {
+											Option~Some { value } => {
+												row.extend(value);
+											}
+											else => {
+												panic("Couldn't get character");
+											}
+										}
+									};
+								}
+							}
+
+							x = x + 1;
+						}
+
+						if sampled_row {
+							print_string(row);
+						}
+					};
+
+					y = y + 1;
+				}
+			}
+
+			total_iterations
+		}
+	}
+}
