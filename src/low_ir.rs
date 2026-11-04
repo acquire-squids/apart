@@ -1,6 +1,6 @@
 use crate::{
     ApartOptions, Compiled,
-    basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue, modules},
+    basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue},
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
     ssa::{Block as IrBlock, BlockTerminator, Ssa},
 };
@@ -445,64 +445,41 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                 .get_block(*block_index)
                 .map_or(0, IrBlock::max_register_count),
         }),
-        IrValue::NativeFn { name, module_id } => {
-            let source_index = compiled
-                .sources()
-                .iter()
-                .position(|(id, _)| *id == name.source_id())
-                .expect("the source must exist");
-
-            let lexeme = compiled
-                .sources()
-                .get(source_index)
-                .and_then(|(_, (_, source))| name.lexeme(source));
-
-            ValueOrLocation::Value(Value::NativeFn(match module_id {
-                module_id if *module_id == modules::MODULE_STRING => match lexeme {
-                    Some("extend") => NativeFn::ExtendString,
-                    Some("slice") => NativeFn::SliceString,
-                    Some("length") => NativeFn::LengthString,
-                    Some("truncate") => NativeFn::TruncateString,
-                    Some("floor_char_boundary") => NativeFn::FloorCharBoundaryString,
-                    Some("ceil_char_boundary") => NativeFn::CeilCharBoundaryString,
-                    _ => unreachable!("unknown native function in string module"),
-                },
-                module_id if *module_id == modules::MODULE_VEC => match lexeme {
-                    Some("new") => NativeFn::NewVec,
-                    Some("get") => NativeFn::GetVec,
-                    Some("extend") => NativeFn::ExtendVec,
-                    Some("slice") => NativeFn::SliceVec,
-                    Some("length") => NativeFn::LengthVec,
-                    Some("truncate") => NativeFn::TruncateVec,
-                    Some("push") => NativeFn::PushVec,
-                    Some("pop") => NativeFn::PopVec,
-                    _ => unreachable!("unknown native function in vec module"),
-                },
-                module_id if *module_id == modules::MODULE_MATH_F64 => match lexeme {
-                    Some("log") => NativeFn::LogF64,
-                    Some("floor") => NativeFn::FloorF64,
-                    Some("to_u64") => NativeFn::ToU64F64,
-                    Some("from_u64") => NativeFn::FromU64F64,
-                    _ => unreachable!("unknown native function in f64 module"),
-                },
-                module_id if *module_id == modules::MODULE_ROOT => match lexeme {
-                    Some("print_u8") => NativeFn::PrintU8,
-                    Some("print_i8") => NativeFn::PrintI8,
-                    Some("print_u16") => NativeFn::PrintU16,
-                    Some("print_i16") => NativeFn::PrintI16,
-                    Some("print_u32") => NativeFn::PrintU32,
-                    Some("print_i32") => NativeFn::PrintI32,
-                    Some("print_u64") => NativeFn::PrintU64,
-                    Some("print_i64") => NativeFn::PrintI64,
-                    Some("print_f32") => NativeFn::PrintF32,
-                    Some("print_f64") => NativeFn::PrintF64,
-                    Some("print_bool") => NativeFn::PrintBool,
-                    Some("print_unit") => NativeFn::PrintUnit,
-                    Some("print_string") => NativeFn::PrintString,
-                    Some("clock") => NativeFn::Clock,
-                    _ => unreachable!("unknown native function in root module"),
-                },
-                _ => unreachable!("unknown native function module id {module_id}"),
+        IrValue::NativeFn { label, .. } => {
+            ValueOrLocation::Value(Value::NativeFn(match label.as_str() {
+                "string~String~extend" => NativeFn::ExtendString,
+                "string~String~slice" => NativeFn::SliceString,
+                "string~String~length" => NativeFn::LengthString,
+                "string~String~truncate" => NativeFn::TruncateString,
+                "string~String~floor_char_boundary" => NativeFn::FloorCharBoundaryString,
+                "string~String~ceil_char_boundary" => NativeFn::CeilCharBoundaryString,
+                "vec~Vec[T]~new" => NativeFn::NewVec,
+                "vec~Vec[T]~get" => NativeFn::GetVec,
+                "vec~Vec[T]~extend" => NativeFn::ExtendVec,
+                "vec~Vec[T]~slice" => NativeFn::SliceVec,
+                "vec~Vec[T]~length" => NativeFn::LengthVec,
+                "vec~Vec[T]~truncate" => NativeFn::TruncateVec,
+                "vec~Vec[T]~push" => NativeFn::PushVec,
+                "vec~Vec[T]~pop" => NativeFn::PopVec,
+                "math~f64~log" => NativeFn::LogF64,
+                "math~f64~floor" => NativeFn::FloorF64,
+                "math~f64~to_u64" => NativeFn::ToU64F64,
+                "math~f64~from_u64" => NativeFn::FromU64F64,
+                "print_u8" => NativeFn::PrintU8,
+                "print_i8" => NativeFn::PrintI8,
+                "print_u16" => NativeFn::PrintU16,
+                "print_i16" => NativeFn::PrintI16,
+                "print_u32" => NativeFn::PrintU32,
+                "print_i32" => NativeFn::PrintI32,
+                "print_u64" => NativeFn::PrintU64,
+                "print_i64" => NativeFn::PrintI64,
+                "print_f32" => NativeFn::PrintF32,
+                "print_f64" => NativeFn::PrintF64,
+                "print_bool" => NativeFn::PrintBool,
+                "print_unit" => NativeFn::PrintUnit,
+                "print_string" => NativeFn::PrintString,
+                "clock" => NativeFn::Clock,
+                _ => unreachable!("unknown native function: {label}"),
             }))
         }
         IrValue::Register(_) => ValueOrLocation::At(lower_value_to_location(value)),

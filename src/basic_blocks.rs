@@ -1,23 +1,13 @@
 use crate::{
     ApartOptions, Span, Spanned,
     high_ir::{
-        BinaryOp, Expr, ExprIndex, Ir, Item, ItemIndex, MatchCase, ModuleId, PathElement, Pattern,
-        ROOT_MODULE, Resolved, UnaryOp,
+        BinaryOp, Expr, ExprIndex, Ir, Item, ItemIndex, MatchCase, PathElement, Pattern, Resolved,
+        UnaryOp,
     },
     type_check::{Primitive, Type, TypeChecker},
 };
 
 use std::{collections::HashMap, error, fmt, iter};
-
-pub mod modules {
-    pub const MODULE_ROOT: u64 = super::ROOT_MODULE.is();
-
-    pub const MODULE_STRING: u64 = 1;
-
-    pub const MODULE_VEC: u64 = 2;
-
-    pub const MODULE_MATH_F64: u64 = 3;
-}
 
 pub fn translate(
     options: &ApartOptions,
@@ -35,10 +25,10 @@ pub fn translate(
             false
         }
     }) {
-        translator.label_function(ir, *root)?;
+        translator.label_items(sources, (ir, types), [*root].as_slice(), true)?;
     }
 
-    translator.label_items((ir, types), ir.roots(), false)?;
+    translator.label_items(sources, (ir, types), ir.roots(), false)?;
 
     let function_count = translator.blocks.len();
 
@@ -261,12 +251,12 @@ impl Translator<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Addresslike {
     Address(Address),
     Block(BlockIndex),
     CallArgument(u8),
-    NativeFn { name: Span, module_id: ModuleId },
+    NativeFn { label: String },
     CompoundField { index: u8, of: Address },
 }
 
@@ -288,7 +278,7 @@ pub enum Value {
     String(String),
     Fn(BlockIndex),
     Address(Address),
-    NativeFn { name: Span, module_id: ModuleId },
+    NativeFn { label: String },
     CallArgument(u8),
     Register(usize),
     Compound(Vec<Self>),
@@ -359,52 +349,6 @@ pub struct Address {
 }
 
 impl<'a> Translator<'a> {
-    fn label_function(&mut self, ir: &Ir, f: ItemIndex) -> Result<(), Error> {
-        match ir[f].kind() {
-            Item::Fn { name, .. } => {
-                self.addresses.insert(
-                    name.span(),
-                    Addresslike::Block(BlockIndex(
-                        u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?,
-                    )),
-                );
-
-                self.next_block().map(|_| ())
-            }
-            Item::Primitive { .. }
-            | Item::Product { .. }
-            | Item::Sum { .. }
-            | Item::Alias { .. } => Ok(()),
-            Item::NativeFn { name, .. } => {
-                self.addresses.insert(
-                    name.span(),
-                    Addresslike::NativeFn {
-                        name: name.span(),
-                        module_id: ir
-                            .get_definition(name.span())
-                            .map_or(ROOT_MODULE.is(), |definition| definition.module().is()),
-                    },
-                );
-
-                Ok(())
-            }
-            Item::Mod { contents, .. } => {
-                for item in contents {
-                    self.label_function(ir, *item)?;
-                }
-
-                Ok(())
-            }
-            Item::Teach { body, .. } => {
-                for item in body {
-                    self.label_function(ir, *item)?;
-                }
-
-                Ok(())
-            }
-        }
-    }
-
     fn next_block(&mut self) -> Result<BlockIndex, Error> {
         let block_index =
             BlockIndex(u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?);
@@ -447,22 +391,94 @@ impl<'a> Translator<'a> {
 
     fn label_items(
         &mut self,
+        sources: &[(usize, (&str, &'a str))],
         (ir, types): (&Ir, &TypeChecker),
         items: &[ItemIndex],
         allow_main: bool,
     ) -> Result<(), Error> {
         for item in items {
             match ir[*item].kind() {
-                Item::Mod { contents, .. } => {
-                    self.label_items((ir, types), contents, true)?;
+                Item::Mod { name, contents, .. } => {
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == name.span().source_id())
+                        .and_then(|(_, (_, source))| name.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    self.label_items(sources, (ir, types), contents, true)?;
+
+                    self.label.pop();
                 }
-                Item::Teach { body, .. } => {
-                    self.label_items((ir, types), body, true)?;
+                Item::Teach { student, body, .. } => {
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == student.span().source_id())
+                        .and_then(|(_, (_, source))| student.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    self.label_items(sources, (ir, types), body, true)?;
+
+                    self.label.pop();
                 }
-                Item::Fn { name, .. } | Item::NativeFn { name, .. }
-                    if name.kind() != "main" || allow_main =>
-                {
-                    self.label_function(ir, *item)?;
+                Item::NativeFn { name, .. } if name.kind() != "main" || allow_main => {
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == name.span().source_id())
+                        .and_then(|(_, (_, source))| name.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    self.addresses.insert(
+                        name.span(),
+                        Addresslike::NativeFn {
+                            label: self.concat_label(),
+                        },
+                    );
+
+                    self.label.pop();
+                }
+                Item::Fn { name, .. } if name.kind() != "main" || allow_main => {
+                    self.addresses.insert(
+                        name.span(),
+                        Addresslike::Block(BlockIndex(
+                            u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?,
+                        )),
+                    );
+
+                    let _ = self.next_block();
+
+                    let lexeme = sources
+                        .iter()
+                        .find(|(source_id, _)| *source_id == name.span().source_id())
+                        .and_then(|(_, (_, source))| name.span().lexeme(source))
+                        .expect("the span is from this source");
+
+                    self.label.push(lexeme);
+
+                    let file_name = sources
+                        .iter()
+                        .find_map(|(source_id, (file_name, _))| {
+                            if *source_id == name.span().source_id() {
+                                Some(file_name.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .expect("the span is from this source");
+
+                    let function_label = self.concat_label();
+
+                    self.push_instruction(Instruction::FnLabel {
+                        file_name,
+                        function_label,
+                    });
+
+                    self.label.pop();
                 }
                 Item::Primitive { .. }
                 | Item::Product { .. }
@@ -491,51 +507,36 @@ impl<'a> Translator<'a> {
                 | Item::Product { .. }
                 | Item::Sum { .. }
                 | Item::Alias { .. } => {}
-                Item::Mod { name, contents, .. } => {
-                    let lexeme = sources
-                        .iter()
-                        .find(|(source_id, _)| *source_id == name.span().source_id())
-                        .and_then(|(_, (_, source))| name.span().lexeme(source))
-                        .expect("the span is from this source");
-
-                    self.label.push(lexeme);
-
+                Item::Mod { contents, .. } => {
                     self.translate_items(options, sources, (ir, types), contents.as_slice(), true)?;
-
-                    self.label.pop();
                 }
-                Item::Teach { student, body, .. } => {
-                    let lexeme = sources
-                        .iter()
-                        .find(|(source_id, _)| *source_id == student.span().source_id())
-                        .and_then(|(_, (_, source))| student.span().lexeme(source))
-                        .expect("the span is from this source");
-
-                    self.label.push(lexeme);
-
+                Item::Teach { body, .. } => {
                     self.translate_items(options, sources, (ir, types), body.as_slice(), true)?;
-
-                    self.label.pop();
                 }
                 Item::Fn { name, .. } => {
                     if name.kind() != "main" || allow_main {
-                        let lexeme = sources
-                            .iter()
-                            .find(|(source_id, _)| *source_id == name.span().source_id())
-                            .and_then(|(_, (_, source))| name.span().lexeme(source))
-                            .expect("the span is from this source");
-
-                        self.label.push(lexeme);
-
                         self.translate_function(options, sources, (ir, types), *item)?;
-
-                        self.label.pop();
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn concat_label(&self) -> String {
+        self.label
+            .iter()
+            .enumerate()
+            .fold(String::new(), |mut accum, (i, text)| {
+                if i != 0 {
+                    accum.push('~');
+                }
+
+                accum.push_str(text);
+
+                accum
+            })
     }
 
     fn translate_function(
@@ -564,36 +565,6 @@ impl<'a> Translator<'a> {
                 .copied()
         {
             self.switch_to_block(block_index);
-
-            let file_name = sources
-                .iter()
-                .find_map(|(source_id, (file_name, _))| {
-                    if *source_id == name.span().source_id() {
-                        Some(file_name.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .expect("the span is from this source");
-
-            let function_label =
-                self.label
-                    .iter()
-                    .enumerate()
-                    .fold(String::new(), |mut accum, (i, text)| {
-                        if i != 0 {
-                            accum.push('~');
-                        }
-
-                        accum.push_str(text);
-
-                        accum
-                    });
-
-            self.push_instruction(Instruction::FnLabel {
-                file_name,
-                function_label,
-            });
 
             let mut parameter_count = 0u8;
 
@@ -1005,10 +976,9 @@ impl Translator<'_> {
             Addresslike::CallArgument(offset) => {
                 self.values.push(Value::CallArgument(*offset));
             }
-            Addresslike::NativeFn { name, module_id } => {
+            Addresslike::NativeFn { label } => {
                 self.values.push(Value::NativeFn {
-                    name: *name,
-                    module_id: *module_id,
+                    label: label.clone(),
                 });
             }
             Addresslike::CompoundField { index, of } => {
@@ -1912,9 +1882,8 @@ impl Translator<'_> {
                         .expect("type checking guarantees the method exists")
                     {
                         Addresslike::Block(block_index) => Value::Fn(*block_index),
-                        Addresslike::NativeFn { name, module_id } => Value::NativeFn {
-                            name: *name,
-                            module_id: *module_id,
+                        Addresslike::NativeFn { label } => Value::NativeFn {
+                            label: label.clone(),
                         },
                         Addresslike::CallArgument(_)
                         | Addresslike::Address(_)
@@ -2024,9 +1993,8 @@ impl Translator<'_> {
             .expect("type checking guarantees the method exists")
         {
             Addresslike::Block(block_index) => Value::Fn(*block_index),
-            Addresslike::NativeFn { name, module_id } => Value::NativeFn {
-                name: *name,
-                module_id: *module_id,
+            Addresslike::NativeFn { label } => Value::NativeFn {
+                label: label.clone(),
             },
             Addresslike::CallArgument(_)
             | Addresslike::Address(_)

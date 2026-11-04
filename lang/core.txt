@@ -76,7 +76,7 @@ pub mod vec {
 	}
 }
 
-pub mod math_f64 {
+pub mod math {
 	teach f64 {
 		pub native funky log = funky(Self) -> Self;
 
