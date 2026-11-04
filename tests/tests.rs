@@ -193,8 +193,6 @@ macro_rules! output_tests {
 
             apart::$test_macro!(root_path, "root_path.txt", Ok("97\n"));
 
-            apart::$test_macro!(speed_test, "speed_test.txt", Ok(""),);
-
             apart::$test_macro!(
                 sibling_module_inner_inner,
                 "sibling_module_inner_inner.txt",
@@ -205,11 +203,19 @@ macro_rules! output_tests {
 
             apart::$test_macro!(some_some_none, "some_some_none.txt", Ok("true\n21\n"),);
 
+            apart::$test_macro!(speed_test, "speed_test.txt", Ok(""),);
+
             apart::$test_macro!(ssa_if_0, "ssa_if_0.txt", Ok("21\n"));
 
             apart::$test_macro!(ssa_if_1, "ssa_if_1.txt", Ok("19\n"));
 
             apart::$test_macro!(ssa_if_2, "ssa_if_2.txt", Ok("38\n"));
+
+            apart::$test_macro!(
+                string_escapes,
+                "string_escapes.txt",
+                Ok("Hello!\n\tINDENTED\u{a}\\n\n"),
+            );
 
             apart::$test_macro!(sum, "sum.txt", Ok("false\ntrue\n"));
 

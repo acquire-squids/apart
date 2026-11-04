@@ -225,6 +225,10 @@ impl Iterator for Lexer {
                         && n != '"'
                     {
                         self.advance();
+
+                        if n == '\\' && self.ahead() == Some('"') {
+                            self.advance();
+                        }
                     }
 
                     if let Some(n) = self.ahead()

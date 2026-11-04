@@ -932,7 +932,70 @@ impl Translator<'_> {
                 (*expr, cases.as_slice(), *fallback),
             ),
             Expr::String(text) => {
-                self.values.push(Value::String(text.clone()));
+                let mut characters = text.chars().peekable();
+
+                let mut text = String::new();
+
+                while let Some(ch) = characters.next() {
+                    match ch {
+                        '\\' => {
+                            let mut buffer = String::new();
+
+                            match characters.next() {
+                                Some('\\') => buffer.push('\\'),
+                                Some('t') => buffer.push('\t'),
+                                Some('n') => buffer.push('\n'),
+                                Some('r') => buffer.push('\r'),
+                                Some('u') => {
+                                    if matches!(characters.by_ref().peek(), Some('{')) {
+                                        characters.next();
+
+                                        while let Some(n) = characters.peek()
+                                            && n.is_ascii_hexdigit()
+                                        {
+                                            buffer.push(*n);
+
+                                            characters.next();
+                                        }
+
+                                        if matches!(characters.by_ref().peek(), Some('}')) {
+                                            characters.next();
+
+                                            if let Some(ch) =
+                                                u32::from_str_radix(buffer.as_str(), 16)
+                                                    .ok()
+                                                    .and_then(char::from_u32)
+                                            {
+                                                buffer.clear();
+                                                buffer.push(ch);
+                                            } else {
+                                                buffer = format!("\\u{{{buffer}}}");
+                                            }
+                                        } else {
+                                            buffer = format!("\\u{{{buffer}");
+                                        }
+                                    } else {
+                                        buffer = "\\u{".to_string();
+                                    }
+                                }
+                                Some(n) => {
+                                    buffer.push(ch);
+                                    buffer.push(n);
+                                }
+                                None => {
+                                    buffer.push(ch);
+                                }
+                            }
+
+                            text.push_str(buffer.as_str());
+                        }
+                        _ => {
+                            text.push(ch);
+                        }
+                    }
+                }
+
+                self.values.push(Value::String(text));
 
                 if self.last_in_fn {
                     self.emit_return();
