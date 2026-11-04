@@ -1551,7 +1551,7 @@ where
             Self::NativeFn(native_fn) => {
                 let mut bytes = vec![u8::from(Instruction::NativeFn)];
 
-                bytes.extend(u16::from(*native_fn).to_le_bytes());
+                bytes.extend(u32::from(*native_fn).to_le_bytes());
 
                 bytes
             }
@@ -1866,7 +1866,7 @@ where
             .concat(),
             Self::NativeFn(native_fn) => [
                 Instruction::NativeFn.assemble(assembler),
-                u16::from(*native_fn).assemble(assembler),
+                u32::from(*native_fn).assemble(assembler),
             ]
             .concat(),
             Self::ValueIndex(value_index) => assembler
@@ -1915,7 +1915,7 @@ where
                 }
             }
             Instruction::NativeFn => {
-                let native_fn = NativeFn::try_from(u16::disassemble(bytecode, disassembler))
+                let native_fn = NativeFn::try_from(u32::disassemble(bytecode, disassembler))
                     .unwrap_or_else(|error| {
                         panic!("{error} is not a valid native function");
                     });
