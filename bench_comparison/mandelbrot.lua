@@ -43,8 +43,8 @@ local function mandelbrot()
 
     local cols = 100
     local rows = 40
-    local step_x = width // cols
-    local step_y = height // rows
+    local step_x = math.floor(width / cols)
+    local step_y = math.floor(height / rows)
     local ramp = " .,:;-~+=*oxOX%#&@"
     local levels = #ramp
     local log_max = math.log(max_iteration + 1.0)
