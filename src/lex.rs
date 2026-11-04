@@ -123,7 +123,7 @@ impl Lexer {
 
     fn int_or_float(&mut self, radix: u32) -> Spanned<Token> {
         while let Some(n) = self.ahead()
-            && n.is_digit(radix)
+            && (n.is_digit(radix) || n == '_')
         {
             self.advance();
         }
@@ -137,7 +137,7 @@ impl Lexer {
             self.advance();
 
             while let Some(n) = self.ahead()
-                && n.is_digit(radix)
+                && (n.is_digit(radix) || n == '_')
             {
                 self.advance();
             }

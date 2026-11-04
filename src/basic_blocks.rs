@@ -659,7 +659,10 @@ impl Translator<'_> {
                             .iter()
                             .find(|(source_id, _)| *source_id == ir[expr].span().source_id())
                             .and_then(|(_, (_, source))| ir[expr].span().lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
                             Primitive::U8 => Value::U8(
@@ -719,7 +722,10 @@ impl Translator<'_> {
                             .iter()
                             .find(|(source_id, _)| *source_id == ir[expr].span().source_id())
                             .and_then(|(_, (_, source))| ir[expr].span().lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
                             Primitive::I8 => Value::I8(
@@ -763,7 +769,10 @@ impl Translator<'_> {
                             .iter()
                             .find(|(source_id, _)| *source_id == ir[expr].span().source_id())
                             .and_then(|(_, (_, source))| ir[expr].span().lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
                             Primitive::F32 => Value::F32(
@@ -2220,7 +2229,10 @@ impl Translator<'_> {
                             .iter()
                             .find(|(source_id, _)| *source_id == pattern.span().source_id())
                             .and_then(|(_, (_, source))| pattern.span().lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
                             Primitive::U8 => Value::U8(
@@ -2263,7 +2275,10 @@ impl Translator<'_> {
                             .iter()
                             .find(|(source_id, _)| *source_id == pattern.span().source_id())
                             .and_then(|(_, (_, source))| pattern.span().lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
                             Primitive::I8 => Value::I8(

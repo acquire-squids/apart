@@ -2621,7 +2621,10 @@ impl TypeChecker {
                             .iter()
                             .find(|(source_id, _)| *source_id == radix_span.source_id())
                             .and_then(|(_, (_, source))| radix_span.lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match i64::from_str_radix(lexeme, radix) {
                             Ok(_) => {
@@ -2645,7 +2648,10 @@ impl TypeChecker {
                             .iter()
                             .find(|(source_id, _)| *source_id == radix_span.source_id())
                             .and_then(|(_, (_, source))| radix_span.lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
+
+                        let lexeme = lexeme.as_str();
 
                         match i64::from_str_radix(lexeme, radix) {
                             Ok(_) => {
@@ -2662,7 +2668,8 @@ impl TypeChecker {
                             .iter()
                             .find(|(source_id, _)| *source_id == span.source_id())
                             .and_then(|(_, (_, source))| span.lexeme(source))
-                            .expect("the span is from this source");
+                            .expect("the span is from this source")
+                            .replace('_', "");
 
                         match lexeme.parse::<f64>() {
                             Ok(_) => {
@@ -3950,7 +3957,10 @@ impl TypeChecker {
                     .iter()
                     .find(|(source_id, _)| *source_id == radix_span.source_id())
                     .and_then(|(_, (_, source))| radix_span.lexeme(source))
-                    .expect("the span is from this source");
+                    .expect("the span is from this source")
+                    .replace('_', "");
+
+                let lexeme = lexeme.as_str();
 
                 match b.kind() {
                     Primitive::U8 if u8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
@@ -3985,7 +3995,10 @@ impl TypeChecker {
                     .iter()
                     .find(|(source_id, _)| *source_id == radix_span.source_id())
                     .and_then(|(_, (_, source))| radix_span.lexeme(source))
-                    .expect("the span is from this source");
+                    .expect("the span is from this source")
+                    .replace('_', "");
+
+                let lexeme = lexeme.as_str();
 
                 match b.kind() {
                     Primitive::I8
@@ -4025,7 +4038,10 @@ impl TypeChecker {
                     .iter()
                     .find(|(source_id, _)| *source_id == span.source_id())
                     .and_then(|(_, (_, source))| span.lexeme(source))
-                    .expect("the span is from this source");
+                    .expect("the span is from this source")
+                    .replace('_', "");
+
+                let lexeme = lexeme.as_str();
 
                 match b.kind() {
                     Primitive::F32 if lexeme.parse::<f32>().is_ok() => Ok(should_be),
@@ -4480,7 +4496,10 @@ impl TypeChecker {
                     .iter()
                     .find(|(source_id, _)| *source_id == pattern.span().source_id())
                     .and_then(|(_, (_, source))| pattern.span().lexeme(source))
-                    .expect("the span is from this source");
+                    .expect("the span is from this source")
+                    .replace('_', "");
+
+                let lexeme = lexeme.as_str();
 
                 match b.kind() {
                     Primitive::U8 if u8::from_str_radix(lexeme, radix).is_ok() => Ok(should_be),
@@ -4504,7 +4523,10 @@ impl TypeChecker {
                     .iter()
                     .find(|(source_id, _)| *source_id == pattern.span().source_id())
                     .and_then(|(_, (_, source))| pattern.span().lexeme(source))
-                    .expect("the span is from this source");
+                    .expect("the span is from this source")
+                    .replace('_', "");
+
+                let lexeme = lexeme.as_str();
 
                 match b.kind() {
                     Primitive::I8
