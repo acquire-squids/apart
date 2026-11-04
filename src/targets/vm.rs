@@ -29,7 +29,8 @@ impl Instructive for Compiler {
 }
 
 /// # Panics
-/// Panics if `usize` doesn't fit in a u64
+/// - panics if `bytecode.len()` > `u32::MAX`
+/// - panics if the number of instructions in the output exceeds `u32::MAX`
 #[must_use]
 pub fn compile(options: &ApartOptions, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
     let ssa = compiled.result();
@@ -42,12 +43,11 @@ pub fn compile(options: &ApartOptions, compiled: &Compiled<'_, Ir<IrValue>>) -> 
 
     let mut bytecode = vec![];
 
-    bytecode.extend_from_slice(
+    bytecode.extend(
         ssa.blocks()
             .first()
             .map_or(0u16, Block::max_register_count)
-            .to_le_bytes()
-            .as_slice(),
+            .to_le_bytes(),
     );
 
     let mut block_addresses = vec![0u32; ssa.blocks().len()];
@@ -1435,70 +1435,70 @@ where
             Self::U8(value) => {
                 let mut bytes = vec![u8::from(Instruction::U8)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::I8(value) => {
                 let mut bytes = vec![u8::from(Instruction::I8)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::U16(value) => {
                 let mut bytes = vec![u8::from(Instruction::U16)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::I16(value) => {
                 let mut bytes = vec![u8::from(Instruction::I16)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::U32(value) => {
                 let mut bytes = vec![u8::from(Instruction::U32)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::I32(value) => {
                 let mut bytes = vec![u8::from(Instruction::I32)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::U64(value) => {
                 let mut bytes = vec![u8::from(Instruction::U64)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::I64(value) => {
                 let mut bytes = vec![u8::from(Instruction::I64)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::F32(value) => {
                 let mut bytes = vec![u8::from(Instruction::F32)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
             Self::F64(value) => {
                 let mut bytes = vec![u8::from(Instruction::F64)];
 
-                bytes.extend_from_slice(value.to_le_bytes().as_slice());
+                bytes.extend(value.to_le_bytes());
 
                 bytes
             }
@@ -1511,29 +1511,27 @@ where
             Self::String(text) => {
                 let mut bytes = vec![u8::from(Instruction::String)];
 
-                bytes.extend_from_slice(
+                bytes.extend(
                     u64::try_from(text.len())
                         .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
+                        .to_le_bytes(),
                 );
 
-                bytes.extend_from_slice(text.as_bytes());
+                bytes.extend(text.as_bytes());
 
                 bytes
             }
             Self::Vec(values) => {
                 let mut bytes = vec![u8::from(Instruction::Vec)];
 
-                bytes.extend_from_slice(
+                bytes.extend(
                     u64::try_from(values.len())
                         .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes()
-                        .as_slice(),
+                        .to_le_bytes(),
                 );
 
                 for value in values {
-                    bytes.extend_from_slice(value.assemble(assembler).as_slice());
+                    bytes.extend(value.assemble(assembler));
                 }
 
                 bytes
@@ -1544,31 +1542,30 @@ where
             } => {
                 let mut bytes = vec![u8::from(Instruction::Fn)];
 
-                bytes.extend_from_slice(u32::from(*block_index).to_le_bytes().as_slice());
+                bytes.extend(u32::from(*block_index).to_le_bytes());
 
-                bytes.extend_from_slice(max_register_count.to_le_bytes().as_slice());
+                bytes.extend(max_register_count.to_le_bytes());
 
                 bytes
             }
             Self::NativeFn(native_fn) => {
                 let mut bytes = vec![u8::from(Instruction::NativeFn)];
 
-                bytes.extend_from_slice(u16::from(*native_fn).to_le_bytes().as_slice());
+                bytes.extend(u16::from(*native_fn).to_le_bytes());
 
                 bytes
             }
             Self::Compound(values) => {
                 let mut bytes = vec![u8::from(Instruction::Compound)];
 
-                bytes.extend_from_slice(
+                bytes.extend(
                     u16::try_from(values.len())
                         .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes()
-                        .as_slice(),
+                        .to_le_bytes(),
                 );
 
                 for value in values {
-                    bytes.extend_from_slice(value.assemble(assembler).as_slice());
+                    bytes.extend(value.assemble(assembler));
                 }
 
                 bytes
@@ -1576,17 +1573,16 @@ where
             Self::TaggedCompound { tag, fields } => {
                 let mut bytes = vec![u8::from(Instruction::TaggedCompound)];
 
-                bytes.extend_from_slice(tag.to_le_bytes().as_slice());
+                bytes.extend(tag.to_le_bytes());
 
-                bytes.extend_from_slice(
+                bytes.extend(
                     u16::try_from(fields.len())
                         .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes()
-                        .as_slice(),
+                        .to_le_bytes(),
                 );
 
                 for value in fields {
-                    bytes.extend_from_slice(value.assemble(assembler).as_slice());
+                    bytes.extend(value.assemble(assembler));
                 }
 
                 bytes
@@ -1710,7 +1706,7 @@ where
             .to_le_bytes()
             .to_vec();
 
-        bytes.extend_from_slice(self.as_bytes());
+        bytes.extend(self.as_bytes());
 
         bytes
     }
