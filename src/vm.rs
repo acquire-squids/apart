@@ -1382,15 +1382,12 @@ impl Vm {
                 Ok(())
             }
             CopyableValue::NativeFn(native_fn) => {
-                let call_arguments = self.registers[sp..].to_vec();
+                let call_arguments = self.registers.drain(sp..).collect::<Vec<_>>();
 
-                let value = self.native_fn_call(call_arguments.as_slice(), native_fn, out);
-
-                self.registers.truncate(sp);
-
-                self.assign(to, value);
-
-                Ok(())
+                self.native_fn_call(call_arguments.as_slice(), native_fn, out)
+                    .map(|value| {
+                        self.assign(to, value);
+                    })
             }
             _ => {
                 writeln!(
@@ -1639,533 +1636,54 @@ impl Vm {
     }
 
     #[allow(clippy::too_many_lines)]
-    #[must_use]
     fn native_fn_call<O>(
         &mut self,
         call_arguments: &[CopyableValue],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> CopyableValue
+    ) -> Result<CopyableValue, Interrupt>
     where
         O: Write,
     {
         match native_fn {
-            NativeFn::PrintU8 => {
-                let CopyableValue::U8(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintI8 => {
-                let CopyableValue::I8(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintU16 => {
-                let CopyableValue::U16(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintI16 => {
-                let CopyableValue::I16(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintU32 => {
-                let CopyableValue::U32(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintI32 => {
-                let CopyableValue::I32(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintU64 => {
-                let CopyableValue::U64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintI64 => {
-                let CopyableValue::I64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintF32 => {
-                let CopyableValue::F32(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value:?}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintF64 => {
-                let CopyableValue::F64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value:?}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintBool => {
-                let CopyableValue::Boolean(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintUnit => {
-                let CopyableValue::Unit = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                writeln!(out, "{{}}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::PrintString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                writeln!(out, "{value}").expect("failed to write to output");
-
-                CopyableValue::Unit
-            }
-            NativeFn::ExtendString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let Value::String(extension) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 1)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let extension = extension.clone();
-
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                value.push_str(extension.as_str());
-
-                CopyableValue::Unit
-            }
-            NativeFn::SliceString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(start) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[2] else {
-                    panic!("({native_fn:?} {:?} @ 2)", call_arguments[2]);
-                };
-
-                let start = usize::try_from(*start).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                let end = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 2 is not a valid usize");
-                });
-
-                if let Some(value) = value.get(start..end) {
-                    self.values.push(Value::String(value.to_string()));
-
-                    let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
-
-                    self.allocated += self.size_of_value(value_index);
-
-                    self.option_some(value_index)
-                } else {
-                    self.option_none()
-                }
-            }
-            NativeFn::LengthString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let length =
-                    u64::try_from(value.len()).expect("128-bit usize not allowed!  sorry!");
-
-                CopyableValue::U64(length)
-            }
+            NativeFn::PrintU8 => self.native_fn_print_u8(call_arguments, native_fn, out),
+            NativeFn::PrintI8 => self.native_fn_print_i8(call_arguments, native_fn, out),
+            NativeFn::PrintU16 => self.native_fn_print_u16(call_arguments, native_fn, out),
+            NativeFn::PrintI16 => self.native_fn_print_i16(call_arguments, native_fn, out),
+            NativeFn::PrintU32 => self.native_fn_print_u32(call_arguments, native_fn, out),
+            NativeFn::PrintI32 => self.native_fn_print_i32(call_arguments, native_fn, out),
+            NativeFn::PrintU64 => self.native_fn_print_u64(call_arguments, native_fn, out),
+            NativeFn::PrintI64 => self.native_fn_print_i64(call_arguments, native_fn, out),
+            NativeFn::PrintF32 => self.native_fn_print_f32(call_arguments, native_fn, out),
+            NativeFn::PrintF64 => self.native_fn_print_f64(call_arguments, native_fn, out),
+            NativeFn::PrintBool => self.native_fn_print_bool(call_arguments, native_fn, out),
+            NativeFn::PrintUnit => self.native_fn_print_unit(call_arguments, native_fn, out),
+            NativeFn::PrintString => self.native_fn_print_string(call_arguments, native_fn, out),
+            NativeFn::ExtendString => self.native_fn_extend_string(call_arguments, native_fn, out),
+            NativeFn::SliceString => self.native_fn_slice_string(call_arguments, native_fn, out),
+            NativeFn::LengthString => self.native_fn_length_string(call_arguments, native_fn, out),
             NativeFn::TruncateString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let end = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                value.truncate(end);
-
-                CopyableValue::Unit
+                self.native_fn_truncate_string(call_arguments, native_fn, out)
             }
             NativeFn::FloorCharBoundaryString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let index = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                let boundary =
-                    u64::try_from(value.floor_char_boundary(index)).unwrap_or_else(|_| {
-                        panic!("{native_fn:?}: char boundary is not a valid u64");
-                    });
-
-                CopyableValue::U64(boundary)
+                self.native_fn_floor_char_boundary_string(call_arguments, native_fn, out)
             }
             NativeFn::CeilCharBoundaryString => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::String(value) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let index = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                let boundary =
-                    u64::try_from(value.ceil_char_boundary(index)).unwrap_or_else(|_| {
-                        panic!("{native_fn:?}: char boundary is not a valid u64");
-                    });
-
-                CopyableValue::U64(boundary)
+                self.native_fn_ceil_char_boundary_string(call_arguments, native_fn, out)
             }
-            NativeFn::Clock => CopyableValue::F64(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("time somehow went backwards")
-                    .as_secs_f64()
-                    * 1000.0,
-            ),
-            NativeFn::LogF64 => {
-                let CopyableValue::F64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                CopyableValue::F64(f64::log(*value, core::f64::consts::E))
-            }
-            NativeFn::FloorF64 => {
-                let CopyableValue::F64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                CopyableValue::F64(f64::floor(*value))
-            }
-            NativeFn::ToU64F64 => {
-                let CopyableValue::F64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let value = *value as u64;
-
-                CopyableValue::U64(value)
-            }
-            NativeFn::FromU64F64 => {
-                let CopyableValue::U64(value) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                #[allow(clippy::cast_precision_loss)]
-                let value = *value as f64;
-
-                CopyableValue::F64(value)
-            }
-            NativeFn::NewVec => {
-                let value = CopyableValue::ValueIndex(ValueIndex(self.values.len()));
-
-                self.values.push(Value::Vec(vec![]));
-
-                value
-            }
-            NativeFn::GetVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(index) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let index = usize::try_from(*index).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                if let Some(value) = values.get(index).copied() {
-                    self.option_some(value)
-                } else {
-                    self.option_none()
-                }
-            }
-            NativeFn::ExtendVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let Value::Vec(extension) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 1)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let extension = extension.clone();
-
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                for value in &extension {
-                    self.allocated += mem::size_of_val(value);
-                }
-
-                values.extend(extension);
-
-                CopyableValue::Unit
-            }
-            NativeFn::SliceVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(start) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[2] else {
-                    panic!("({native_fn:?} {:?} @ 2)", call_arguments[2]);
-                };
-
-                let start = usize::try_from(*start).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                let end = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 2 is not a valid usize");
-                });
-
-                if let Some(values) = values.get(start..end) {
-                    self.values.push(Value::Vec(values.to_vec()));
-
-                    let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
-
-                    self.allocated += self.size_of_value(value_index);
-
-                    self.option_some(value_index)
-                } else {
-                    self.option_none()
-                }
-            }
-            NativeFn::LengthVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let length =
-                    u64::try_from(values.len()).expect("128-bit usize not allowed!  sorry!");
-
-                CopyableValue::U64(length)
-            }
-            NativeFn::TruncateVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                let CopyableValue::U64(end) = &call_arguments[1] else {
-                    panic!("({native_fn:?} {:?} @ 1)", call_arguments[1]);
-                };
-
-                let end = usize::try_from(*end).unwrap_or_else(|_| {
-                    panic!("{native_fn:?}: argument 1 is not a valid usize");
-                });
-
-                for value in values.drain(end..) {
-                    self.allocated -= mem::size_of_val(&value);
-                }
-
-                CopyableValue::Unit
-            }
-            NativeFn::PushVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                values.push(call_arguments[1]);
-
-                self.allocated += mem::size_of_val(&call_arguments[1]);
-
-                CopyableValue::Unit
-            }
-            NativeFn::PopVec => {
-                let CopyableValue::ValueIndex(value_index) = &call_arguments[0] else {
-                    panic!("({native_fn:?} {:?} @ 0)", call_arguments[0]);
-                };
-
-                let Value::Vec(values) = &mut self.values[usize::from(*value_index)] else {
-                    panic!(
-                        "({native_fn:?} {:?} @ 0)",
-                        self.values[usize::from(*value_index)]
-                    );
-                };
-
-                if let Some(value) = values.pop() {
-                    self.allocated -= mem::size_of_val(&value);
-
-                    self.option_some(value)
-                } else {
-                    self.option_none()
-                }
-            }
+            NativeFn::Clock => self.native_fn_clock(call_arguments, native_fn, out),
+            NativeFn::LogF64 => self.native_fn_log_f64(call_arguments, native_fn, out),
+            NativeFn::FloorF64 => self.native_fn_floor_f64(call_arguments, native_fn, out),
+            NativeFn::ToU64F64 => self.native_fn_to_u64_f64(call_arguments, native_fn, out),
+            NativeFn::FromU64F64 => self.native_fn_from_u64_f64(call_arguments, native_fn, out),
+            NativeFn::NewVec => self.native_fn_new_vec(call_arguments, native_fn, out),
+            NativeFn::GetVec => self.native_fn_get_vec(call_arguments, native_fn, out),
+            NativeFn::ExtendVec => self.native_fn_extend_vec(call_arguments, native_fn, out),
+            NativeFn::SliceVec => self.native_fn_slice_vec(call_arguments, native_fn, out),
+            NativeFn::LengthVec => self.native_fn_length_vec(call_arguments, native_fn, out),
+            NativeFn::TruncateVec => self.native_fn_truncate_vec(call_arguments, native_fn, out),
+            NativeFn::PushVec => self.native_fn_push_vec(call_arguments, native_fn, out),
+            NativeFn::PopVec => self.native_fn_pop_vec(call_arguments, native_fn, out),
         }
     }
 
@@ -2391,6 +1909,523 @@ impl Vm {
             }
         } else {
             mem::size_of_val(&value)
+        }
+    }
+}
+
+macro_rules! native_fn_print_debug {
+    (
+        $name:ident, $value_variant:ident $(,)?
+    ) => {
+        fn $name<O>(
+            &mut self,
+            call_arguments: &[$crate::targets::vm::CopyableValue],
+            native_fn: $crate::low_ir::NativeFn,
+            out: &mut O,
+        ) -> Result<$crate::targets::vm::CopyableValue, $crate::vm::Interrupt>
+        where
+            O: Write,
+        {
+            if let $crate::targets::vm::CopyableValue::$value_variant(value) = &call_arguments[0] {
+                writeln!(out, "{value:?}").expect("failed to write to output");
+
+                Ok($crate::targets::vm::CopyableValue::Unit)
+            } else {
+                self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+            }
+        }
+    };
+}
+
+impl Vm {
+    fn native_fn_invalid_arguments<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        writeln!(
+            out,
+            "invalid arguments: {native_fn:?}({})",
+            call_arguments
+                .iter()
+                .map(|argument| { self.value_to_string(*argument, &mut HashSet::new()) })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .expect("failed to write to output");
+
+        self.panic(out, None).map(|()| CopyableValue::Never)
+    }
+
+    native_fn_print_debug!(native_fn_print_u8, U8);
+    native_fn_print_debug!(native_fn_print_i8, I8);
+    native_fn_print_debug!(native_fn_print_u16, U16);
+    native_fn_print_debug!(native_fn_print_i16, I16);
+    native_fn_print_debug!(native_fn_print_u32, U32);
+    native_fn_print_debug!(native_fn_print_i32, I32);
+    native_fn_print_debug!(native_fn_print_u64, U64);
+    native_fn_print_debug!(native_fn_print_i64, I64);
+
+    native_fn_print_debug!(native_fn_print_f32, F32);
+    native_fn_print_debug!(native_fn_print_f64, F64);
+
+    native_fn_print_debug!(native_fn_print_bool, Boolean);
+
+    fn native_fn_print_unit<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if matches!(&call_arguments[0], CopyableValue::Unit) {
+            writeln!(out, "{{}}").expect("failed to write to output");
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_print_string<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get(usize::from(*value_index))
+        {
+            writeln!(out, "{value}").expect("failed to write to output");
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_extend_string<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(target) = &call_arguments[0]
+            && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
+            && let Ok([Value::String(target), Value::String(extension)]) = self
+                .values
+                .get_disjoint_mut([usize::from(*target), usize::from(*extension)])
+        {
+            target.push_str(extension.as_str());
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_slice_string<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
+            && let CopyableValue::U64(start) = &call_arguments[1]
+            && let CopyableValue::U64(end) = &call_arguments[2]
+            && let Ok(start) = usize::try_from(*start)
+            && let Ok(end) = usize::try_from(*end)
+        {
+            if let Some(value) = value.get(start..end) {
+                self.values.push(Value::String(value.to_string()));
+
+                let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+
+                self.allocated += self.size_of_value(value_index);
+
+                Ok(self.option_some(value_index))
+            } else {
+                Ok(self.option_none())
+            }
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_length_string<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
+            && let Ok(length) = u64::try_from(value.len())
+        {
+            Ok(CopyableValue::U64(length))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_truncate_string<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get_mut(usize::from(*value))
+            && let CopyableValue::U64(end) = &call_arguments[1]
+            && let Ok(end) = usize::try_from(*end)
+        {
+            value.truncate(end);
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_floor_char_boundary_string<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
+            && let CopyableValue::U64(boundary) = &call_arguments[1]
+            && let Ok(boundary) = usize::try_from(*boundary)
+            && let Ok(boundary) = u64::try_from(value.floor_char_boundary(boundary))
+        {
+            Ok(CopyableValue::U64(boundary))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_ceil_char_boundary_string<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
+            && let CopyableValue::U64(boundary) = &call_arguments[1]
+            && let Ok(boundary) = usize::try_from(*boundary)
+            && let Ok(boundary) = u64::try_from(value.ceil_char_boundary(boundary))
+        {
+            Ok(CopyableValue::U64(boundary))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+    fn native_fn_clock<O>(
+        &self,
+        _: &[CopyableValue],
+        _: NativeFn,
+        _: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        Ok(CopyableValue::F64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time somehow went backwards")
+                .as_secs_f64()
+                * 1000.0,
+        ))
+    }
+
+    fn native_fn_log_f64<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::F64(value) = &call_arguments[0] {
+            Ok(CopyableValue::F64(f64::log(*value, core::f64::consts::E)))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_floor_f64<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::F64(value) = &call_arguments[0] {
+            Ok(CopyableValue::F64(f64::floor(*value)))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_to_u64_f64<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::F64(value) = &call_arguments[0] {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let value = *value as u64;
+
+            Ok(CopyableValue::U64(value))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_from_u64_f64<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::U64(value) = &call_arguments[0] {
+            #[allow(clippy::cast_precision_loss)]
+            let value = *value as f64;
+
+            Ok(CopyableValue::F64(value))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn native_fn_new_vec<O>(
+        &mut self,
+        _: &[CopyableValue],
+        _: NativeFn,
+        _: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        self.values.push(Value::Vec(vec![]));
+
+        Ok(CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1)))
+    }
+
+    fn native_fn_get_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
+            && let CopyableValue::U64(index) = &call_arguments[1]
+            && let Ok(index) = usize::try_from(*index)
+        {
+            if let Some(value) = value.get(index) {
+                Ok(self.option_some(*value))
+            } else {
+                Ok(self.option_none())
+            }
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_extend_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(target) = &call_arguments[0]
+            && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
+            && let Ok([Value::Vec(target), Value::Vec(extension)]) = self
+                .values
+                .get_disjoint_mut([usize::from(*target), usize::from(*extension)])
+        {
+            let extension = extension.clone();
+
+            for value in &extension {
+                self.allocated += mem::size_of_val(value);
+            }
+
+            target.extend(extension);
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_slice_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
+            && let CopyableValue::U64(start) = &call_arguments[1]
+            && let CopyableValue::U64(end) = &call_arguments[2]
+            && let Ok(start) = usize::try_from(*start)
+            && let Ok(end) = usize::try_from(*end)
+        {
+            if let Some(value) = value.get(start..end) {
+                self.values.push(Value::Vec(value.to_vec()));
+
+                let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+
+                self.allocated += self.size_of_value(value_index);
+
+                Ok(self.option_some(value_index))
+            } else {
+                Ok(self.option_none())
+            }
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_length_vec<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
+            && let Ok(length) = u64::try_from(value.len())
+        {
+            Ok(CopyableValue::U64(length))
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_truncate_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value))
+            && let CopyableValue::U64(end) = &call_arguments[1]
+            && let Ok(end) = usize::try_from(*end)
+        {
+            for value in value.drain(end..) {
+                self.allocated -= mem::size_of_val(&value);
+            }
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_push_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value_index))
+        {
+            value.push(call_arguments[1]);
+
+            self.allocated += mem::size_of_val(&call_arguments[1]);
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
+    fn native_fn_pop_vec<O>(
+        &mut self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value_index))
+        {
+            if let Some(value) = value.pop() {
+                self.allocated -= mem::size_of_val(&value);
+
+                Ok(self.option_some(value))
+            } else {
+                Ok(self.option_none())
+            }
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
     }
 }
