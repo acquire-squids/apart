@@ -537,16 +537,8 @@ fn compile_block(
                             ),
                             call_arguments
                                 .drain((call_arguments.len() - usize::from(*arity))..)
-                                .enumerate()
-                                .fold(String::new(), |mut accum, (i, value)| {
-                                    if i == 0 {
-                                        accum.push_str(value.as_str());
-                                    } else {
-                                        accum.push_str(format!(", {value}").as_str());
-                                    }
-
-                                    accum
-                                }),
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         )
                         .as_str(),
                     );

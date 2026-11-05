@@ -525,18 +525,7 @@ impl<'a> Translator<'a> {
     }
 
     fn concat_label(&self) -> String {
-        self.label
-            .iter()
-            .enumerate()
-            .fold(String::new(), |mut accum, (i, text)| {
-                if i != 0 {
-                    accum.push('~');
-                }
-
-                accum.push_str(text);
-
-                accum
-            })
+        self.label.join("~")
     }
 
     fn translate_function(
