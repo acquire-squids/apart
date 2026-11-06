@@ -16,13 +16,12 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     ssa.for_functions(|ssa, blocks| {
         let first_b = blocks
             .first()
-            .and_then(|block_index| usize::try_from(u32::from(*block_index)).ok())
-            .unwrap_or(0);
+            .map_or(0, |block_index| usize::from(*block_index));
 
         for block_index in &blocks {
-            if let Some(block) = ssa.get_block(*block_index)
-                && let Ok(b) = usize::try_from(u32::from(*block_index))
-            {
+            if let Some(block) = ssa.get_block(*block_index) {
+                let b = usize::from(*block_index);
+
                 for (i, instruction) in block.instructions().iter().enumerate() {
                     if let Instruction::Assign {
                         value: Value::Address(value),
@@ -38,9 +37,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         }
 
         for block_index in &blocks {
-            if let Some(block) = ssa.get_block_mut(*block_index)
-                && let Ok(b) = usize::try_from(u32::from(*block_index))
-            {
+            if let Some(block) = ssa.get_block_mut(*block_index) {
+                let b = usize::from(*block_index);
+
                 let propagate_copy = |value: &mut Value| {
                     if let Value::Address(address) = value
                         && let Some((copy_b, copy)) = copies.get(address)

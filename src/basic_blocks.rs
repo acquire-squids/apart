@@ -32,19 +32,7 @@ pub fn translate(
 
     let function_count = translator.blocks.len();
 
-    if let Some(root) = ir.roots().iter().find(|root| {
-        if let Item::Fn { name, .. } = ir[**root].kind()
-            && name.kind() == "main"
-        {
-            true
-        } else {
-            false
-        }
-    }) {
-        translator.translate_function(options, sources, (ir, types), *root)?;
-    }
-
-    translator.translate_items(options, sources, (ir, types), ir.roots(), false)?;
+    translator.translate_items(options, sources, (ir, types), ir.roots())?;
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -74,6 +62,12 @@ pub struct BlockIndex(pub u32);
 impl From<BlockIndex> for u32 {
     fn from(value: BlockIndex) -> Self {
         value.0
+    }
+}
+
+impl From<BlockIndex> for usize {
+    fn from(value: BlockIndex) -> Self {
+        Self::try_from(value.0).expect("this is guaranteed to be fine since `basic_blocks::translate` would have errored and ended the compilation process early if it wasn't")
     }
 }
 
@@ -174,17 +168,13 @@ impl BasicBlocks {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get(block_index))
+        self.blocks.get(usize::from(block_index))
     }
 
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get_mut(block_index))
+        self.blocks.get_mut(usize::from(block_index))
     }
 
     #[allow(dead_code)]
@@ -239,15 +229,11 @@ impl Translator<'_> {
     }
 
     fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get(block_index))
+        self.blocks.get(usize::from(block_index))
     }
 
     fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get_mut(block_index))
+        self.blocks.get_mut(usize::from(block_index))
     }
 }
 
@@ -498,7 +484,6 @@ impl<'a> Translator<'a> {
         sources: &[(usize, (&str, &'a str))],
         (ir, types): (&Ir, &TypeChecker),
         items: &[ItemIndex],
-        allow_main: bool,
     ) -> Result<(), Error> {
         for item in items {
             match ir[*item].kind() {
@@ -508,15 +493,13 @@ impl<'a> Translator<'a> {
                 | Item::Sum { .. }
                 | Item::Alias { .. } => {}
                 Item::Mod { contents, .. } => {
-                    self.translate_items(options, sources, (ir, types), contents.as_slice(), true)?;
+                    self.translate_items(options, sources, (ir, types), contents.as_slice())?;
                 }
                 Item::Teach { body, .. } => {
-                    self.translate_items(options, sources, (ir, types), body.as_slice(), true)?;
+                    self.translate_items(options, sources, (ir, types), body.as_slice())?;
                 }
-                Item::Fn { name, .. } => {
-                    if name.kind() != "main" || allow_main {
-                        self.translate_function(options, sources, (ir, types), *item)?;
-                    }
+                Item::Fn { .. } => {
+                    self.translate_function(options, sources, (ir, types), *item)?;
                 }
             }
         }
@@ -598,6 +581,23 @@ impl<'a> Translator<'a> {
 }
 
 impl Translator<'_> {
+    fn assign_value(&mut self, value: Value) -> Address {
+        let address = self.next_address();
+
+        self.push_instruction(Instruction::Assign {
+            value,
+            to: Value::Address(address),
+        });
+
+        address
+    }
+
+    fn pop_value(&mut self) -> Value {
+        self.values
+            .pop()
+            .expect("values are only popped after expressions, and all expressions produce a value")
+    }
+
     #[allow(clippy::too_many_lines)]
     fn translate_expr(
         &mut self,
@@ -895,7 +895,7 @@ impl Translator<'_> {
 
                 self.translate_expr(options, sources, (ir, types), *value)?;
 
-                self.values.pop();
+                self.pop_value();
 
                 self.last_in_fn = last_in_fn;
 
@@ -996,10 +996,7 @@ impl Translator<'_> {
     }
 
     fn emit_return(&mut self) {
-        let value = self
-            .values
-            .pop()
-            .expect("there should always be a return value if parsing succeeded");
+        let value = self.pop_value();
 
         let current_block = self
             .current_block
@@ -1067,9 +1064,7 @@ impl Translator<'_> {
         for expr in exprs.iter().rev().skip(1).rev() {
             self.translate_expr(options, sources, (ir, types), *expr)?;
 
-            self.values
-                .pop()
-                .expect("every expression produces a value");
+            self.pop_value();
         }
 
         self.last_in_fn = last_in_fn;
@@ -1106,10 +1101,7 @@ impl Translator<'_> {
             }
         });
 
-        let operand = self
-            .values
-            .pop()
-            .expect("all unary operands should produce a value");
+        let operand = self.pop_value();
 
         let address = self.next_address();
 
@@ -1150,15 +1142,9 @@ impl Translator<'_> {
             }
         });
 
-        let rhs = self
-            .values
-            .pop()
-            .expect("all binary right operands should produce a value");
+        let rhs = self.pop_value();
 
-        let lhs = self
-            .values
-            .pop()
-            .expect("all binary left operands should produce a value");
+        let lhs = self.pop_value();
 
         let address = self.next_address();
 
@@ -1231,10 +1217,7 @@ impl Translator<'_> {
     ) -> Result<(), Error> {
         self.translate_expr(options, sources, (ir, types), value)?;
 
-        let value = self
-            .values
-            .pop()
-            .expect("assignments can only occur with a value");
+        let value = self.pop_value();
 
         match self.addresses.get_mut(&span) {
             Some(Addresslike::Block(_) | Addresslike::NativeFn { .. }) => {
@@ -1248,6 +1231,8 @@ impl Translator<'_> {
                     of: Value::Address(of),
                     value,
                 });
+
+                self.values.push(Value::Unit);
             }
             Some(Addresslike::Address(address)) => {
                 address.version += 1;
@@ -1274,12 +1259,7 @@ impl Translator<'_> {
                 self.values.push(Value::Unit);
             }
             None => {
-                let address = self.next_address();
-
-                self.push_instruction(Instruction::Assign {
-                    value,
-                    to: Value::Address(address),
-                });
+                let address = self.assign_value(value);
 
                 self.addresses.insert(span, Addresslike::Address(address));
 
@@ -1303,17 +1283,9 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let value = self.pop_value();
 
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value,
-            to: Value::Address(address),
-        });
+        let address = self.assign_value(value);
 
         let current_block = self
             .current_block
@@ -1337,10 +1309,7 @@ impl Translator<'_> {
             version: address.version + 1,
         };
 
-        let rhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let rhs = self.pop_value();
 
         self.push_instruction(Instruction::Assign {
             value: rhs,
@@ -1394,17 +1363,9 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let value = self.pop_value();
 
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value,
-            to: Value::Address(address),
-        });
+        let address = self.assign_value(value);
 
         let current_block = self
             .current_block
@@ -1428,10 +1389,7 @@ impl Translator<'_> {
             version: address.version + 1,
         };
 
-        let rhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let rhs = self.pop_value();
 
         self.push_instruction(Instruction::Assign {
             value: rhs,
@@ -1485,17 +1443,9 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), condition)?;
 
-        let condition = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let condition = self.pop_value();
 
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value: Value::Never,
-            to: Value::Address(address),
-        });
+        let address = self.assign_value(Value::Never);
 
         let current_block = self
             .current_block
@@ -1519,7 +1469,7 @@ impl Translator<'_> {
             version: address.version + 1,
         };
 
-        let value = self.values.pop().expect("all expressions produce a value");
+        let value = self.pop_value();
 
         self.push_instruction(Instruction::Assign {
             value,
@@ -1548,7 +1498,7 @@ impl Translator<'_> {
             version: address.version + 1,
         };
 
-        let value = self.values.pop().expect("all expressions produce a value");
+        let value = self.pop_value();
 
         self.push_instruction(Instruction::Assign {
             value,
@@ -1591,10 +1541,7 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), callee)?;
 
-        let callee = self
-            .values
-            .pop()
-            .expect("parsing ensures a call expression has a callee");
+        let callee = self.pop_value();
 
         let mut error = Ok(());
 
@@ -1608,9 +1555,7 @@ impl Translator<'_> {
                     error = Err(real_error);
                 }
 
-                self.values
-                    .pop()
-                    .expect("each call argument should produce a value")
+                self.pop_value()
             })
             .collect::<Vec<_>>();
 
@@ -1656,10 +1601,7 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), condition)?;
 
-        let condition = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let condition = self.pop_value();
 
         let current_block = self
             .current_block
@@ -1699,7 +1641,7 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.values.pop();
+        self.pop_value();
 
         self.values.push(Value::Unit);
 
@@ -1742,7 +1684,7 @@ impl Translator<'_> {
 
             self.translate_expr(options, sources, (ir, types), *value)?;
 
-            values.push(self.values.pop().expect("all expressions produce a value"));
+            values.push(self.pop_value());
         }
 
         self.values.push(Value::Compound(values));
@@ -1771,10 +1713,7 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let lhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let lhs = self.pop_value();
 
         let address = self.next_address();
 
@@ -1838,17 +1777,11 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
-        let lhs = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let lhs = self.pop_value();
 
         self.translate_expr(options, sources, (ir, types), value)?;
 
-        let value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let value = self.pop_value();
 
         self.push_instruction(Instruction::AccessAssign {
             index: field_index,
@@ -1979,7 +1912,7 @@ impl Translator<'_> {
 
                 self.translate_expr(options, sources, (ir, types), rhs)?;
 
-                let Some(Value::Compound(fields)) = self.values.pop() else {
+                let Value::Compound(fields) = self.pop_value() else {
                     unreachable!("type checking guarantees the right operand is a product literal");
                 };
 
@@ -2066,9 +1999,7 @@ impl Translator<'_> {
                     error = Err(real_error);
                 }
 
-                self.values
-                    .pop()
-                    .expect("each method call argument should produce a value")
+                self.pop_value()
             })
             .collect::<Vec<_>>();
 
@@ -2112,10 +2043,7 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), expr)?;
 
-        let value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let value = self.pop_value();
 
         let expr_address = self.next_address();
 
@@ -2141,10 +2069,7 @@ impl Translator<'_> {
 
             self.translate_expr(options, sources, (ir, types), case.case())?;
 
-            let case_value = self
-                .values
-                .pop()
-                .expect("every expression produces a value");
+            let case_value = self.pop_value();
 
             address_version += 1;
 
@@ -2175,10 +2100,7 @@ impl Translator<'_> {
 
         self.translate_expr(options, sources, (ir, types), fallback)?;
 
-        let fallback_value = self
-            .values
-            .pop()
-            .expect("every expression produces a value");
+        let fallback_value = self.pop_value();
 
         address_version += 1;
 

@@ -1521,21 +1521,6 @@ where
 
                 bytes
             }
-            Self::Vec(values) => {
-                let mut bytes = vec![u8::from(Instruction::Vec)];
-
-                bytes.extend(
-                    u64::try_from(values.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes(),
-                );
-
-                for value in values {
-                    bytes.extend(value.assemble(assembler));
-                }
-
-                bytes
-            }
             Self::Fn {
                 block_index,
                 max_register_count,

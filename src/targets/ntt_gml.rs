@@ -672,41 +672,11 @@ fn compile_value(
             IrValue::Boolean(value) => value.to_string(),
             IrValue::Unit => "\"{}\"".to_string(),
             IrValue::String(value) => format!("[\"{value}\"]"),
-            IrValue::Vec(values) => {
-                let mut buffer = format!("{{ length: {}, values: [", values.len());
-
-                if let Some(value) = values.first() {
-                    buffer.push_str(
-                        compile_value(options, ssa, mangled_prefix, value, seen_native_functions)
-                            .as_str(),
-                    );
-
-                    for value in values.iter().skip(1) {
-                        buffer.push_str(", ");
-
-                        buffer.push_str(
-                            compile_value(
-                                options,
-                                ssa,
-                                mangled_prefix,
-                                value,
-                                seen_native_functions,
-                            )
-                            .as_str(),
-                        );
-                    }
-                }
-
-                buffer.push_str("] }");
-
-                buffer
-            }
             IrValue::Fn { block_index, .. } => {
-                if let Some(IrInstruction::FnLabel(function_label)) =
-                    usize::try_from(u32::from(*block_index))
-                        .ok()
-                        .and_then(|block_index| ssa.blocks().get(block_index))
-                        .and_then(|block| block.instructions().first())
+                if let Some(IrInstruction::FnLabel(function_label)) = ssa
+                    .blocks()
+                    .get(usize::from(*block_index))
+                    .and_then(|block| block.instructions().first())
                 {
                     let normalized = normalize_function_name(function_label.function_label());
 
@@ -840,9 +810,7 @@ fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &ValueOrLocation<
             IrValue::Fn { block_index, .. } => {
                 block_data.insert(*block_index);
             }
-            IrValue::Compound(values)
-            | IrValue::TaggedCompound { fields: values, .. }
-            | IrValue::Vec(values) => {
+            IrValue::Compound(values) | IrValue::TaggedCompound { fields: values, .. } => {
                 for value in values {
                     find_functions(block_data, value);
                 }

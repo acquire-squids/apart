@@ -86,17 +86,13 @@ impl Ssa {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get(block_index))
+        self.blocks.get(usize::from(block_index))
     }
 
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block_mut(&mut self, block_index: BlockIndex) -> Option<&mut Block> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get_mut(block_index))
+        self.blocks.get_mut(usize::from(block_index))
     }
 }
 
@@ -245,8 +241,7 @@ impl Ssa {
         stack: &mut Vec<(BlockIndex, Successors)>,
         seen: &mut [bool],
     ) {
-        let index = usize::try_from(u32::from(block_index))
-            .unwrap_or_else(|_| panic!("number of blocks may not exceed {}", u32::MAX));
+        let index = usize::from(block_index);
 
         if seen.get(index).is_some_and(|seen| *seen) {
             return;
@@ -470,9 +465,7 @@ impl Ssa {
                     BlockTerminator::Jump(destination) => {
                         let live =
                             liveness
-                                .get(usize::try_from(u32::from(*destination)).unwrap_or_else(
-                                    |_| panic!("block index was not a valid usize"),
-                                ))
+                                .get(usize::from(*destination))
                                 .into_iter()
                                 .flat_map(|liveness| liveness.live_in.iter())
                                 .filter(|live_in| {
@@ -499,9 +492,7 @@ impl Ssa {
                     } => {
                         for destination in [when_true, otherwise] {
                             let live = liveness
-                                .get(usize::try_from(u32::from(*destination)).unwrap_or_else(
-                                    |_| panic!("block index was not a valid usize"),
-                                ))
+                                .get(usize::from(*destination))
                                 .into_iter()
                                 .flat_map(|liveness| liveness.live_in.iter())
                                 .filter(|live_in| {

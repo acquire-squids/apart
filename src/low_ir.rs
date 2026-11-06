@@ -46,9 +46,7 @@ impl<T> Ir<T> {
     #[allow(dead_code)]
     #[must_use]
     pub fn get_block(&self, block_index: BlockIndex) -> Option<&Block<T>> {
-        usize::try_from(u32::from(block_index))
-            .ok()
-            .and_then(|block_index| self.blocks.get(block_index))
+        self.blocks.get(usize::from(block_index))
     }
 
     #[allow(dead_code)]
@@ -202,7 +200,6 @@ pub enum Value {
     Boolean(bool),
     Unit,
     String(String),
-    Vec(Vec<ValueOrLocation<Self>>),
     Fn {
         block_index: BlockIndex,
         max_register_count: u16,
