@@ -20,8 +20,6 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
         for block_index in &blocks {
             if let Some(block) = ssa.get_block(*block_index) {
-                let b = usize::from(*block_index);
-
                 for (i, instruction) in block.instructions().iter().enumerate() {
                     if let Instruction::Assign {
                         value: Value::Address(value),
@@ -30,7 +28,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         && to.block_index == *block_index
                         && to.offset == i
                     {
-                        copies.insert(*to, (b, *value));
+                        copies.insert(*to, *value);
                     }
                 }
             }
@@ -41,20 +39,24 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 let b = usize::from(*block_index);
 
                 let propagate_copy = |value: &mut Value| {
-                    if let Value::Address(address) = value
-                        && let Some((copy_b, copy)) = copies.get(address)
+                    if let Value::Address(x) = value
+                        && let Some(y) = copies.get(x)
+                        // if there is only one definition of x reaching this copy
+                        && def_use
+                            .iter()
+                            .skip(first_b)
+                            .take(b - first_b)
+                            .filter(|def_use| def_use.definitions().contains(x))
+                            .count()
+                            <= 1
+                        // if there are no assignments to y reaching this copy
                         && !def_use
                             .iter()
                             .skip(first_b)
                             .take(b - first_b)
-                            .any(|def_use| def_use.definitions().contains(address))
-                        && !def_use
-                            .iter()
-                            .skip(*copy_b)
-                            .take(b - copy_b)
-                            .any(|def_use| def_use.definitions().contains(copy))
+                            .any(|def_use| def_use.definitions().contains(y))
                     {
-                        *value = Value::Address(*copy);
+                        *value = Value::Address(*y);
 
                         true
                     } else {
