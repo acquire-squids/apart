@@ -465,6 +465,14 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        int_too_big,
+        "int_too_big.txt",
+        [apart::Error::TypeCheck(
+            apart::TypeCheckError::InvalidInteger(expected)
+        )] if expected == "i64"
+    );
+
+    apart::test_compilation_errors!(
         invalid_assign_target,
         "invalid_assign_target.txt",
         [apart::Error::NameResolve(

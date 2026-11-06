@@ -471,8 +471,8 @@ pub enum Error {
     PrivateMethod,
     UnknownInteger,
     UnknownFloat,
-    InvalidInteger,
-    InvalidFloat,
+    InvalidInteger(String),
+    InvalidFloat(String),
     TooManyArguments(usize),
     TooManyParameters(usize),
     TooManyFields(usize),
@@ -567,13 +567,13 @@ impl fmt::Display for Error {
             ),
             Self::UnknownInteger => write!(f, "the type of this integer is unknown"),
             Self::UnknownFloat => write!(f, "the type of this float is unknown"),
-            Self::InvalidInteger => write!(
+            Self::InvalidInteger(expected) => write!(
                 f,
-                "this integer does not fit into an i64 or a u64 and is thus invalid"
+                "expected an integer of type {expected}, but this cannot parse into one"
             ),
-            Self::InvalidFloat => write!(
+            Self::InvalidFloat(expected) => write!(
                 f,
-                "this float does not parse into an f64 or an f32 and is thus invalid"
+                "expected a float of type {expected}, but this cannot parse into one"
             ),
             Self::TooManyArguments(got) => write!(
                 f,
@@ -2608,6 +2608,9 @@ impl TypeChecker {
         let default_integer_unsigned = self[self.type_i64()].clone();
         let default_float = self[self.type_f64()].clone();
 
+        let default_integer_string = default_integer.to_string(self.types.as_slice());
+        let default_float_string = default_float.to_string(self.types.as_slice());
+
         for (i, ty) in self.types.iter_mut().enumerate() {
             if TypeIndex(i) != type_integer
                 && TypeIndex(i) != type_negative_integer
@@ -2635,8 +2638,10 @@ impl TypeChecker {
                                     *ty = default_integer_unsigned.clone();
                                 }
                                 Err(_) => {
-                                    self.errors
-                                        .push(Spanned::new(Error::InvalidInteger, radix_span));
+                                    self.errors.push(Spanned::new(
+                                        Error::InvalidInteger(default_integer_string.clone()),
+                                        radix_span,
+                                    ));
                                 }
                             },
                         }
@@ -2658,8 +2663,10 @@ impl TypeChecker {
                                 *ty = default_integer.clone();
                             }
                             Err(_) => {
-                                self.errors
-                                    .push(Spanned::new(Error::InvalidInteger, radix_span));
+                                self.errors.push(Spanned::new(
+                                    Error::InvalidInteger(default_integer_string.clone()),
+                                    radix_span,
+                                ));
                             }
                         }
                     }
@@ -2680,7 +2687,10 @@ impl TypeChecker {
                                     *ty = default_float.clone();
                                 }
                                 Err(_) => {
-                                    self.errors.push(Spanned::new(Error::InvalidFloat, *span));
+                                    self.errors.push(Spanned::new(
+                                        Error::InvalidFloat(default_float_string.clone()),
+                                        *span,
+                                    ));
                                 }
                             },
                         }
@@ -3907,7 +3917,33 @@ impl TypeChecker {
             .map_err(|type_index| {
                 let should_be = self.apply(should_be, context);
 
-                self.type_mismatch_error(type_index, should_be)
+                if let Type::Primitive { primitive, .. } = &self[should_be]
+                    && matches!(
+                        self[type_index],
+                        Type::Integer(_) | Type::NegativeInteger(_) | Type::Float(_)
+                    )
+                {
+                    match primitive.kind() {
+                        Primitive::U8
+                        | Primitive::I8
+                        | Primitive::U16
+                        | Primitive::I16
+                        | Primitive::U32
+                        | Primitive::I32
+                        | Primitive::U64
+                        | Primitive::I64 => Error::InvalidInteger(self.to_string(should_be)),
+                        Primitive::F32 | Primitive::F64 => {
+                            Error::InvalidFloat(self.to_string(should_be))
+                        }
+                        Primitive::Boolean
+                        | Primitive::Unit
+                        | Primitive::String
+                        | Primitive::Never
+                        | Primitive::Vec => self.type_mismatch_error(type_index, should_be),
+                    }
+                } else {
+                    self.type_mismatch_error(type_index, should_be)
+                }
             })
     }
 
