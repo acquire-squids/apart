@@ -1,0 +1,3 @@
+funky main() {
+	print_string(i64~to_string(-000112233445566789000));
+}

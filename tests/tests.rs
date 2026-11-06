@@ -49,6 +49,12 @@ macro_rules! output_tests {
 
             apart::$test_macro!(hello_world, "hello_world.txt", Ok("Hello, world!\n"));
 
+            apart::$test_macro!(
+                i64_to_string,
+                "i64_to_string.txt",
+                Ok("-112233445566789000\n")
+            );
+
             apart::$test_macro!(identity, "identity.txt", Ok("21\n"));
 
             apart::$test_macro!(if_as_binary_lhs, "if_as_binary_lhs.txt", Ok("-3\n"),);

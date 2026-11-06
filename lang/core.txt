@@ -88,6 +88,416 @@ pub mod math {
 	}
 }
 
+pub mod conversion {
+	teach u8 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				text
+			}
+		}
+	}
+
+	teach i8 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				negative = self < 0,
+				self = if negative {
+					-self
+				} else {
+					self
+				},
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				if negative {
+					let
+						last_text = text,
+					in {
+						text = "-";
+
+						text.extend(last_text);
+
+						text
+					}
+				} else {
+					text
+				}
+			}
+		}
+	}
+
+	teach u16 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				text
+			}
+		}
+	}
+
+	teach i16 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				negative = self < 0,
+				self = if negative {
+					-self
+				} else {
+					self
+				},
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				if negative {
+					let
+						last_text = text,
+					in {
+						text = "-";
+
+						text.extend(last_text);
+
+						text
+					}
+				} else {
+					text
+				}
+			}
+		}
+	}
+
+	teach u32 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				text
+			}
+		}
+	}
+
+	teach i32 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				negative = self < 0,
+				self = if negative {
+					-self
+				} else {
+					self
+				},
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				if negative {
+					let
+						last_text = text,
+					in {
+						text = "-";
+
+						text.extend(last_text);
+
+						text
+					}
+				} else {
+					text
+				}
+			}
+		}
+	}
+
+	teach u64 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				text
+			}
+		}
+	}
+
+	teach i64 {
+		pub funky to_string(self <- Self) -> String {
+			let
+				negative = self < 0,
+				self = if negative {
+					-self
+				} else {
+					self
+				},
+				text = "",
+				changed = true,
+			in {
+				while changed {
+					changed = false;
+
+					let
+						digit = self % 10,
+						last_text = text,
+					in {
+						text = match digit {
+							0 => "0",
+							1 => "1",
+							2 => "2",
+							3 => "3",
+							4 => "4",
+							5 => "5",
+							6 => "6",
+							7 => "7",
+							8 => "8",
+							9 => "9",
+							else => {
+								root~panic("there are only ten different digits")
+							}
+						};
+
+						text.extend(last_text);
+
+						changed = digit != self;
+
+						self = self / 10;
+					};
+				}
+
+				if negative {
+					let
+						last_text = text,
+					in {
+						text = "-";
+
+						text.extend(last_text);
+
+						text
+					}
+				} else {
+					text
+				}
+			}
+		}
+	}
+}
+
 pub funky panic(message <- String) -> never {
 	print_string(message);
 	#never
