@@ -1672,10 +1672,7 @@ impl Vm {
                 self.native_fn_ceil_char_boundary_string(call_arguments, native_fn, out)
             }
             NativeFn::Clock => self.native_fn_clock(call_arguments, native_fn, out),
-            NativeFn::LogF64 => self.native_fn_log_f64(call_arguments, native_fn, out),
-            NativeFn::FloorF64 => self.native_fn_floor_f64(call_arguments, native_fn, out),
-            NativeFn::ToU64F64 => self.native_fn_to_u64_f64(call_arguments, native_fn, out),
-            NativeFn::FromU64F64 => self.native_fn_from_u64_f64(call_arguments, native_fn, out),
+            NativeFn::Sleep => self.native_fn_sleep(call_arguments, native_fn, out),
             NativeFn::NewVec => self.native_fn_new_vec(call_arguments, native_fn, out),
             NativeFn::GetVec => self.native_fn_get_vec(call_arguments, native_fn, out),
             NativeFn::ExtendVec => self.native_fn_extend_vec(call_arguments, native_fn, out),
@@ -1684,6 +1681,10 @@ impl Vm {
             NativeFn::TruncateVec => self.native_fn_truncate_vec(call_arguments, native_fn, out),
             NativeFn::PushVec => self.native_fn_push_vec(call_arguments, native_fn, out),
             NativeFn::PopVec => self.native_fn_pop_vec(call_arguments, native_fn, out),
+            NativeFn::LogF64 => self.native_fn_log_f64(call_arguments, native_fn, out),
+            NativeFn::FloorF64 => self.native_fn_floor_f64(call_arguments, native_fn, out),
+            NativeFn::ToU64F64 => self.native_fn_to_u64_f64(call_arguments, native_fn, out),
+            NativeFn::FromU64F64 => self.native_fn_from_u64_f64(call_arguments, native_fn, out),
         }
     }
 
@@ -2024,9 +2025,9 @@ impl Vm {
     {
         if let CopyableValue::ValueIndex(target) = &call_arguments[0]
             && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
-            && let Ok([Value::String(target), Value::String(extension)]) = self
-                .values
-                .get_disjoint_mut([usize::from(*target), usize::from(*extension)])
+            && let Some(Value::String(extension)) =
+                self.values.get(usize::from(*extension)).cloned()
+            && let Some(Value::String(target)) = self.values.get_mut(usize::from(*target))
         {
             target.push_str(extension.as_str());
 
@@ -2170,6 +2171,25 @@ impl Vm {
         ))
     }
 
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+    fn native_fn_sleep<O>(
+        &self,
+        call_arguments: &[CopyableValue],
+        native_fn: NativeFn,
+        out: &mut O,
+    ) -> Result<CopyableValue, Interrupt>
+    where
+        O: Write,
+    {
+        if let CopyableValue::U64(millis) = &call_arguments[0] {
+            std::thread::sleep(std::time::Duration::from_millis(*millis));
+
+            Ok(CopyableValue::Unit)
+        } else {
+            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
+        }
+    }
+
     fn native_fn_log_f64<O>(
         &self,
         call_arguments: &[CopyableValue],
@@ -2290,12 +2310,9 @@ impl Vm {
     {
         if let CopyableValue::ValueIndex(target) = &call_arguments[0]
             && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
-            && let Ok([Value::Vec(target), Value::Vec(extension)]) = self
-                .values
-                .get_disjoint_mut([usize::from(*target), usize::from(*extension)])
+            && let Some(Value::Vec(extension)) = self.values.get(usize::from(*extension)).cloned()
+            && let Some(Value::Vec(target)) = self.values.get_mut(usize::from(*target))
         {
-            let extension = extension.clone();
-
             for value in &extension {
                 self.allocated += mem::size_of_val(value);
             }

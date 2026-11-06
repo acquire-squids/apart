@@ -1,0 +1,21 @@
+funky main() {
+	let
+		i = 3,
+	in {
+		while i > 0 {
+			let
+				message = u64~to_string(i),
+			in {
+				message.extend("...");
+
+				print_string(message);
+			};
+
+			i = i - 1;
+
+			sleep(1000);
+		}
+
+		print_string("Go!");
+	};
+}

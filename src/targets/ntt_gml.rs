@@ -169,6 +169,9 @@ pub fn compile(
             NativeFn::Clock => format!(
                 "function {mangled_prefix}_clock() {{ return get_timer_nonsync() / 1000.0; }}"
             ),
+            NativeFn::Sleep => format!(
+                "function {mangled_prefix}_sleep(_millis) {{ var _frameDuration = 1000.0 / 30.0; wait ceil(_millis / _frameDuration); return \"{{}}\"; }}"
+            ),
             NativeFn::NewVec => format!(
                 "function {mangled_prefix}_new_vec() {{ return {{ length: 0, values: [] }}; }}"
             ),
@@ -720,6 +723,7 @@ fn compile_value(
                         format!("{mangled_prefix}_ceil_char_boundary_string")
                     }
                     NativeFn::Clock => format!("{mangled_prefix}_clock"),
+                    NativeFn::Sleep => format!("{mangled_prefix}_sleep"),
                     NativeFn::NewVec => format!("{mangled_prefix}_new_vec"),
                     NativeFn::GetVec => format!("{mangled_prefix}_get_vec"),
                     NativeFn::ExtendVec => format!("{mangled_prefix}_extend_vec"),

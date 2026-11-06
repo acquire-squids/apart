@@ -30,7 +30,9 @@ pub native funky print_f64 = funky(f64) -> unit;
 pub native funky print_bool = funky(bool) -> unit;
 pub native funky print_unit = funky(unit) -> unit;
 pub native funky print_string = funky(String) -> unit;
+
 pub native funky clock = funky() -> f64;
+pub native funky sleep = funky(u64) -> unit;
 
 pub mod string {
 	teach String {

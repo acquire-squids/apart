@@ -145,11 +145,7 @@ crate::int_enum! {
     FloorCharBoundaryString => 0x00_00_10_04,
     CeilCharBoundaryString => 0x00_00_10_05,
     Clock => 0x00_00_20_00,
-    LogF64 => 0x00_00_20_01,
-    FloorF64 => 0x00_00_20_02,
-    // TODO: remove this with a trait implementation
-    ToU64F64 => 0x00_00_20_03,
-    FromU64F64 => 0x00_00_20_04,
+    Sleep => 0x00_00_20_01,
     NewVec => 0x00_00_30_00,
     GetVec => 0x00_00_30_01,
     ExtendVec => 0x00_00_30_02,
@@ -158,6 +154,11 @@ crate::int_enum! {
     TruncateVec => 0x00_00_30_05,
     PushVec => 0x00_00_30_06,
     PopVec => 0x00_00_30_07,
+    LogF64 => 0x00_00_40_01,
+    FloorF64 => 0x00_00_40_02,
+    // TODO: remove this with a trait implementation
+    ToU64F64 => 0x00_00_40_03,
+    FromU64F64 => 0x00_00_40_04,
 }
 
 crate::int_enum! {
@@ -476,6 +477,7 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                 "print_unit" => NativeFn::PrintUnit,
                 "print_string" => NativeFn::PrintString,
                 "clock" => NativeFn::Clock,
+                "sleep" => NativeFn::Sleep,
                 _ => unreachable!("unknown native function: {label}"),
             }))
         }
