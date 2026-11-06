@@ -263,8 +263,18 @@ fn disassemble(bytecode: &[u8]) -> ExitCode {
 
     let instructions = apart::targets::vm::decompile(bytecode, &mut disassembler);
 
+    let mut labels = vec![false; instructions.len()];
+
+    for instruction in &instructions {
+        find_labels_in_instruction(labels.as_mut_slice(), &disassembler, instruction);
+    }
+
+    println!("start:");
+
     for (i, instruction) in instructions.iter().enumerate() {
-        println!("label{i}:");
+        if labels[i] {
+            println!("label{i}:");
+        }
 
         match instruction {
             Instruction::NoOp => println!("    no_op"),
@@ -883,4 +893,185 @@ fn disassemble(bytecode: &[u8]) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn find_labels(labels: &mut [bool], disassembler: &Disassembler, value: CopyableValue) {
+    match value {
+        CopyableValue::Never
+        | CopyableValue::U8(_)
+        | CopyableValue::I8(_)
+        | CopyableValue::U16(_)
+        | CopyableValue::I16(_)
+        | CopyableValue::U32(_)
+        | CopyableValue::I32(_)
+        | CopyableValue::U64(_)
+        | CopyableValue::I64(_)
+        | CopyableValue::F32(_)
+        | CopyableValue::F64(_)
+        | CopyableValue::Boolean(_)
+        | CopyableValue::Unit
+        | CopyableValue::NativeFn(_)
+        | CopyableValue::Register(_) => {}
+        CopyableValue::Fn { address, .. } => {
+            labels[usize::try_from(address)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+        }
+        CopyableValue::ValueIndex(value_index) => {
+            match disassembler.values.get(usize::from(value_index)) {
+                Some(
+                    Value::Compound(values)
+                    | Value::TaggedCompound { fields: values, .. }
+                    | Value::Vec(values),
+                ) => {
+                    for value in values {
+                        find_labels(labels, disassembler, *value);
+                    }
+                }
+                Some(Value::String(_)) | None => {}
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn find_labels_in_instruction(
+    labels: &mut [bool],
+    disassembler: &Disassembler,
+    instruction: &Instruction,
+) {
+    match instruction {
+        Instruction::NoOp
+        | Instruction::Panic
+        | Instruction::Label
+        | Instruction::FnLabel { .. }
+        | Instruction::NotRegister { .. }
+        | Instruction::NegateRegister { .. }
+        | Instruction::MultiplyRegisterRegister { .. }
+        | Instruction::DivideRegisterRegister { .. }
+        | Instruction::RemainderRegisterRegister { .. }
+        | Instruction::AddRegisterRegister { .. }
+        | Instruction::SubtractRegisterRegister { .. }
+        | Instruction::LessRegisterRegister { .. }
+        | Instruction::GreaterRegisterRegister { .. }
+        | Instruction::LessOrEqualRegisterRegister { .. }
+        | Instruction::GreaterOrEqualRegisterRegister { .. }
+        | Instruction::EqualRegisterRegister { .. }
+        | Instruction::NotEqualRegisterRegister { .. }
+        | Instruction::AndRegisterRegister { .. }
+        | Instruction::OrRegisterRegister { .. }
+        | Instruction::AssignRegister { .. }
+        | Instruction::PushRegister { .. }
+        | Instruction::AccessRegister { .. }
+        | Instruction::AccessAssignRegisterRegister { .. }
+        | Instruction::CallRegister { .. }
+        | Instruction::GetTagRegister { .. }
+        | Instruction::ReturnRegister { .. }
+        | Instruction::I64
+        | Instruction::F64
+        | Instruction::Boolean
+        | Instruction::Unit
+        | Instruction::Fn
+        | Instruction::NativeFn
+        | Instruction::Compound
+        | Instruction::TaggedCompound
+        | Instruction::U8
+        | Instruction::I8
+        | Instruction::U16
+        | Instruction::I16
+        | Instruction::U32
+        | Instruction::I32
+        | Instruction::U64
+        | Instruction::String
+        | Instruction::F32
+        | Instruction::Never
+        | Instruction::Vec
+        | Instruction::Register => {}
+        Instruction::NotValue { operand: value, .. }
+        | Instruction::NegateValue { operand: value, .. }
+        | Instruction::MultiplyRegisterValue { rhs: value, .. }
+        | Instruction::MultiplyValueRegister { lhs: value, .. }
+        | Instruction::DivideRegisterValue { rhs: value, .. }
+        | Instruction::DivideValueRegister { lhs: value, .. }
+        | Instruction::RemainderRegisterValue { rhs: value, .. }
+        | Instruction::RemainderValueRegister { lhs: value, .. }
+        | Instruction::AddRegisterValue { rhs: value, .. }
+        | Instruction::AddValueRegister { lhs: value, .. }
+        | Instruction::SubtractRegisterValue { rhs: value, .. }
+        | Instruction::SubtractValueRegister { lhs: value, .. }
+        | Instruction::LessRegisterValue { rhs: value, .. }
+        | Instruction::LessValueRegister { lhs: value, .. }
+        | Instruction::GreaterRegisterValue { rhs: value, .. }
+        | Instruction::GreaterValueRegister { lhs: value, .. }
+        | Instruction::LessOrEqualRegisterValue { rhs: value, .. }
+        | Instruction::LessOrEqualValueRegister { lhs: value, .. }
+        | Instruction::GreaterOrEqualRegisterValue { rhs: value, .. }
+        | Instruction::GreaterOrEqualValueRegister { lhs: value, .. }
+        | Instruction::EqualRegisterValue { rhs: value, .. }
+        | Instruction::EqualValueRegister { lhs: value, .. }
+        | Instruction::NotEqualRegisterValue { rhs: value, .. }
+        | Instruction::NotEqualValueRegister { lhs: value, .. }
+        | Instruction::AndRegisterValue { rhs: value, .. }
+        | Instruction::AndValueRegister { lhs: value, .. }
+        | Instruction::OrRegisterValue { rhs: value, .. }
+        | Instruction::OrValueRegister { lhs: value, .. }
+        | Instruction::AssignValue { operand: value, .. }
+        | Instruction::PushValue { operand: value }
+        | Instruction::AccessValue { of: value, .. }
+        | Instruction::AccessAssignRegisterValue { value, .. }
+        | Instruction::AccessAssignValueRegister { to: value, .. }
+        | Instruction::CallValue { callee: value, .. }
+        | Instruction::GetTagValue { of: value, .. }
+        | Instruction::ReturnValue { value } => {
+            find_labels(labels, disassembler, *value);
+        }
+        Instruction::MultiplyValueValue { lhs, rhs, .. }
+        | Instruction::DivideValueValue { lhs, rhs, .. }
+        | Instruction::RemainderValueValue { lhs, rhs, .. }
+        | Instruction::AddValueValue { lhs, rhs, .. }
+        | Instruction::SubtractValueValue { lhs, rhs, .. }
+        | Instruction::LessValueValue { lhs, rhs, .. }
+        | Instruction::GreaterValueValue { lhs, rhs, .. }
+        | Instruction::LessOrEqualValueValue { lhs, rhs, .. }
+        | Instruction::GreaterOrEqualValueValue { lhs, rhs, .. }
+        | Instruction::EqualValueValue { lhs, rhs, .. }
+        | Instruction::NotEqualValueValue { lhs, rhs, .. }
+        | Instruction::AndValueValue { lhs, rhs, .. }
+        | Instruction::OrValueValue { lhs, rhs, .. }
+        | Instruction::AccessAssignValueValue {
+            to: lhs,
+            value: rhs,
+            ..
+        } => {
+            find_labels(labels, disassembler, *lhs);
+            find_labels(labels, disassembler, *rhs);
+        }
+        Instruction::Jump { destination } => {
+            labels[usize::try_from(*destination)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+        }
+        Instruction::BranchRegister {
+            when_true,
+            otherwise,
+            ..
+        } => {
+            labels[usize::try_from(*when_true)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+
+            labels[usize::try_from(*otherwise)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+        }
+        Instruction::BranchValue {
+            condition,
+            when_true,
+            otherwise,
+        } => {
+            find_labels(labels, disassembler, *condition);
+
+            labels[usize::try_from(*when_true)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+
+            labels[usize::try_from(*otherwise)
+                .unwrap_or_else(|_| panic!("function address was not a valid usize"))] = true;
+        }
+    }
 }
