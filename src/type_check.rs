@@ -3177,31 +3177,24 @@ impl TypeChecker {
 
                         let case_type_index = self.infer(sources, ir, case.case(), context);
 
+                        match_type_index.push(case_type_index);
+
                         for other_case_type_index in match_type_index.clone() {
-                            match self.check_inferred(
+                            if let Err(type_index) = self.check_inferred(
                                 sources,
                                 case_type_index,
                                 other_case_type_index,
                                 context,
-                            ) {
-                                Ok(type_index) => {
-                                    match_type_index.push(type_index);
-                                }
-                                Err(type_index) => {
-                                    if !matches!(self[type_index], Type::Error) {
-                                        let error = Spanned::new(
-                                            self.type_mismatch_error(
-                                                type_index,
-                                                other_case_type_index,
-                                            ),
-                                            Self::expr_span(ir, case.case()),
-                                        );
+                            ) && !matches!(self[type_index], Type::Error)
+                            {
+                                let error = Spanned::new(
+                                    self.type_mismatch_error(type_index, other_case_type_index),
+                                    Self::expr_span(ir, case.case()),
+                                );
 
-                                        self.errors.push(error);
+                                self.errors.push(error);
 
-                                        break;
-                                    }
-                                }
+                                break;
                             }
                         }
                     }
@@ -3213,28 +3206,24 @@ impl TypeChecker {
 
                 let fallback_type_index = self.infer(sources, ir, *fallback, context);
 
+                match_type_index.push(fallback_type_index);
+
                 for other_case_type_index in match_type_index.clone() {
-                    match self.check_inferred(
+                    if let Err(type_index) = self.check_inferred(
                         sources,
                         fallback_type_index,
                         other_case_type_index,
                         context,
-                    ) {
-                        Ok(type_index) => {
-                            match_type_index.push(type_index);
-                        }
-                        Err(type_index) => {
-                            if !matches!(self[type_index], Type::Error) {
-                                let error = Spanned::new(
-                                    self.type_mismatch_error(type_index, other_case_type_index),
-                                    Self::expr_span(ir, *fallback),
-                                );
+                    ) && !matches!(self[type_index], Type::Error)
+                    {
+                        let error = Spanned::new(
+                            self.type_mismatch_error(type_index, other_case_type_index),
+                            Self::expr_span(ir, *fallback),
+                        );
 
-                                self.errors.push(error);
+                        self.errors.push(error);
 
-                                break;
-                            }
-                        }
+                        break;
                     }
                 }
 
