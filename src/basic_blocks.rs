@@ -592,6 +592,10 @@ impl Translator<'_> {
         address
     }
 
+    fn push_value(&mut self, value: Value) {
+        self.values.push(value);
+    }
+
     fn pop_value(&mut self) -> Value {
         self.values
             .pop()
@@ -613,7 +617,7 @@ impl Translator<'_> {
                 );
             }
             Expr::Integer(radix) => {
-                self.values.push(
+                self.push_value(
                     if let Type::Primitive { primitive, .. } = &types[types[ir[expr].span()]] {
                         let lexeme = sources
                             .iter()
@@ -676,7 +680,7 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::NegativeInteger(radix) => {
-                self.values.push(
+                self.push_value(
                     if let Type::Primitive { primitive, .. } = &types[types[ir[expr].span()]] {
                         let lexeme = sources
                             .iter()
@@ -723,7 +727,7 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Float => {
-                self.values.push(
+                self.push_value(
                     if let Type::Primitive { primitive, .. } = &types[types[ir[expr].span()]] {
                         let lexeme = sources
                             .iter()
@@ -764,7 +768,7 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Boolean(value) => {
-                self.values.push(Value::Boolean(*value));
+                self.push_value(Value::Boolean(*value));
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -773,7 +777,7 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Unit => {
-                self.values.push(Value::Unit);
+                self.push_value(Value::Unit);
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -784,7 +788,7 @@ impl Translator<'_> {
             Expr::Never => {
                 self.push_instruction(Instruction::Panic);
 
-                self.values.push(Value::Never);
+                self.push_value(Value::Never);
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -801,7 +805,7 @@ impl Translator<'_> {
                 self.translate_unary(options, sources, (ir, types), expr, *op)
             }
             Expr::Block(exprs) if exprs.is_empty() => {
-                self.values.push(Value::Unit);
+                self.push_value(Value::Unit);
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -884,7 +888,7 @@ impl Translator<'_> {
 
                 self.emit_return();
 
-                self.values.push(Value::Never);
+                self.push_value(Value::Never);
 
                 Ok(())
             }
@@ -899,7 +903,7 @@ impl Translator<'_> {
 
                 self.last_in_fn = last_in_fn;
 
-                self.values.push(Value::Unit);
+                self.push_value(Value::Unit);
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -984,7 +988,7 @@ impl Translator<'_> {
                     }
                 }
 
-                self.values.push(Value::String(text));
+                self.push_value(Value::String(text));
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -1017,16 +1021,16 @@ impl Translator<'_> {
 
         match name {
             Addresslike::Block(block_index) => {
-                self.values.push(Value::Fn(*block_index));
+                self.push_value(Value::Fn(*block_index));
             }
             Addresslike::Address(address) => {
-                self.values.push(Value::Address(*address));
+                self.push_value(Value::Address(*address));
             }
             Addresslike::CallArgument(offset) => {
-                self.values.push(Value::CallArgument(*offset));
+                self.push_value(Value::CallArgument(*offset));
             }
             Addresslike::NativeFn { label } => {
-                self.values.push(Value::NativeFn {
+                self.push_value(Value::NativeFn {
                     label: label.clone(),
                 });
             }
@@ -1041,7 +1045,7 @@ impl Translator<'_> {
                     temporary: Value::Address(address),
                 });
 
-                self.values.push(Value::Address(address));
+                self.push_value(Value::Address(address));
             }
         }
 
@@ -1111,7 +1115,7 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.values.push(Value::Address(address));
+        self.push_value(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 
@@ -1166,7 +1170,7 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.values.push(Value::Address(address));
+        self.push_value(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 
@@ -1231,8 +1235,6 @@ impl Translator<'_> {
                     of: Value::Address(of),
                     value,
                 });
-
-                self.values.push(Value::Unit);
             }
             Some(Addresslike::Address(address)) => {
                 address.version += 1;
@@ -1245,8 +1247,6 @@ impl Translator<'_> {
                 });
 
                 self.addresses.insert(span, Addresslike::Address(address));
-
-                self.values.push(Value::Unit);
             }
             Some(Addresslike::CallArgument(index)) => {
                 let index = *index;
@@ -1255,17 +1255,15 @@ impl Translator<'_> {
                     value,
                     to: Value::CallArgument(index),
                 });
-
-                self.values.push(Value::Unit);
             }
             None => {
                 let address = self.assign_value(value);
 
                 self.addresses.insert(span, Addresslike::Address(address));
-
-                self.values.push(Value::Unit);
             }
         }
+
+        self.push_value(Value::Unit);
 
         Ok(())
     }
@@ -1337,7 +1335,7 @@ impl Translator<'_> {
 
         self.next_block()?;
 
-        self.values.push(Value::Address(Address {
+        self.push_value(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
             version: 0,
@@ -1417,7 +1415,7 @@ impl Translator<'_> {
 
         self.next_block()?;
 
-        self.values.push(Value::Address(Address {
+        self.push_value(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
             version: 0,
@@ -1515,7 +1513,7 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.values.push(Value::Address(Address {
+        self.push_value(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
             version: 0,
@@ -1575,7 +1573,7 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.values.push(Value::Address(address));
+        self.push_value(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 
@@ -1643,7 +1641,7 @@ impl Translator<'_> {
 
         self.pop_value();
 
-        self.values.push(Value::Unit);
+        self.push_value(Value::Unit);
 
         if self.last_in_fn {
             self.emit_return();
@@ -1687,7 +1685,7 @@ impl Translator<'_> {
             values.push(self.pop_value());
         }
 
-        self.values.push(Value::Compound(values));
+        self.push_value(Value::Compound(values));
 
         self.last_in_fn = last_in_fn;
 
@@ -1723,7 +1721,7 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.values.push(Value::Address(address));
+        self.push_value(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 
@@ -1789,7 +1787,7 @@ impl Translator<'_> {
             value,
         });
 
-        self.values.push(Value::Unit);
+        self.push_value(Value::Unit);
 
         self.last_in_fn = last_in_fn;
 
@@ -1876,7 +1874,7 @@ impl Translator<'_> {
                         }
                     };
 
-                    self.values.push(callee);
+                    self.push_value(callee);
                 } else {
                     unreachable!("{type_span:?} {method_name:?} {:?}", ir[rhs].span());
                 }
@@ -1915,7 +1913,7 @@ impl Translator<'_> {
                     unreachable!("type checking guarantees the right operand is a product literal");
                 };
 
-                self.values.push(Value::TaggedCompound {
+                self.push_value(Value::TaggedCompound {
                     fields,
                     tag: variant_index,
                 });
@@ -1986,6 +1984,8 @@ impl Translator<'_> {
             }
         };
 
+        self.push_value(callee);
+
         let mut error = Ok(());
 
         let arguments = iter::once(target)
@@ -2009,6 +2009,8 @@ impl Translator<'_> {
             arity += 1;
         }
 
+        let callee = self.pop_value();
+
         let address = self.next_address();
 
         self.push_instruction(Instruction::Call {
@@ -2017,7 +2019,7 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.values.push(Value::Address(address));
+        self.push_value(Value::Address(address));
 
         self.last_in_fn = last_in_fn;
 
@@ -2043,19 +2045,9 @@ impl Translator<'_> {
 
         let value = self.pop_value();
 
-        let expr_address = self.next_address();
+        let expr_address = self.assign_value(value);
 
-        self.push_instruction(Instruction::Assign {
-            value,
-            to: Value::Address(expr_address),
-        });
-
-        let address = self.next_address();
-
-        self.push_instruction(Instruction::Assign {
-            value: Value::Never,
-            to: Value::Address(address),
-        });
+        let address = self.assign_value(Value::Never);
 
         let mut backpatch_successes = vec![];
 
@@ -2129,7 +2121,7 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.values.push(Value::Address(Address {
+        self.push_value(Value::Address(Address {
             block_index: address.block_index,
             offset: address.offset,
             version: 0,
@@ -2247,6 +2239,10 @@ impl Translator<'_> {
                     }
                 };
 
+                self.push_value(value);
+
+                let value = self.pop_value();
+
                 let condition_address = self.next_address();
 
                 self.push_instruction(Instruction::Binary {
@@ -2359,6 +2355,10 @@ impl Translator<'_> {
                         unreachable!("only products are variants of sums");
                     };
 
+                    self.push_value(Value::U16(variant_index));
+
+                    let variant_index = self.pop_value();
+
                     let tag_address = self.next_address();
 
                     self.push_instruction(Instruction::GetTag {
@@ -2371,7 +2371,7 @@ impl Translator<'_> {
                     self.push_instruction(Instruction::Binary {
                         op: BinaryOp::Equal,
                         lhs: Value::Address(tag_address),
-                        rhs: Value::U16(variant_index),
+                        rhs: variant_index,
                         temporary: Value::Address(condition_address),
                     });
 
