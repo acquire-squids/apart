@@ -1846,8 +1846,7 @@ impl Translator<'_> {
                 | Type::Existential(_)
                 | Type::Generic(_)
                 | Type::Fn { .. }
-                | Type::Associations(_)
-                | Type::AnyOf { .. },
+                | Type::Associations(_),
             )
             | None => None,
             Some(Type::Primitive { primitive, .. }) => Some(primitive.span()),
@@ -1954,8 +1953,7 @@ impl Translator<'_> {
             | Type::Existential(_)
             | Type::Generic(_)
             | Type::Fn { .. }
-            | Type::Associations(_)
-            | Type::AnyOf { .. } => {
+            | Type::Associations(_) => {
                 unreachable!("type checking guarantees these types are not used for method calls");
             }
             Type::Primitive { primitive, .. } => primitive.span(),
@@ -2160,8 +2158,7 @@ impl Translator<'_> {
             | Type::Fn { .. }
             | Type::Existential(_)
             | Type::Generic(_)
-            | Type::Associations(_)
-            | Type::AnyOf { .. } => unreachable!(
+            | Type::Associations(_) => unreachable!(
                 "only integer primitives, booleans, unit, strings, and products can be patterns"
             ),
             Type::Primitive { primitive, .. } => {
