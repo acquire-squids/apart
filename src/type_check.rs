@@ -2340,7 +2340,10 @@ impl TypeChecker {
                                 .map(|expr| self[ir[expr].resolved()]),
                         );
 
-                        changed |= self.propagate_pattern(case.pattern());
+                        changed |= self.propagate_pattern(
+                            case.pattern(),
+                            Some(self[ir[*match_against].resolved()]),
+                        );
                     }
 
                     changed |= self.propagate(
@@ -2367,22 +2370,52 @@ impl TypeChecker {
 
     #[allow(clippy::too_many_lines)]
     #[must_use]
-    fn propagate_pattern(&mut self, pattern: &Resolved<Pattern>) -> bool {
+    fn propagate_pattern(
+        &mut self,
+        pattern: &Resolved<Pattern>,
+        type_index: Option<TypeIndex>,
+    ) -> bool {
         let mut changed = false;
 
-        if let Pattern::Product { path, fields, .. } = pattern.kind() {
-            match self.get_type(pattern.span()).cloned() {
+        match pattern.kind() {
+            Pattern::Integer(_) | Pattern::NegativeInteger(_) => {
+                match self.get_type(pattern.span()) {
+                    Some(
+                        Type::Integer(_)
+                        | Type::NegativeInteger(_)
+                        | Type::Existential(_)
+                        | Type::Associations(_),
+                    ) => {
+                        if let Some(type_index) = type_index {
+                            self.type_map.insert(pattern.span(), type_index);
+
+                            changed |= true;
+                        }
+                    }
+                    Some(
+                        Type::Primitive { .. }
+                        | Type::Float(_)
+                        | Type::Error
+                        | Type::Fn { .. }
+                        | Type::Generic(_)
+                        | Type::Product { .. }
+                        | Type::Sum { .. },
+                    )
+                    | None => {}
+                }
+            }
+            Pattern::Product { path, fields, .. } => match self.get_type(pattern.span()).cloned() {
                 None
                 | Some(
                     Type::Primitive { .. }
                     | Type::Integer(_)
                     | Type::NegativeInteger(_)
                     | Type::Float(_)
+                    | Type::Existential(_)
+                    | Type::Associations(_)
                     | Type::Error
                     | Type::Fn { .. }
-                    | Type::Existential(_)
-                    | Type::Generic(_)
-                    | Type::Associations(_),
+                    | Type::Generic(_),
                 ) => {}
                 Some(Type::Sum {
                     name: should_be_name,
@@ -2448,7 +2481,16 @@ impl TypeChecker {
 
                     for (field_name, field) in fields {
                         if let Some(field) = field {
-                            changed |= self.propagate_pattern(field);
+                            changed |= self.propagate_pattern(
+                                field,
+                                variant_fields.iter().find_map(|variant_field| {
+                                    if variant_field.name() == field_name.kind() {
+                                        Some(variant_field.type_index())
+                                    } else {
+                                        None
+                                    }
+                                }),
+                            );
                         }
 
                         if let Some(type_field) = variant_fields
@@ -2514,7 +2556,16 @@ impl TypeChecker {
                 }) => {
                     for (field_name, field) in fields {
                         if let Some(field) = field {
-                            changed |= self.propagate_pattern(field);
+                            changed |= self.propagate_pattern(
+                                field,
+                                should_be_fields.iter().find_map(|should_be_field| {
+                                    if should_be_field.name() == field_name.kind() {
+                                        Some(should_be_field.type_index())
+                                    } else {
+                                        None
+                                    }
+                                }),
+                            );
                         }
 
                         if let Some(type_field) = should_be_fields
@@ -2548,7 +2599,8 @@ impl TypeChecker {
                         self.type_map.insert(pattern.span(), type_index);
                     }
                 }
-            }
+            },
+            Pattern::Boolean(_) | Pattern::Unit | Pattern::String(_) => {}
         }
 
         changed

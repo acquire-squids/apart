@@ -1646,18 +1646,8 @@ impl Vm {
         O: Write,
     {
         match native_fn {
-            NativeFn::PrintU8 => self.native_fn_print_u8(call_arguments, native_fn, out),
-            NativeFn::PrintI8 => self.native_fn_print_i8(call_arguments, native_fn, out),
-            NativeFn::PrintU16 => self.native_fn_print_u16(call_arguments, native_fn, out),
-            NativeFn::PrintI16 => self.native_fn_print_i16(call_arguments, native_fn, out),
-            NativeFn::PrintU32 => self.native_fn_print_u32(call_arguments, native_fn, out),
-            NativeFn::PrintI32 => self.native_fn_print_i32(call_arguments, native_fn, out),
-            NativeFn::PrintU64 => self.native_fn_print_u64(call_arguments, native_fn, out),
-            NativeFn::PrintI64 => self.native_fn_print_i64(call_arguments, native_fn, out),
             NativeFn::PrintF32 => self.native_fn_print_f32(call_arguments, native_fn, out),
             NativeFn::PrintF64 => self.native_fn_print_f64(call_arguments, native_fn, out),
-            NativeFn::PrintBool => self.native_fn_print_bool(call_arguments, native_fn, out),
-            NativeFn::PrintUnit => self.native_fn_print_unit(call_arguments, native_fn, out),
             NativeFn::PrintString => self.native_fn_print_string(call_arguments, native_fn, out),
             NativeFn::ExtendString => self.native_fn_extend_string(call_arguments, native_fn, out),
             NativeFn::SliceString => self.native_fn_slice_string(call_arguments, native_fn, out),
@@ -1962,37 +1952,8 @@ impl Vm {
         self.panic(out, None).map(|()| CopyableValue::Never)
     }
 
-    native_fn_print_debug!(native_fn_print_u8, U8);
-    native_fn_print_debug!(native_fn_print_i8, I8);
-    native_fn_print_debug!(native_fn_print_u16, U16);
-    native_fn_print_debug!(native_fn_print_i16, I16);
-    native_fn_print_debug!(native_fn_print_u32, U32);
-    native_fn_print_debug!(native_fn_print_i32, I32);
-    native_fn_print_debug!(native_fn_print_u64, U64);
-    native_fn_print_debug!(native_fn_print_i64, I64);
-
     native_fn_print_debug!(native_fn_print_f32, F32);
     native_fn_print_debug!(native_fn_print_f64, F64);
-
-    native_fn_print_debug!(native_fn_print_bool, Boolean);
-
-    fn native_fn_print_unit<O>(
-        &self,
-        call_arguments: &[CopyableValue],
-        native_fn: NativeFn,
-        out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
-    where
-        O: Write,
-    {
-        if matches!(&call_arguments[0], CopyableValue::Unit) {
-            writeln!(out, "{{}}").expect("failed to write to output");
-
-            Ok(CopyableValue::Unit)
-        } else {
-            self.native_fn_invalid_arguments(call_arguments, native_fn, out)
-        }
-    }
 
     fn native_fn_print_string<O>(
         &self,

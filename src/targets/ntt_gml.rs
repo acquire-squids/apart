@@ -125,17 +125,7 @@ pub fn compile(
 
     for native_function in native_functions {
         let native_function = match native_function {
-            NativeFn::PrintI64
-            | NativeFn::PrintF64
-            | NativeFn::PrintBool
-            | NativeFn::PrintUnit
-            | NativeFn::PrintU8
-            | NativeFn::PrintI8
-            | NativeFn::PrintU16
-            | NativeFn::PrintI16
-            | NativeFn::PrintU32
-            | NativeFn::PrintI32
-            | NativeFn::PrintU64
+            NativeFn::PrintF64
             | NativeFn::PrintF32
             | NativeFn::LogF64
             | NativeFn::FloorF64
@@ -696,18 +686,7 @@ fn compile_value(
                 seen_native_functions.insert(*native_fn);
 
                 match native_fn {
-                    NativeFn::PrintI64
-                    | NativeFn::PrintF64
-                    | NativeFn::PrintBool
-                    | NativeFn::PrintUnit
-                    | NativeFn::PrintU8
-                    | NativeFn::PrintI8
-                    | NativeFn::PrintU16
-                    | NativeFn::PrintI16
-                    | NativeFn::PrintU32
-                    | NativeFn::PrintI32
-                    | NativeFn::PrintU64
-                    | NativeFn::PrintF32 => "trace".to_string(),
+                    NativeFn::PrintF64 | NativeFn::PrintF32 => "trace".to_string(),
                     NativeFn::LogF64 => "log".to_string(),
                     NativeFn::FloorF64 | NativeFn::ToU64F64 => "floor".to_string(),
                     NativeFn::FromU64F64 => "real".to_string(),

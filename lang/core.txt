@@ -17,18 +17,8 @@ pub primitive Vec[T];
 pub alias Option[T] = option~Option[T];
 pub alias Result[T, E] = result~Result[T, E];
 
-pub native funky print_u8 = funky(u8) -> unit;
-pub native funky print_i8 = funky(i8) -> unit;
-pub native funky print_u16 = funky(u16) -> unit;
-pub native funky print_i16 = funky(i16) -> unit;
-pub native funky print_u32 = funky(u32) -> unit;
-pub native funky print_i32 = funky(i32) -> unit;
-pub native funky print_u64 = funky(u64) -> unit;
-pub native funky print_i64 = funky(i64) -> unit;
 pub native funky print_f32 = funky(f32) -> unit;
 pub native funky print_f64 = funky(f64) -> unit;
-pub native funky print_bool = funky(bool) -> unit;
-pub native funky print_unit = funky(unit) -> unit;
 pub native funky print_string = funky(String) -> unit;
 
 pub native funky clock = funky() -> f64;
@@ -90,7 +80,63 @@ pub mod math {
 	}
 }
 
+pub funky print_unit(value <- unit) -> unit {
+	print_string(unit~to_string(value));
+}
+
+pub funky print_bool(value <- bool) -> unit {
+	print_string(bool~to_string(value));
+}
+
+pub funky print_u8(value <- u8) -> unit {
+	print_string(u8~to_string(value));
+}
+
+pub funky print_i8(value <- i8) -> unit {
+	print_string(i8~to_string(value));
+}
+
+pub funky print_u16(value <- u16) -> unit {
+	print_string(u16~to_string(value));
+}
+
+pub funky print_i16(value <- i16) -> unit {
+	print_string(i16~to_string(value));
+}
+
+pub funky print_u32(value <- u32) -> unit {
+	print_string(u32~to_string(value));
+}
+
+pub funky print_i32(value <- i32) -> unit {
+	print_string(i32~to_string(value));
+}
+
+pub funky print_u64(value <- u64) -> unit {
+	print_string(u64~to_string(value));
+}
+
+pub funky print_i64(value <- i64) -> unit {
+	print_string(i64~to_string(value));
+}
+
 pub mod conversion {
+	teach unit {
+		pub funky to_string(self <- Self) -> String {
+			"{}"
+		}
+	}
+
+	teach bool {
+		pub funky to_string(self <- Self) -> String {
+			if self {
+				"true"
+			} else {
+				"false"
+			}
+		}
+	}
+
 	teach u8 {
 		pub funky to_string(self <- Self) -> String {
 			let
@@ -137,11 +183,6 @@ pub mod conversion {
 		pub funky to_string(self <- Self) -> String {
 			let
 				negative = self < 0,
-				self = if negative {
-					-self
-				} else {
-					self
-				},
 				text = "",
 				changed = true,
 			in {
@@ -149,7 +190,11 @@ pub mod conversion {
 					changed = false;
 
 					let
-						digit = self % 10,
+						digit = if negative {
+							-(self % 10)
+						} else {
+							self % 10
+						},
 						last_text = text,
 					in {
 						text = match digit {
@@ -170,7 +215,7 @@ pub mod conversion {
 
 						text.extend(last_text);
 
-						changed = digit != self;
+						changed = digit != self && -digit != self;
 
 						self = self / 10;
 					};
@@ -239,11 +284,6 @@ pub mod conversion {
 		pub funky to_string(self <- Self) -> String {
 			let
 				negative = self < 0,
-				self = if negative {
-					-self
-				} else {
-					self
-				},
 				text = "",
 				changed = true,
 			in {
@@ -251,7 +291,11 @@ pub mod conversion {
 					changed = false;
 
 					let
-						digit = self % 10,
+						digit = if negative {
+							-(self % 10)
+						} else {
+							self % 10
+						},
 						last_text = text,
 					in {
 						text = match digit {
@@ -272,7 +316,7 @@ pub mod conversion {
 
 						text.extend(last_text);
 
-						changed = digit != self;
+						changed = digit != self && -digit != self;
 
 						self = self / 10;
 					};
@@ -341,11 +385,6 @@ pub mod conversion {
 		pub funky to_string(self <- Self) -> String {
 			let
 				negative = self < 0,
-				self = if negative {
-					-self
-				} else {
-					self
-				},
 				text = "",
 				changed = true,
 			in {
@@ -353,7 +392,11 @@ pub mod conversion {
 					changed = false;
 
 					let
-						digit = self % 10,
+						digit = if negative {
+							-(self % 10)
+						} else {
+							self % 10
+						},
 						last_text = text,
 					in {
 						text = match digit {
@@ -374,7 +417,7 @@ pub mod conversion {
 
 						text.extend(last_text);
 
-						changed = digit != self;
+						changed = digit != self && -digit != self;
 
 						self = self / 10;
 					};
@@ -443,11 +486,6 @@ pub mod conversion {
 		pub funky to_string(self <- Self) -> String {
 			let
 				negative = self < 0,
-				self = if negative {
-					-self
-				} else {
-					self
-				},
 				text = "",
 				changed = true,
 			in {
@@ -455,7 +493,11 @@ pub mod conversion {
 					changed = false;
 
 					let
-						digit = self % 10,
+						digit = if negative {
+							-(self % 10)
+						} else {
+							self % 10
+						},
 						last_text = text,
 					in {
 						text = match digit {
@@ -476,7 +518,7 @@ pub mod conversion {
 
 						text.extend(last_text);
 
-						changed = digit != self;
+						changed = digit != self && -digit != self;
 
 						self = self / 10;
 					};
