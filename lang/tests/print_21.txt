@@ -1,0 +1,3 @@
+funky main() {
+	print_u8(21);
+}

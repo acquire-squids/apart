@@ -131,6 +131,10 @@ macro_rules! output_tests {
 
             apart::$test_macro!(primes, "primes.txt", Ok("1229\n"));
 
+            apart::$test_macro!(print_21, "print_21.txt", Ok("21\n"));
+
+            apart::$test_macro!(print_negative_21, "print_negative_21.txt", Ok("-21\n"));
+
             apart::$test_macro!(product, "product.txt", Ok(""));
 
             apart::$test_macro!(

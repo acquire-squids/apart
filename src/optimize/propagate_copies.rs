@@ -14,21 +14,17 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
     let def_use = def_use.as_slice();
 
     ssa.for_functions(|ssa, blocks| {
-        let first_b = blocks
-            .first()
-            .map_or(0, |block_index| usize::from(*block_index));
-
         for block_index in &blocks {
             if let Some(block) = ssa.get_block(*block_index) {
+                let b = usize::from(*block_index);
+
                 for (i, instruction) in block.instructions().iter().enumerate() {
                     if let Instruction::Assign {
                         value: Value::Address(value),
                         to: Value::Address(to),
                     } = instruction
-                        && to.block_index == *block_index
-                        && to.offset == i
                     {
-                        copies.insert(*to, *value);
+                        copies.insert(*to, ((b, i), *value));
                     }
                 }
             }
@@ -37,24 +33,23 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
         for block_index in &blocks {
             if let Some(block) = ssa.get_block_mut(*block_index) {
                 let b = usize::from(*block_index);
+                let i = block.instructions().len();
 
-                let propagate_copy = |value: &mut Value| {
+                let propagate_copy = |i: usize, value: &mut Value| {
                     if let Value::Address(x) = value
-                        && let Some(y) = copies.get(x)
-                        // if there is only one definition of x reaching this copy
-                        && def_use
-                            .iter()
-                            .skip(first_b)
-                            .take(b - first_b)
-                            .filter(|def_use| def_use.definitions().contains(x))
-                            .count()
-                            <= 1
-                        // if there are no assignments to y reaching this copy
+                        && let Some(((x_b, x_i), y)) = copies.get(x)
+                        // if there are no other definitions of x reaching this use of x
                         && !def_use
                             .iter()
-                            .skip(first_b)
-                            .take(b - first_b)
-                            .any(|def_use| def_use.definitions().contains(y))
+                            .enumerate()
+                            .take(b + 1)
+                            .any(|(def_use_b, def_use)| def_use.definitions().iter().enumerate().any(|(def_use_i, def_use)| (def_use_b != b || def_use_i < i) && (def_use_b != *x_b || def_use_i != *x_i) && def_use.contains(x)))
+                        // if there are no assignments to y between x's definitions and x's use
+                        && !def_use
+                            .iter()
+                            .enumerate()
+                            .take(b + 1)
+                            .any(|(def_use_b, def_use)| def_use.definitions().iter().enumerate().any(|(def_use_i, def_use)| (def_use_b != b || def_use_i < i) && (def_use_b != *x_b || def_use_i > *x_i) && def_use.contains(y)))
                     {
                         *value = Value::Address(*y);
 
@@ -64,7 +59,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     }
                 };
 
-                for instruction in block.instructions_mut() {
+                for (i, instruction) in block.instructions_mut().iter_mut().enumerate() {
                     match instruction {
                         Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                         Instruction::Unary { operand: value, .. }
@@ -73,7 +68,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
-                            changed |= propagate_copy(value);
+                            changed |= propagate_copy(i, value);
                         }
                         Instruction::Binary { lhs, rhs, .. }
                         | Instruction::AccessAssign {
@@ -81,8 +76,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                             value: rhs,
                             ..
                         } => {
-                            changed |= propagate_copy(lhs);
-                            changed |= propagate_copy(rhs);
+                            changed |= propagate_copy(i, lhs);
+                            changed |= propagate_copy(i, rhs);
                         }
                     }
                 }
@@ -93,7 +88,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     | BlockTerminator::Branch {
                         condition: value, ..
                     } => {
-                        changed |= propagate_copy(value);
+                        changed |= propagate_copy(i, value);
                     }
                 }
             }

@@ -1,0 +1,9 @@
+funky main() {
+	let
+		text = "",
+		changed = true,
+	in {
+		text = text;
+		changed = changed;
+	};
+}

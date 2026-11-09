@@ -148,7 +148,7 @@ impl From<NodeIndex> for usize {
     }
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_lines)]
 #[must_use]
 fn interference_graph(ssa: &Ssa, def_use: &[DefUse], liveness: &[Liveness]) -> InterferenceGraph {
     let mut graph = InterferenceGraph {
@@ -156,60 +156,82 @@ fn interference_graph(ssa: &Ssa, def_use: &[DefUse], liveness: &[Liveness]) -> I
         address_mapping: HashMap::new(),
     };
 
-    for b in 0..(ssa.blocks().len()) {
-        for a in def_use
-            .get(b)
-            .into_iter()
-            .flat_map(|def_use| def_use.definitions().iter())
-            .copied()
-        {
-            graph
-                .address_mapping
-                .insert(a, NodeIndex(graph.nodes.len()));
+    for (b, block) in ssa.blocks().iter().enumerate() {
+        for i in 0..=(block.instructions().len()) {
+            for a in def_use
+                .get(b)
+                .and_then(|def_use| def_use.definitions().get(i))
+                .into_iter()
+                .flatten()
+                .copied()
+            {
+                graph
+                    .address_mapping
+                    .insert(a, NodeIndex(graph.nodes.len()));
 
-            graph.nodes.push(Node {
-                address: a,
-                conflicts: vec![],
-            });
+                graph.nodes.push(Node {
+                    address: a,
+                    conflicts: vec![],
+                });
+            }
         }
     }
 
-    for b in 0..(ssa.blocks().len()) {
-        for a in def_use
-            .get(b)
-            .into_iter()
-            .flat_map(|def_use| def_use.definitions().iter())
-        {
-            let conflicts = liveness
+    for (b, block) in ssa.blocks().iter().enumerate() {
+        for i in 0..=(block.instructions().len()) {
+            for a in def_use
                 .get(b)
+                .and_then(|def_use| def_use.definitions().get(i))
                 .into_iter()
-                .flat_map(|liveness| liveness.live_out().iter())
-                .chain(
-                    def_use
-                        .get(b)
-                        .into_iter()
-                        .flat_map(|def_use| def_use.definitions().iter()),
-                )
-                .chain(
-                    def_use
-                        .get(b)
-                        .into_iter()
-                        .flat_map(|def_use| def_use.uses().iter()),
-                )
-                .filter_map(|address| graph.address_mapping.get(address))
-                .copied()
-                .collect::<Vec<_>>();
+                .flatten()
+            {
+                let live_out = liveness
+                    .get(b)
+                    .and_then(|liveness| liveness.live_out().get(i));
 
-            let Some(node) = graph
-                .address_mapping
-                .get(a)
-                .copied()
-                .and_then(|node_index| graph.nodes.get_mut(usize::from(node_index)))
-            else {
-                panic!("all variables exist");
-            };
+                let definitions = def_use
+                    .get(b)
+                    .and_then(|def_use| def_use.definitions().get(i));
 
-            node.conflicts = conflicts;
+                let uses = def_use.get(b).and_then(|def_use| def_use.uses().get(i));
+
+                let conflicts = graph
+                    .address_mapping
+                    .get(a)
+                    .copied()
+                    .and_then(|node_index| graph.get_node(node_index))
+                    .map(Node::conflicts);
+
+                let conflicts = live_out
+                    .into_iter()
+                    .flatten()
+                    .chain(definitions.into_iter().flatten())
+                    .chain(uses.into_iter().flatten())
+                    .filter(|conflict| {
+                        conflicts.is_none_or(|conflicts| {
+                            !conflicts
+                                .iter()
+                                .copied()
+                                .filter_map(|node_index| graph.get_node(node_index))
+                                .map(|node| node.address)
+                                .any(|existing_conflict| existing_conflict == **conflict)
+                        })
+                    })
+                    .filter_map(|address| graph.address_mapping.get(address))
+                    .copied()
+                    .collect::<Vec<_>>();
+
+                let Some(node) = graph
+                    .address_mapping
+                    .get(a)
+                    .copied()
+                    .and_then(|node_index| graph.nodes.get_mut(usize::from(node_index)))
+                else {
+                    panic!("all variables exist");
+                };
+
+                node.conflicts.extend(conflicts);
+            }
         }
     }
 
