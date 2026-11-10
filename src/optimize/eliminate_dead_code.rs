@@ -1,12 +1,13 @@
 use crate::{
-    basic_blocks::{Address, BlockIndex, Instruction, Value},
+    basic_blocks::{Address, BlockIndex, Instruction, TypedValue, Value},
     ssa::{BlockTerminator, Ssa},
+    type_check::TypeChecker,
 };
 
 use std::collections::HashSet;
 
 #[allow(clippy::too_many_lines)]
-pub fn optimize(ssa: &mut Ssa, eliminate_instructions: bool) -> bool {
+pub fn optimize(_: &TypeChecker, ssa: &mut Ssa, eliminate_instructions: bool) -> bool {
     let mut changed = false;
 
     let blocks_used = collect_used_blocks(ssa);
@@ -129,8 +130,8 @@ fn collect_used_blocks(ssa: &mut Ssa) -> HashSet<BlockIndex> {
     blocks_used
 }
 
-fn value_uses_address(addresses_used: &mut HashSet<Address>, value: &Value) {
-    match value {
+fn value_uses_address(addresses_used: &mut HashSet<Address>, value: &TypedValue) {
+    match value.value() {
         Value::Address(address) => {
             addresses_used.insert(*address);
         }

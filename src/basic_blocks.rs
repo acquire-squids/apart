@@ -4,7 +4,7 @@ use crate::{
         BinaryOp, Expr, ExprIndex, Ir, Item, ItemIndex, MatchCase, PathElement, Pattern, Resolved,
         UnaryOp,
     },
-    type_check::{Primitive, Type, TypeChecker},
+    type_check::{Primitive, Type, TypeChecker, TypeIndex},
 };
 
 use std::{collections::HashMap, error, fmt, iter};
@@ -206,8 +206,8 @@ impl BasicBlocks {
 struct Translator<'a> {
     blocks: Vec<Block>,
     current_block: Option<BlockIndex>,
-    values: Vec<Value>,
-    addresses: HashMap<Span, Addresslike>,
+    values: Vec<TypedValue>,
+    addresses: HashMap<Span, TypedAddresslike>,
     last_in_fn: bool,
     label: Vec<&'a str>,
 }
@@ -238,12 +238,50 @@ impl Translator<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct TypedAddresslike {
+    addresslike: Addresslike,
+    type_index: TypeIndex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Addresslike {
     Address(Address),
-    Block(BlockIndex),
+    Fn(BlockIndex),
     CallArgument(u8),
-    NativeFn { label: String },
-    CompoundField { index: u8, of: Address },
+    NativeFn {
+        label: String,
+    },
+    CompoundField {
+        index: u8,
+        of: Address,
+        of_type_index: TypeIndex,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedValue {
+    pub value: Value,
+    pub type_index: TypeIndex,
+}
+
+impl TypedValue {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn value_mut(&mut self) -> &mut Value {
+        &mut self.value
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn type_index(&self) -> TypeIndex {
+        self.type_index
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,8 +305,8 @@ pub enum Value {
     NativeFn { label: String },
     CallArgument(u8),
     Register(usize),
-    Compound(Vec<Self>),
-    TaggedCompound { fields: Vec<Self>, tag: u16 },
+    Compound(Vec<TypedValue>),
+    TaggedCompound { fields: Vec<TypedValue>, tag: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -281,37 +319,37 @@ pub enum Instruction {
     NoOp,
     Unary {
         op: UnaryOp,
-        operand: Value,
+        operand: TypedValue,
         temporary: Value,
     },
     Binary {
         op: BinaryOp,
-        lhs: Value,
-        rhs: Value,
+        lhs: TypedValue,
+        rhs: TypedValue,
         temporary: Value,
     },
     Assign {
-        value: Value,
+        value: TypedValue,
         to: Value,
     },
-    Push(Value),
+    Push(TypedValue),
     Call {
-        callee: Value,
+        callee: TypedValue,
         arity: u8,
         temporary: Value,
     },
     Access {
         index: u8,
-        of: Value,
+        of: TypedValue,
         temporary: Value,
     },
     AccessAssign {
         index: u8,
-        of: Value,
-        value: Value,
+        of: TypedValue,
+        value: TypedValue,
     },
     GetTag {
-        of: Value,
+        of: TypedValue,
         temporary: Value,
     },
 }
@@ -320,11 +358,11 @@ pub enum Instruction {
 pub enum BlockTerminator {
     Jump(BlockIndex),
     Branch {
-        condition: Value,
+        condition: TypedValue,
         when_true: BlockIndex,
         otherwise: BlockIndex,
     },
-    Return(Value),
+    Return(TypedValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -421,8 +459,11 @@ impl<'a> Translator<'a> {
 
                     self.addresses.insert(
                         name.span(),
-                        Addresslike::NativeFn {
-                            label: self.concat_label(),
+                        TypedAddresslike {
+                            addresslike: Addresslike::NativeFn {
+                                label: self.concat_label(),
+                            },
+                            type_index: types[name.span()],
                         },
                     );
 
@@ -431,9 +472,13 @@ impl<'a> Translator<'a> {
                 Item::Fn { name, .. } if name.kind() != "main" || allow_main => {
                     self.addresses.insert(
                         name.span(),
-                        Addresslike::Block(BlockIndex(
-                            u32::try_from(self.blocks.len()).map_err(|_| Error::TooManyBlocks)?,
-                        )),
+                        TypedAddresslike {
+                            addresslike: Addresslike::Fn(BlockIndex(
+                                u32::try_from(self.blocks.len())
+                                    .map_err(|_| Error::TooManyBlocks)?,
+                            )),
+                            type_index: types[name.span()],
+                        },
                     );
 
                     let _ = self.next_block();
@@ -524,17 +569,13 @@ impl<'a> Translator<'a> {
             body,
             ..
         } = ir[item].kind()
-            && let Some(block_index) = self
-                .addresses
-                .get(&name.span())
-                .and_then(|address| {
-                    if let Addresslike::Block(block_index) = address {
-                        Some(block_index)
-                    } else {
-                        None
-                    }
-                })
-                .copied()
+            && let Some(block_index) = self.addresses.get(&name.span()).and_then(|address| {
+                if let Addresslike::Fn(block_index) = address.addresslike {
+                    Some(block_index)
+                } else {
+                    None
+                }
+            })
         {
             self.switch_to_block(block_index);
 
@@ -543,7 +584,10 @@ impl<'a> Translator<'a> {
             for parameter in parameters {
                 self.addresses.insert(
                     parameter.name().span(),
-                    Addresslike::CallArgument(parameter_count),
+                    TypedAddresslike {
+                        addresslike: Addresslike::CallArgument(parameter_count),
+                        type_index: types[parameter.name().resolved()],
+                    },
                 );
 
                 parameter_count += 1;
@@ -581,7 +625,7 @@ impl<'a> Translator<'a> {
 }
 
 impl Translator<'_> {
-    fn assign_value(&mut self, value: Value) -> Address {
+    fn assign_value(&mut self, value: TypedValue) -> Address {
         let address = self.next_address();
 
         self.push_instruction(Instruction::Assign {
@@ -592,11 +636,11 @@ impl Translator<'_> {
         address
     }
 
-    fn push_value(&mut self, value: Value) {
+    fn push_value(&mut self, value: TypedValue) {
         self.values.push(value);
     }
 
-    fn pop_value(&mut self) -> Value {
+    fn pop_value(&mut self) -> TypedValue {
         self.values
             .pop()
             .expect("values are only popped after expressions, and all expressions produce a value")
@@ -629,38 +673,62 @@ impl Translator<'_> {
                         let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
-                            Primitive::U8 => Value::U8(
-                                u8::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I8 => Value::I8(
-                                i8::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::U16 => Value::U16(
-                                u16::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I16 => Value::I16(
-                                i16::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::U32 => Value::U32(
-                                u32::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I32 => Value::I32(
-                                i32::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::U64 => Value::U64(
-                                u64::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I64 => Value::I64(
-                                i64::from_str_radix(lexeme, *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
+                            Primitive::U8 => TypedValue {
+                                value: Value::U8(
+                                    u8::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I8 => TypedValue {
+                                value: Value::I8(
+                                    i8::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::U16 => TypedValue {
+                                value: Value::U16(
+                                    u16::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I16 => TypedValue {
+                                value: Value::I16(
+                                    i16::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::U32 => TypedValue {
+                                value: Value::U32(
+                                    u32::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I32 => TypedValue {
+                                value: Value::I32(
+                                    i32::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::U64 => TypedValue {
+                                value: Value::U64(
+                                    u64::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I64 => TypedValue {
+                                value: Value::I64(
+                                    i64::from_str_radix(lexeme, *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
                             primitive => unreachable!(
                                 "type checking guarantees integers are integers {primitive:?}"
                             ),
@@ -668,7 +736,7 @@ impl Translator<'_> {
                     } else {
                         unreachable!(
                             "type checking guarantees integers are primitives {:?}",
-                            types.to_string(types[ir[expr].span()])
+                            types.type_to_string(types[ir[expr].span()])
                         );
                     },
                 );
@@ -692,22 +760,34 @@ impl Translator<'_> {
                         let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
-                            Primitive::I8 => Value::I8(
-                                i8::from_str_radix(format!("-{lexeme}").as_str(), *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I16 => Value::I16(
-                                i16::from_str_radix(format!("-{lexeme}").as_str(), *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I32 => Value::I32(
-                                i32::from_str_radix(format!("-{lexeme}").as_str(), *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::I64 => Value::I64(
-                                i64::from_str_radix(format!("-{lexeme}").as_str(), *radix)
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
+                            Primitive::I8 => TypedValue {
+                                value: Value::I8(
+                                    i8::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I16 => TypedValue {
+                                value: Value::I16(
+                                    i16::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I32 => TypedValue {
+                                value: Value::I32(
+                                    i32::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
+                            Primitive::I64 => TypedValue {
+                                value: Value::I64(
+                                    i64::from_str_radix(format!("-{lexeme}").as_str(), *radix)
+                                        .expect("type checking guarantees the conversion is valid"),
+                                ),
+                                type_index: types[ir[expr].resolved()],
+                            },
                             primitive => unreachable!(
                                 "type checking guarantees integers are integers {primitive:?}"
                             ),
@@ -715,7 +795,7 @@ impl Translator<'_> {
                     } else {
                         unreachable!(
                             "type checking guarantees integers are primitives {:?}",
-                            types.to_string(types[ir[expr].span()])
+                            types.type_to_string(types[ir[expr].span()])
                         );
                     },
                 );
@@ -739,16 +819,22 @@ impl Translator<'_> {
                         let lexeme = lexeme.as_str();
 
                         match primitive.kind() {
-                            Primitive::F32 => Value::F32(
-                                lexeme
-                                    .parse::<f32>()
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
-                            Primitive::F64 => Value::F64(
-                                lexeme
-                                    .parse::<f64>()
-                                    .expect("type checking guarantees the conversion is valid"),
-                            ),
+                            Primitive::F32 => {
+                                TypedValue {
+                                    value: Value::F32(lexeme.parse::<f32>().expect(
+                                        "type checking guarantees the conversion is valid",
+                                    )),
+                                    type_index: types[ir[expr].resolved()],
+                                }
+                            }
+                            Primitive::F64 => {
+                                TypedValue {
+                                    value: Value::F64(lexeme.parse::<f64>().expect(
+                                        "type checking guarantees the conversion is valid",
+                                    )),
+                                    type_index: types[ir[expr].resolved()],
+                                }
+                            }
                             primitive => unreachable!(
                                 "type checking guarantees floats are floats {primitive:?}"
                             ),
@@ -756,7 +842,7 @@ impl Translator<'_> {
                     } else {
                         unreachable!(
                             "type checking guarantees floats are primitives {:?}",
-                            types.to_string(types[ir[expr].span()])
+                            types.type_to_string(types[ir[expr].span()])
                         );
                     },
                 );
@@ -768,7 +854,10 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Boolean(value) => {
-                self.push_value(Value::Boolean(*value));
+                self.push_value(TypedValue {
+                    value: Value::Boolean(*value),
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -777,7 +866,10 @@ impl Translator<'_> {
                 Ok(())
             }
             Expr::Unit => {
-                self.push_value(Value::Unit);
+                self.push_value(TypedValue {
+                    value: Value::Unit,
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -788,7 +880,10 @@ impl Translator<'_> {
             Expr::Never => {
                 self.push_instruction(Instruction::Panic);
 
-                self.push_value(Value::Never);
+                self.push_value(TypedValue {
+                    value: Value::Never,
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -804,26 +899,20 @@ impl Translator<'_> {
             Expr::Unary { op, .. } => {
                 self.translate_unary(options, sources, (ir, types), expr, *op)
             }
-            Expr::Block(exprs) if exprs.is_empty() => {
-                self.push_value(Value::Unit);
-
-                if self.last_in_fn {
-                    self.emit_return();
-                }
-
-                Ok(())
-            }
             Expr::Block(exprs) => {
                 self.translate_block(options, sources, (ir, types), exprs.as_slice())
             }
-            Expr::Let { name, value, .. } => {
-                self.translate_assign_name(options, sources, (ir, types), (name.span(), *value))
-            }
+            Expr::Let { name, value, .. } => self.translate_assign_name(
+                options,
+                sources,
+                (ir, types),
+                (expr, name.span(), *value),
+            ),
             Expr::Binary {
                 op: BinaryOp::Assign,
                 lhs,
                 rhs,
-            } => self.translate_assign(options, sources, (ir, types), (*lhs, *rhs)),
+            } => self.translate_assign(options, sources, (ir, types), (expr, *lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::PathAccess,
                 lhs,
@@ -833,17 +922,17 @@ impl Translator<'_> {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
-            } => self.translate_access(options, sources, (ir, types), (*lhs, *rhs)),
+            } => self.translate_access(options, sources, (ir, types), (expr, *lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::And,
                 lhs,
                 rhs,
-            } => self.translate_and(options, sources, (ir, types), (*lhs, *rhs)),
+            } => self.translate_and(options, sources, (ir, types), (expr, *lhs, *rhs)),
             Expr::Binary {
                 op: BinaryOp::Or,
                 lhs,
                 rhs,
-            } => self.translate_or(options, sources, (ir, types), (*lhs, *rhs)),
+            } => self.translate_or(options, sources, (ir, types), (expr, *lhs, *rhs)),
             Expr::Binary { op, .. } => {
                 self.translate_binary(options, sources, (ir, types), expr, *op)
             }
@@ -855,13 +944,13 @@ impl Translator<'_> {
                 options,
                 sources,
                 (ir, types),
-                (*condition, *when_true, *otherwise),
+                (expr, *condition, *when_true, *otherwise),
             ),
             Expr::Call { callee, arguments } => self.translate_call(
                 options,
                 sources,
                 (ir, types),
-                (*callee, arguments.as_slice()),
+                (expr, *callee, arguments.as_slice()),
             ),
             Expr::MethodCall {
                 target,
@@ -871,12 +960,17 @@ impl Translator<'_> {
                 options,
                 sources,
                 (ir, types),
-                (*target, *method, arguments.as_slice()),
+                (expr, *target, *method, arguments.as_slice()),
             ),
             Expr::While {
                 condition,
                 when_true,
-            } => self.translate_while(options, sources, (ir, types), (*condition, *when_true)),
+            } => self.translate_while(
+                options,
+                sources,
+                (ir, types),
+                (expr, *condition, *when_true),
+            ),
             Expr::Return(value) => {
                 let last_in_fn = self.last_in_fn;
 
@@ -888,7 +982,10 @@ impl Translator<'_> {
 
                 self.emit_return();
 
-                self.push_value(Value::Never);
+                self.push_value(TypedValue {
+                    value: Value::Never,
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 Ok(())
             }
@@ -903,7 +1000,10 @@ impl Translator<'_> {
 
                 self.last_in_fn = last_in_fn;
 
-                self.push_value(Value::Unit);
+                self.push_value(TypedValue {
+                    value: Value::Unit,
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -915,14 +1015,14 @@ impl Translator<'_> {
                 self.translate_product(options, sources, (ir, types), expr, fields.as_slice())
             }
             Expr::Match {
-                expr,
+                expr: match_against,
                 cases,
                 fallback,
             } => self.translate_match(
                 options,
                 sources,
                 (ir, types),
-                (*expr, cases.as_slice(), *fallback),
+                (expr, *match_against, cases.as_slice(), *fallback),
             ),
             Expr::String(text) => {
                 let mut characters = text.chars().peekable();
@@ -988,7 +1088,10 @@ impl Translator<'_> {
                     }
                 }
 
-                self.push_value(Value::String(text));
+                self.push_value(TypedValue {
+                    value: Value::String(text),
+                    type_index: types[ir[expr].resolved()],
+                });
 
                 if self.last_in_fn {
                     self.emit_return();
@@ -1013,39 +1116,61 @@ impl Translator<'_> {
         }
     }
 
-    fn translate_name(&mut self, (ir, _): (&Ir, &TypeChecker), expr: ExprIndex) {
+    fn translate_name(&mut self, (ir, types): (&Ir, &TypeChecker), expr: ExprIndex) {
         let name = self
             .addresses
             .get(&ir[expr].resolved())
             .expect("the name should be valid since we succeeded in name resolution");
 
-        match name {
-            Addresslike::Block(block_index) => {
-                self.push_value(Value::Fn(*block_index));
-            }
-            Addresslike::Address(address) => {
-                self.push_value(Value::Address(*address));
-            }
-            Addresslike::CallArgument(offset) => {
-                self.push_value(Value::CallArgument(*offset));
-            }
-            Addresslike::NativeFn { label } => {
-                self.push_value(Value::NativeFn {
-                    label: label.clone(),
+        match name.addresslike {
+            Addresslike::Fn(block_index) => {
+                self.push_value(TypedValue {
+                    value: Value::Fn(block_index),
+                    type_index: types[ir[expr].resolved()],
                 });
             }
-            Addresslike::CompoundField { index, of } => {
-                let (index, of) = (*index, *of);
+            Addresslike::Address(address) => {
+                self.push_value(TypedValue {
+                    value: Value::Address(address),
+                    type_index: types[ir[expr].resolved()],
+                });
+            }
+            Addresslike::CallArgument(offset) => {
+                self.push_value(TypedValue {
+                    value: Value::CallArgument(offset),
+                    type_index: types[ir[expr].resolved()],
+                });
+            }
+            Addresslike::NativeFn { ref label } => {
+                self.push_value(TypedValue {
+                    value: Value::NativeFn {
+                        label: label.clone(),
+                    },
+                    type_index: types[ir[expr].resolved()],
+                });
+            }
+            Addresslike::CompoundField {
+                index,
+                of,
+                of_type_index,
+            } => {
+                let (index, of) = (index, of);
 
                 let address = self.next_address();
 
                 self.push_instruction(Instruction::Access {
                     index,
-                    of: Value::Address(of),
+                    of: TypedValue {
+                        value: Value::Address(of),
+                        type_index: of_type_index,
+                    },
                     temporary: Value::Address(address),
                 });
 
-                self.push_value(Value::Address(address));
+                self.push_value(TypedValue {
+                    value: Value::Address(address),
+                    type_index: types[ir[expr].resolved()],
+                });
             }
         }
 
@@ -1115,7 +1240,10 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.push_value(Value::Address(address));
+        self.push_value(TypedValue {
+            value: Value::Address(address),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1170,7 +1298,10 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.push_value(Value::Address(address));
+        self.push_value(TypedValue {
+            value: Value::Address(address),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1186,7 +1317,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (lhs, rhs): (ExprIndex, ExprIndex),
+        (expr, lhs, rhs): (ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let value = rhs;
 
@@ -1196,7 +1327,7 @@ impl Translator<'_> {
                     options,
                     sources,
                     (ir, types),
-                    (ir[lhs].resolved(), value),
+                    (expr, ir[lhs].resolved(), value),
                 )?;
 
                 Ok(())
@@ -1205,7 +1336,12 @@ impl Translator<'_> {
                 op: BinaryOp::Access,
                 lhs,
                 rhs,
-            } => self.translate_assign_access(options, sources, (ir, types), (*lhs, *rhs, value)),
+            } => self.translate_assign_access(
+                options,
+                sources,
+                (ir, types),
+                (expr, *lhs, *rhs, value),
+            ),
             _ => {
                 unreachable!("for now, only names and accesses can be assigned to");
             }
@@ -1217,26 +1353,34 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (span, value): (Span, ExprIndex),
+        (expr, span, value): (ExprIndex, Span, ExprIndex),
     ) -> Result<(), Error> {
         self.translate_expr(options, sources, (ir, types), value)?;
 
         let value = self.pop_value();
 
-        match self.addresses.get_mut(&span) {
-            Some(Addresslike::Block(_) | Addresslike::NativeFn { .. }) => {
+        match self
+            .addresses
+            .get_mut(&span)
+            .map(|addresslike| (&mut addresslike.addresslike, addresslike.type_index))
+        {
+            Some((Addresslike::Fn(_) | Addresslike::NativeFn { .. }, _)) => {
                 unreachable!("name resolution prevents assigning to these addresses");
             }
-            Some(Addresslike::CompoundField { index, of }) => {
-                let (index, of) = (*index, *of);
+            Some((Addresslike::CompoundField { index, of, .. }, type_index)) => {
+                let index = *index;
+                let of = *of;
 
                 self.push_instruction(Instruction::AccessAssign {
                     index,
-                    of: Value::Address(of),
+                    of: TypedValue {
+                        value: Value::Address(of),
+                        type_index,
+                    },
                     value,
                 });
             }
-            Some(Addresslike::Address(address)) => {
+            Some((Addresslike::Address(address), type_index)) => {
                 address.version += 1;
 
                 let address = *address;
@@ -1246,9 +1390,15 @@ impl Translator<'_> {
                     to: Value::Address(address),
                 });
 
-                self.addresses.insert(span, Addresslike::Address(address));
+                self.addresses.insert(
+                    span,
+                    TypedAddresslike {
+                        addresslike: Addresslike::Address(address),
+                        type_index,
+                    },
+                );
             }
-            Some(Addresslike::CallArgument(index)) => {
+            Some((Addresslike::CallArgument(index), _)) => {
                 let index = *index;
 
                 self.push_instruction(Instruction::Assign {
@@ -1257,13 +1407,24 @@ impl Translator<'_> {
                 });
             }
             None => {
+                let type_index = value.type_index();
+
                 let address = self.assign_value(value);
 
-                self.addresses.insert(span, Addresslike::Address(address));
+                self.addresses.insert(
+                    span,
+                    TypedAddresslike {
+                        addresslike: Addresslike::Address(address),
+                        type_index,
+                    },
+                );
             }
         }
 
-        self.push_value(Value::Unit);
+        self.push_value(TypedValue {
+            value: Value::Unit,
+            type_index: types[ir[expr].resolved()],
+        });
 
         Ok(())
     }
@@ -1273,7 +1434,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (lhs, rhs): (ExprIndex, ExprIndex),
+        (expr, lhs, rhs): (ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1282,6 +1443,8 @@ impl Translator<'_> {
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
         let value = self.pop_value();
+
+        let value_type_index = value.type_index();
 
         let address = self.assign_value(value);
 
@@ -1293,7 +1456,10 @@ impl Translator<'_> {
 
         if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
-                condition: Value::Address(address),
+                condition: TypedValue {
+                    value: Value::Address(address),
+                    type_index: value_type_index,
+                },
                 when_true: when_true_block,
                 otherwise: BlockIndex(u32::MAX),
             });
@@ -1335,11 +1501,14 @@ impl Translator<'_> {
 
         self.next_block()?;
 
-        self.push_value(Value::Address(Address {
-            block_index: address.block_index,
-            offset: address.offset,
-            version: 0,
-        }));
+        self.push_value(TypedValue {
+            value: Value::Address(Address {
+                block_index: address.block_index,
+                offset: address.offset,
+                version: 0,
+            }),
+            type_index: types[ir[expr].resolved()],
+        });
 
         if self.last_in_fn {
             self.emit_return();
@@ -1353,7 +1522,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (lhs, rhs): (ExprIndex, ExprIndex),
+        (expr, lhs, rhs): (ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1362,6 +1531,8 @@ impl Translator<'_> {
         self.translate_expr(options, sources, (ir, types), lhs)?;
 
         let value = self.pop_value();
+
+        let value_type_index = value.type_index();
 
         let address = self.assign_value(value);
 
@@ -1373,7 +1544,10 @@ impl Translator<'_> {
 
         if let Some(block) = self.get_block_mut(current_block) {
             block.terminator = Some(BlockTerminator::Branch {
-                condition: Value::Address(address),
+                condition: TypedValue {
+                    value: Value::Address(address),
+                    type_index: value_type_index,
+                },
                 when_true: BlockIndex(u32::MAX),
                 otherwise: otherwise_block,
             });
@@ -1415,11 +1589,14 @@ impl Translator<'_> {
 
         self.next_block()?;
 
-        self.push_value(Value::Address(Address {
-            block_index: address.block_index,
-            offset: address.offset,
-            version: 0,
-        }));
+        self.push_value(TypedValue {
+            value: Value::Address(Address {
+                block_index: address.block_index,
+                offset: address.offset,
+                version: 0,
+            }),
+            type_index: types[ir[expr].resolved()],
+        });
 
         if self.last_in_fn {
             self.emit_return();
@@ -1433,7 +1610,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex),
+        (expr, condition, when_true, otherwise): (ExprIndex, ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1443,7 +1620,10 @@ impl Translator<'_> {
 
         let condition = self.pop_value();
 
-        let address = self.assign_value(Value::Never);
+        let address = self.assign_value(TypedValue {
+            value: Value::Never,
+            type_index: types[ir[expr].resolved()],
+        });
 
         let current_block = self
             .current_block
@@ -1513,11 +1693,14 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.push_value(Value::Address(Address {
-            block_index: address.block_index,
-            offset: address.offset,
-            version: 0,
-        }));
+        self.push_value(TypedValue {
+            value: Value::Address(Address {
+                block_index: address.block_index,
+                offset: address.offset,
+                version: 0,
+            }),
+            type_index: types[ir[expr].resolved()],
+        });
 
         if self.last_in_fn {
             self.emit_return();
@@ -1531,7 +1714,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (callee, arguments): (ExprIndex, &[ExprIndex]),
+        (expr, callee, arguments): (ExprIndex, ExprIndex, &[ExprIndex]),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1573,7 +1756,10 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.push_value(Value::Address(address));
+        self.push_value(TypedValue {
+            value: Value::Address(address),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1589,7 +1775,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (condition, when_true): (ExprIndex, ExprIndex),
+        (expr, condition, when_true): (ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1641,7 +1827,10 @@ impl Translator<'_> {
 
         self.pop_value();
 
-        self.push_value(Value::Unit);
+        self.push_value(TypedValue {
+            value: Value::Unit,
+            type_index: types[ir[expr].resolved()],
+        });
 
         if self.last_in_fn {
             self.emit_return();
@@ -1685,7 +1874,10 @@ impl Translator<'_> {
             values.push(self.pop_value());
         }
 
-        self.push_value(Value::Compound(values));
+        self.push_value(TypedValue {
+            value: Value::Compound(values),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1701,7 +1893,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (lhs, rhs): (ExprIndex, ExprIndex),
+        (expr, lhs, rhs): (ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1721,7 +1913,10 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.push_value(Value::Address(address));
+        self.push_value(TypedValue {
+            value: Value::Address(address),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1765,7 +1960,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (lhs, rhs, value): (ExprIndex, ExprIndex, ExprIndex),
+        (expr, lhs, rhs, value): (ExprIndex, ExprIndex, ExprIndex, ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1787,7 +1982,10 @@ impl Translator<'_> {
             value,
         });
 
-        self.push_value(Value::Unit);
+        self.push_value(TypedValue {
+            value: Value::Unit,
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -1862,9 +2060,10 @@ impl Translator<'_> {
                         .addresses
                         .get(&method_span)
                         .expect("type checking guarantees the method exists")
+                        .addresslike
                     {
-                        Addresslike::Block(block_index) => Value::Fn(*block_index),
-                        Addresslike::NativeFn { label } => Value::NativeFn {
+                        Addresslike::Fn(block_index) => Value::Fn(block_index),
+                        Addresslike::NativeFn { ref label } => Value::NativeFn {
                             label: label.clone(),
                         },
                         Addresslike::CallArgument(_)
@@ -1874,7 +2073,10 @@ impl Translator<'_> {
                         }
                     };
 
-                    self.push_value(callee);
+                    self.push_value(TypedValue {
+                        value: callee,
+                        type_index: types[ir[rhs].resolved()],
+                    });
                 } else {
                     unreachable!("{type_span:?} {method_name:?} {:?}", ir[rhs].span());
                 }
@@ -1909,13 +2111,20 @@ impl Translator<'_> {
 
                 self.translate_expr(options, sources, (ir, types), rhs)?;
 
-                let Value::Compound(fields) = self.pop_value() else {
+                let TypedValue {
+                    value: Value::Compound(fields),
+                    ..
+                } = self.pop_value()
+                else {
                     unreachable!("type checking guarantees the right operand is a product literal");
                 };
 
-                self.push_value(Value::TaggedCompound {
-                    fields,
-                    tag: variant_index,
+                self.push_value(TypedValue {
+                    value: Value::TaggedCompound {
+                        fields,
+                        tag: variant_index,
+                    },
+                    type_index: types[type_span],
                 });
             }
             _ => {
@@ -1937,7 +2146,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (target, method, arguments): (ExprIndex, ExprIndex, &[ExprIndex]),
+        (expr, target, method, arguments): (ExprIndex, ExprIndex, ExprIndex, &[ExprIndex]),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1972,9 +2181,10 @@ impl Translator<'_> {
             .addresses
             .get(&method_span)
             .expect("type checking guarantees the method exists")
+            .addresslike
         {
-            Addresslike::Block(block_index) => Value::Fn(*block_index),
-            Addresslike::NativeFn { label } => Value::NativeFn {
+            Addresslike::Fn(block_index) => Value::Fn(block_index),
+            Addresslike::NativeFn { ref label } => Value::NativeFn {
                 label: label.clone(),
             },
             Addresslike::CallArgument(_)
@@ -1984,7 +2194,10 @@ impl Translator<'_> {
             }
         };
 
-        self.push_value(callee);
+        self.push_value(TypedValue {
+            value: callee,
+            type_index: types[ir[method].resolved()],
+        });
 
         let mut error = Ok(());
 
@@ -2019,7 +2232,10 @@ impl Translator<'_> {
             temporary: Value::Address(address),
         });
 
-        self.push_value(Value::Address(address));
+        self.push_value(TypedValue {
+            value: Value::Address(address),
+            type_index: types[ir[expr].resolved()],
+        });
 
         self.last_in_fn = last_in_fn;
 
@@ -2035,19 +2251,22 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (expr, cases, fallback): (ExprIndex, &[MatchCase], ExprIndex),
+        (expr, match_against, cases, fallback): (ExprIndex, ExprIndex, &[MatchCase], ExprIndex),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
         self.last_in_fn = false;
 
-        self.translate_expr(options, sources, (ir, types), expr)?;
+        self.translate_expr(options, sources, (ir, types), match_against)?;
 
         let value = self.pop_value();
 
         let expr_address = self.assign_value(value);
 
-        let address = self.assign_value(Value::Never);
+        let address = self.assign_value(TypedValue {
+            value: Value::Never,
+            type_index: types[ir[expr].resolved()],
+        });
 
         let mut backpatch_successes = vec![];
 
@@ -2055,7 +2274,7 @@ impl Translator<'_> {
 
         for case in cases {
             let backpatch_these =
-                self.translate_pattern(sources, types, expr_address, case.pattern())?;
+                self.translate_pattern(sources, (ir, types), expr_address, case.pattern())?;
 
             self.translate_expr(options, sources, (ir, types), case.case())?;
 
@@ -2121,11 +2340,14 @@ impl Translator<'_> {
 
         self.last_in_fn = last_in_fn;
 
-        self.push_value(Value::Address(Address {
-            block_index: address.block_index,
-            offset: address.offset,
-            version: 0,
-        }));
+        self.push_value(TypedValue {
+            value: Value::Address(Address {
+                block_index: address.block_index,
+                offset: address.offset,
+                version: 0,
+            }),
+            type_index: types[ir[expr].resolved()],
+        });
 
         if self.last_in_fn {
             self.emit_return();
@@ -2138,7 +2360,7 @@ impl Translator<'_> {
     fn translate_pattern(
         &mut self,
         sources: &[(usize, (&str, &str))],
-        types: &TypeChecker,
+        (ir, types): (&Ir, &TypeChecker),
         match_against: Address,
         pattern: &Resolved<Pattern>,
     ) -> Result<Vec<BlockIndex>, Error> {
@@ -2239,7 +2461,10 @@ impl Translator<'_> {
                     }
                 };
 
-                self.push_value(value);
+                self.push_value(TypedValue {
+                    value,
+                    type_index: types[pattern.resolved()],
+                });
 
                 let value = self.pop_value();
 
@@ -2247,7 +2472,10 @@ impl Translator<'_> {
 
                 self.push_instruction(Instruction::Binary {
                     op: BinaryOp::Equal,
-                    lhs: Value::Address(match_against),
+                    lhs: TypedValue {
+                        value: Value::Address(match_against),
+                        type_index: types[pattern.resolved()],
+                    },
                     rhs: value,
                     temporary: Value::Address(condition_address),
                 });
@@ -2260,7 +2488,10 @@ impl Translator<'_> {
 
                 if let Some(block) = self.get_block_mut(current_block) {
                     block.terminator = Some(BlockTerminator::Branch {
-                        condition: Value::Address(condition_address),
+                        condition: TypedValue {
+                            value: Value::Address(condition_address),
+                            type_index: types.type_boolean(),
+                        },
                         when_true: when_true_block,
                         otherwise: BlockIndex(u32::MAX),
                     });
@@ -2292,23 +2523,30 @@ impl Translator<'_> {
 
                         self.push_instruction(Instruction::Access {
                             index: field_index,
-                            of: Value::Address(match_against),
+                            of: TypedValue {
+                                value: Value::Address(match_against),
+                                type_index: types[field_name.resolved()],
+                            },
                             temporary: Value::Address(field_address),
                         });
 
                         if let Some(field) = field {
                             to_backpatch.append(&mut self.translate_pattern(
                                 sources,
-                                types,
+                                (ir, types),
                                 field_address,
                                 field,
                             )?);
                         } else {
                             self.addresses.insert(
                                 field_name.span(),
-                                Addresslike::CompoundField {
-                                    index: field_index,
-                                    of: match_against,
+                                TypedAddresslike {
+                                    addresslike: Addresslike::CompoundField {
+                                        index: field_index,
+                                        of: match_against,
+                                        of_type_index: types[pattern.resolved()],
+                                    },
+                                    type_index: types[field_name.resolved()],
                                 },
                             );
                         }
@@ -2355,14 +2593,20 @@ impl Translator<'_> {
                         unreachable!("only products are variants of sums");
                     };
 
-                    self.push_value(Value::U16(variant_index));
+                    self.push_value(TypedValue {
+                        value: Value::U16(variant_index),
+                        type_index: types.type_u16(),
+                    });
 
                     let variant_index = self.pop_value();
 
                     let tag_address = self.next_address();
 
                     self.push_instruction(Instruction::GetTag {
-                        of: Value::Address(match_against),
+                        of: TypedValue {
+                            value: Value::Address(match_against),
+                            type_index: types[pattern.resolved()],
+                        },
                         temporary: Value::Address(tag_address),
                     });
 
@@ -2370,7 +2614,10 @@ impl Translator<'_> {
 
                     self.push_instruction(Instruction::Binary {
                         op: BinaryOp::Equal,
-                        lhs: Value::Address(tag_address),
+                        lhs: TypedValue {
+                            value: Value::Address(tag_address),
+                            type_index: types.type_u16(),
+                        },
                         rhs: variant_index,
                         temporary: Value::Address(condition_address),
                     });
@@ -2383,7 +2630,10 @@ impl Translator<'_> {
 
                     if let Some(block) = self.get_block_mut(current_block) {
                         block.terminator = Some(BlockTerminator::Branch {
-                            condition: Value::Address(condition_address),
+                            condition: TypedValue {
+                                value: Value::Address(condition_address),
+                                type_index: types.type_boolean(),
+                            },
                             when_true: when_true_block,
                             otherwise: BlockIndex(u32::MAX),
                         });
@@ -2401,23 +2651,30 @@ impl Translator<'_> {
 
                         self.push_instruction(Instruction::Access {
                             index: field_index,
-                            of: Value::Address(match_against),
+                            of: TypedValue {
+                                value: Value::Address(match_against),
+                                type_index: types[pattern.resolved()],
+                            },
                             temporary: Value::Address(field_address),
                         });
 
                         if let Some(field) = field {
                             to_backpatch.append(&mut self.translate_pattern(
                                 sources,
-                                types,
+                                (ir, types),
                                 field_address,
                                 field,
                             )?);
                         } else {
                             self.addresses.insert(
                                 field_name.span(),
-                                Addresslike::CompoundField {
-                                    index: field_index,
-                                    of: match_against,
+                                TypedAddresslike {
+                                    addresslike: Addresslike::CompoundField {
+                                        index: field_index,
+                                        of: match_against,
+                                        of_type_index: types[pattern.resolved()],
+                                    },
+                                    type_index: types[field_name.resolved()],
                                 },
                             );
                         }

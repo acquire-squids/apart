@@ -18,13 +18,13 @@ pub use {
     basic_blocks::Error as BasicBlocksError,
     expand_macros::Error as MacroExpansionError,
     low_ir::{
-        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
-        Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register,
+        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
     },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
     token_tree::Error as TokenTreeError,
-    type_check::Error as TypeCheckError,
+    type_check::{Error as TypeCheckError, Primitive, Type, TypeChecker, TypeIndex},
 };
 
 use reporting::{Reportable, Span, Spanned};
@@ -69,6 +69,25 @@ impl<'a, T> Compiled<'a, T> {
     }
 }
 
+pub struct CompileSuccessResult {
+    ir: Ir<IrTypedValue>,
+    types: TypeChecker,
+}
+
+impl CompileSuccessResult {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn ir(&self) -> &Ir<IrTypedValue> {
+        &self.ir
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn types(&self) -> &TypeChecker {
+        &self.types
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     TokenTree(TokenTreeError),
@@ -98,13 +117,16 @@ impl error::Error for Error {}
 
 impl Reportable for Error {}
 
+pub type CompileSuccess<'a> = Compiled<'a, CompileSuccessResult>;
+pub type CompileFailure<'a> = Compiled<'a, Vec<Spanned<Error>>>;
+
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
 #[allow(clippy::missing_panics_doc, clippy::too_many_lines)]
 pub fn compile<'a>(
     options: &ApartOptions,
     sources: &[(usize, (&'a str, &'a str))],
-) -> Result<Compiled<'a, Ir<IrValue>>, Compiled<'a, Vec<Spanned<Error>>>> {
+) -> Result<CompileSuccess<'a>, CompileFailure<'a>> {
     let mut source_ids = sources
         .iter()
         .map(|(source_id, _)| *source_id)
@@ -244,14 +266,14 @@ pub fn compile<'a>(
         print!("{basic_blocks}");
     }
 
-    let mut ssa = ssa::convert(options, &basic_blocks);
+    let mut ssa = ssa::convert(options, &types, &basic_blocks);
 
     if cfg!(feature = "print_ssa") {
         print!("{ssa}");
     }
 
     if options.optimize {
-        optimize::optimize(options, &mut ssa);
+        optimize::optimize(options, &types, &mut ssa);
 
         if cfg!(feature = "print_optimized") {
             print!("{ssa}");
@@ -300,7 +322,7 @@ pub fn compile<'a>(
 
     Ok(Compiled {
         sources_with_core: compiled.sources().to_vec(),
-        result: low_ir,
+        result: CompileSuccessResult { ir: low_ir, types },
     })
 }
 

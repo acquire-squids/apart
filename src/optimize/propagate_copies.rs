@@ -1,11 +1,12 @@
 use crate::{
-    basic_blocks::{Instruction, Value},
+    basic_blocks::{Instruction, TypedValue, Value},
     ssa::{BlockTerminator, Ssa},
+    type_check::TypeChecker,
 };
 
 use std::collections::HashMap;
 
-pub fn optimize(ssa: &mut Ssa) -> bool {
+pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
     let mut copies = HashMap::new();
@@ -20,7 +21,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
 
                 for (i, instruction) in block.instructions().iter().enumerate() {
                     if let Instruction::Assign {
-                        value: Value::Address(value),
+                        value: TypedValue { value: Value::Address(value), .. },
                         to: Value::Address(to),
                     } = instruction
                     {
@@ -68,7 +69,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
-                            changed |= propagate_copy(i, value);
+                            changed |= propagate_copy(i, value.value_mut());
                         }
                         Instruction::Binary { lhs, rhs, .. }
                         | Instruction::AccessAssign {
@@ -76,8 +77,8 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                             value: rhs,
                             ..
                         } => {
-                            changed |= propagate_copy(i, lhs);
-                            changed |= propagate_copy(i, rhs);
+                            changed |= propagate_copy(i, lhs.value_mut());
+                            changed |= propagate_copy(i, rhs.value_mut());
                         }
                     }
                 }
@@ -88,7 +89,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     | BlockTerminator::Branch {
                         condition: value, ..
                     } => {
-                        changed |= propagate_copy(i, value);
+                        changed |= propagate_copy(i, value.value_mut());
                     }
                 }
             }

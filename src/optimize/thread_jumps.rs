@@ -1,10 +1,11 @@
 use crate::{
     basic_blocks::{Address, BlockIndex, Instruction, Value},
     ssa::{Block, BlockTerminator, Ssa},
+    type_check::TypeChecker,
 };
 
 #[allow(clippy::too_many_lines)]
-pub fn optimize(ssa: &mut Ssa) -> bool {
+pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
     let mut block_swaps = vec![const { None }; ssa.blocks().len()];
@@ -31,7 +32,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 condition,
                 when_true,
                 otherwise,
-            } => match condition {
+            } => match condition.value() {
                 Value::Boolean(true) => {
                     let when_true = *when_true;
 

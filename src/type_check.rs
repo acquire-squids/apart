@@ -687,6 +687,7 @@ impl TypeChecker {
         }
     }
 
+    #[must_use]
     pub fn get_type(&self, span: Span) -> Option<&Type> {
         self.type_map
             .get(&span)
@@ -706,8 +707,9 @@ impl TypeChecker {
             .expect("expressions always receive a fallback type if they don't have a type when `get_type_index_or_error` is called")
     }
 
-    #[allow(dead_code)]
-    fn type_u8(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_u8(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -716,8 +718,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_i8(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_i8(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -726,8 +729,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_u16(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_u16(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -736,8 +740,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_i16(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_i16(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -746,8 +751,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_u32(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_u32(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -756,8 +762,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_i32(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_i32(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -766,8 +773,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_u64(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_u64(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -776,8 +784,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_i64(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_i64(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -786,6 +795,7 @@ impl TypeChecker {
         )
     }
 
+    #[must_use]
     fn type_integer(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -795,6 +805,7 @@ impl TypeChecker {
         )
     }
 
+    #[must_use]
     fn type_negative_integer(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -805,6 +816,7 @@ impl TypeChecker {
     }
 
     #[allow(dead_code)]
+    #[must_use]
     fn type_float(&self) -> TypeIndex {
         TypeIndex(
             self.types
@@ -814,8 +826,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_f32(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_f32(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -824,8 +837,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_f64(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_f64(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -834,8 +848,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_boolean(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_boolean(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -844,8 +859,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_unit(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_unit(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -854,8 +870,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_string(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_string(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -864,8 +881,9 @@ impl TypeChecker {
         )
     }
 
-    #[allow(dead_code)]
-    fn type_never(&self) -> TypeIndex {
+    #[allow(dead_code, clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn type_never(&self) -> TypeIndex {
         TypeIndex(
             self.types
                 .iter()
@@ -1709,7 +1727,8 @@ impl TypeChecker {
         }
     }
 
-    pub fn to_string(&self, type_index: TypeIndex) -> String {
+    #[must_use]
+    pub fn type_to_string(&self, type_index: TypeIndex) -> String {
         self[type_index].to_string(self.types.as_slice())
     }
 }
@@ -2232,7 +2251,7 @@ impl TypeChecker {
                     let Type::Fn { return_type, .. } = self[self[method_span]].clone() else {
                         unreachable!(
                             "type checking guarantees the method is a function {:?}",
-                            self.to_string(self[method_span])
+                            self.type_to_string(self[method_span])
                         );
                     };
 
@@ -2294,7 +2313,7 @@ impl TypeChecker {
                     else {
                         unreachable!(
                             "type checking guarantees the method is a function {:?}",
-                            self.to_string(self[ir[*callee].span()])
+                            self.type_to_string(self[ir[*callee].span()])
                         );
                     };
 
@@ -3948,9 +3967,9 @@ impl TypeChecker {
                         | Primitive::U32
                         | Primitive::I32
                         | Primitive::U64
-                        | Primitive::I64 => Error::InvalidInteger(self.to_string(should_be)),
+                        | Primitive::I64 => Error::InvalidInteger(self.type_to_string(should_be)),
                         Primitive::F32 | Primitive::F64 => {
-                            Error::InvalidFloat(self.to_string(should_be))
+                            Error::InvalidFloat(self.type_to_string(should_be))
                         }
                         Primitive::Boolean
                         | Primitive::Unit

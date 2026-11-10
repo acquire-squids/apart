@@ -41,14 +41,17 @@ pub fn allocate(_: &ApartOptions, ssa: &mut Ssa) -> Result<(), Vec<Error>> {
             allocator.allocate_block(ssa, &graph, block_index, &mut addresses);
 
             if let Some(block) = ssa.get_block_mut(block_index) {
+                block
+                    .instructions_mut()
+                    .retain(|instruction| !matches!(instruction, Instruction::NoOp));
+
                 block.instructions_mut().retain(|instruction| {
                     !matches!(
                         instruction,
-                        Instruction::NoOp
-                            | Instruction::Assign {
-                                value: Value::Never,
-                                ..
-                            }
+                        Instruction::Assign {
+                            value,
+                            ..
+                        } if matches!(value.value(), Value::Never),
                     )
                 });
             }
@@ -313,12 +316,12 @@ impl RegisterAllocator {
                     Instruction::Push(value) => {
                         self.allocate();
 
-                        self.value_to_allocation(value, (block_index, i), addresses);
+                        self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
                     }
                     Instruction::AccessAssign { value, of, .. } => {
-                        self.value_to_allocation(value, (block_index, i), addresses);
+                        self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
 
-                        self.value_to_allocation(of, (block_index, i), addresses);
+                        self.value_to_allocation(of.value_mut(), (block_index, i), addresses);
                     }
                     Instruction::Call {
                         callee: value,
@@ -328,7 +331,7 @@ impl RegisterAllocator {
                         self.registers -= usize::from(*arity);
                         self.max_registers -= usize::from(*arity);
 
-                        self.value_to_allocation(value, (block_index, i), addresses);
+                        self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
 
                         self.assign(graph, to, addresses);
                     }
@@ -347,7 +350,7 @@ impl RegisterAllocator {
                         of: value,
                         temporary: to,
                     } => {
-                        self.value_to_allocation(value, (block_index, i), addresses);
+                        self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
 
                         self.assign(graph, to, addresses);
                     }
@@ -357,9 +360,9 @@ impl RegisterAllocator {
                         temporary: to,
                         ..
                     } => {
-                        self.value_to_allocation(lhs, (block_index, i), addresses);
+                        self.value_to_allocation(lhs.value_mut(), (block_index, i), addresses);
 
-                        self.value_to_allocation(rhs, (block_index, i), addresses);
+                        self.value_to_allocation(rhs.value_mut(), (block_index, i), addresses);
 
                         self.assign(graph, to, addresses);
                     }
@@ -374,7 +377,7 @@ impl RegisterAllocator {
                 | BlockTerminator::Branch {
                     condition: value, ..
                 } => {
-                    self.value_to_allocation(value, (block_index, i), addresses);
+                    self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
                 }
             }
         }
@@ -411,7 +414,7 @@ impl RegisterAllocator {
             }
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
-                    self.value_to_allocation(value, (block_index, i), addresses);
+                    self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
                 }
             }
             _ => {}

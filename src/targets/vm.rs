@@ -1,8 +1,8 @@
 use crate::{
-    ApartOptions, Compiled,
+    ApartOptions, CompileSuccess,
     low_ir::{
-        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Ir, Location, NativeFn, Register,
-        UnaryOp, Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Register,
+        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
     },
 };
 
@@ -32,8 +32,8 @@ impl Instructive for Compiler {
 /// - panics if `bytecode.len()` > `u32::MAX`
 /// - panics if the number of instructions in the output exceeds `u32::MAX`
 #[must_use]
-pub fn compile(options: &ApartOptions, compiled: &Compiled<'_, Ir<IrValue>>) -> Vec<u8> {
-    let ssa = compiled.result();
+pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8> {
+    let ir = compiled.result().ir();
 
     let mut assembler = Compiler {
         ip: 0,
@@ -44,16 +44,16 @@ pub fn compile(options: &ApartOptions, compiled: &Compiled<'_, Ir<IrValue>>) -> 
     let mut bytecode = vec![];
 
     bytecode.extend(
-        ssa.blocks()
+        ir.blocks()
             .first()
             .map_or(0u16, Block::max_register_count)
             .to_le_bytes(),
     );
 
-    let mut block_addresses = vec![0u32; ssa.blocks().len()];
+    let mut block_addresses = vec![0u32; ir.blocks().len()];
     let mut address_to_label = HashMap::new();
 
-    for (b, block) in ssa.blocks().iter().enumerate() {
+    for (b, block) in ir.blocks().iter().enumerate() {
         block_addresses[b] =
             u32::try_from(bytecode.len()).expect("block index was not a valid u32");
 
@@ -586,7 +586,7 @@ where
     fn assemble(&self, assembler: &mut T) -> Vec<u8>;
 }
 
-impl<T> Assemble<T> for IrInstruction<IrValue>
+impl<T> Assemble<T> for IrInstruction<IrTypedValue>
 where
     T: Instructive,
 {
@@ -1393,7 +1393,7 @@ where
     }
 }
 
-impl<T> Assemble<T> for ValueOrLocation<IrValue>
+impl<T> Assemble<T> for ValueOrLocation<IrTypedValue>
 where
     T: Instructive,
 {
@@ -1420,7 +1420,7 @@ where
     }
 }
 
-impl<T> Assemble<T> for IrValue
+impl<T> Assemble<T> for IrTypedValue
 where
     T: Instructive,
 {
@@ -1428,87 +1428,87 @@ where
     fn assemble(&self, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
-        match self {
-            Self::Never => {
+        match self.value() {
+            IrValue::Never => {
                 vec![u8::from(Instruction::Never)]
             }
-            Self::U8(value) => {
+            IrValue::U8(value) => {
                 let mut bytes = vec![u8::from(Instruction::U8)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::I8(value) => {
+            IrValue::I8(value) => {
                 let mut bytes = vec![u8::from(Instruction::I8)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::U16(value) => {
+            IrValue::U16(value) => {
                 let mut bytes = vec![u8::from(Instruction::U16)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::I16(value) => {
+            IrValue::I16(value) => {
                 let mut bytes = vec![u8::from(Instruction::I16)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::U32(value) => {
+            IrValue::U32(value) => {
                 let mut bytes = vec![u8::from(Instruction::U32)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::I32(value) => {
+            IrValue::I32(value) => {
                 let mut bytes = vec![u8::from(Instruction::I32)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::U64(value) => {
+            IrValue::U64(value) => {
                 let mut bytes = vec![u8::from(Instruction::U64)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::I64(value) => {
+            IrValue::I64(value) => {
                 let mut bytes = vec![u8::from(Instruction::I64)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::F32(value) => {
+            IrValue::F32(value) => {
                 let mut bytes = vec![u8::from(Instruction::F32)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::F64(value) => {
+            IrValue::F64(value) => {
                 let mut bytes = vec![u8::from(Instruction::F64)];
 
                 bytes.extend(value.to_le_bytes());
 
                 bytes
             }
-            Self::Boolean(value) => {
+            IrValue::Boolean(value) => {
                 vec![u8::from(Instruction::Boolean), u8::from(*value)]
             }
-            Self::Unit => {
+            IrValue::Unit => {
                 vec![u8::from(Instruction::Unit)]
             }
-            Self::String(text) => {
+            IrValue::String(text) => {
                 let mut bytes = vec![u8::from(Instruction::String)];
 
                 bytes.extend(
@@ -1521,7 +1521,7 @@ where
 
                 bytes
             }
-            Self::Fn {
+            IrValue::Fn {
                 block_index,
                 max_register_count,
             } => {
@@ -1533,14 +1533,14 @@ where
 
                 bytes
             }
-            Self::NativeFn(native_fn) => {
+            IrValue::NativeFn(native_fn) => {
                 let mut bytes = vec![u8::from(Instruction::NativeFn)];
 
                 bytes.extend(u32::from(*native_fn).to_le_bytes());
 
                 bytes
             }
-            Self::Compound(values) => {
+            IrValue::Compound(values) => {
                 let mut bytes = vec![u8::from(Instruction::Compound)];
 
                 bytes.extend(
@@ -1555,7 +1555,7 @@ where
 
                 bytes
             }
-            Self::TaggedCompound { tag, fields } => {
+            IrValue::TaggedCompound { tag, fields } => {
                 let mut bytes = vec![u8::from(Instruction::TaggedCompound)];
 
                 bytes.extend(tag.to_le_bytes());

@@ -1,9 +1,9 @@
 use crate::{
-    ApartOptions, Compiled,
+    ApartOptions, CompileSuccess,
     basic_blocks::BlockIndex,
     low_ir::{
-        BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register, UnaryOp,
-        Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, Instruction as IrInstruction, Location, NativeFn, Register,
+        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
     },
 };
 
@@ -11,15 +11,12 @@ use std::{collections::HashSet, path::PathBuf};
 
 #[allow(clippy::too_many_lines)]
 #[must_use]
-pub fn compile(
-    options: &ApartOptions,
-    compiled: &Compiled<'_, Ir<IrValue>>,
-) -> Vec<(PathBuf, String)> {
-    let ssa = compiled.result();
+pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<(PathBuf, String)> {
+    let ir = compiled.result().ir();
 
     let mut output = vec![];
 
-    let block_data = ssa.blocks().iter().flat_map(Block::instructions).fold(
+    let block_data = ir.blocks().iter().flat_map(Block::instructions).fold(
         {
             let mut block_data = HashSet::new();
 
@@ -67,7 +64,7 @@ pub fn compile(
         while mangled_prefix_changed {
             mangled_prefix_changed = false;
 
-            for block in ssa.blocks() {
+            for block in ir.blocks() {
                 if let Some(IrInstruction::FnLabel(function_label)) = block.instructions().first()
                     && function_label
                         .function_label()
@@ -102,7 +99,7 @@ pub fn compile(
         output_source.push_str(
             compile_block(
                 options,
-                ssa,
+                compiled,
                 mangled_prefix,
                 &block_data,
                 u32::from(function_block),
@@ -259,7 +256,7 @@ fn eq_impl(mangled_prefix: &str) -> String {
 #[allow(clippy::too_many_lines)]
 fn compile_block(
     options: &ApartOptions,
-    ssa: &Ir<IrValue>,
+    compiled: &CompileSuccess<'_>,
     mangled_prefix: &str,
     block_data: &HashSet<BlockIndex>,
     b: u32,
@@ -270,15 +267,17 @@ fn compile_block(
         &mut bool,
     ),
 ) -> String {
+    let ir = &compiled.result().ir();
+
     let mut buffer = String::new();
 
     if seen_blocks.insert(BlockIndex(b))
-        && let Some(block) = ssa.get_block(BlockIndex(b))
+        && let Some(block) = ir.get_block(BlockIndex(b))
     {
         if block_data.contains(&BlockIndex(b)) {
             buffer.push_str("function ");
 
-            if let Some(IrInstruction::FnLabel(function_label)) = ssa
+            if let Some(IrInstruction::FnLabel(function_label)) = ir
                 .get_block(BlockIndex(b))
                 .map(Block::instructions)
                 .and_then(|instructions| instructions.first())
@@ -358,7 +357,7 @@ fn compile_block(
                             },
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 operand,
                                 seen_native_functions
@@ -378,14 +377,14 @@ fn compile_block(
                                     compile_location(mangled_prefix, *to),
                                     compile_value(
                                         options,
-                                        ssa,
+                                        compiled,
                                         mangled_prefix,
                                         lhs,
                                         seen_native_functions
                                     ),
                                     compile_value(
                                         options,
-                                        ssa,
+                                        compiled,
                                         mangled_prefix,
                                         rhs,
                                         seen_native_functions
@@ -400,14 +399,14 @@ fn compile_block(
                                     compile_location(mangled_prefix, *to),
                                     compile_value(
                                         options,
-                                        ssa,
+                                        compiled,
                                         mangled_prefix,
                                         lhs,
                                         seen_native_functions
                                     ),
                                     compile_value(
                                         options,
-                                        ssa,
+                                        compiled,
                                         mangled_prefix,
                                         rhs,
                                         seen_native_functions
@@ -430,7 +429,7 @@ fn compile_block(
                                 compile_location(mangled_prefix, *to),
                                 compile_value(
                                     options,
-                                    ssa,
+                                    compiled,
                                     mangled_prefix,
                                     lhs,
                                     seen_native_functions
@@ -453,7 +452,7 @@ fn compile_block(
                                 },
                                 compile_value(
                                     options,
-                                    ssa,
+                                    compiled,
                                     mangled_prefix,
                                     rhs,
                                     seen_native_functions
@@ -470,7 +469,7 @@ fn compile_block(
                             compile_location(mangled_prefix, *to),
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 value,
                                 seen_native_functions
@@ -482,7 +481,7 @@ fn compile_block(
                 IrInstruction::Push(value) => {
                     call_arguments.push(compile_value(
                         options,
-                        ssa,
+                        compiled,
                         mangled_prefix,
                         value,
                         seen_native_functions,
@@ -493,7 +492,13 @@ fn compile_block(
                         format!(
                             " {} = ({}).a{};",
                             compile_location(mangled_prefix, *to),
-                            compile_value(options, ssa, mangled_prefix, of, seen_native_functions),
+                            compile_value(
+                                options,
+                                compiled,
+                                mangled_prefix,
+                                of,
+                                seen_native_functions
+                            ),
                             index,
                         )
                         .as_str(),
@@ -503,11 +508,17 @@ fn compile_block(
                     buffer.push_str(
                         format!(
                             "({}).a{} = {};",
-                            compile_value(options, ssa, mangled_prefix, of, seen_native_functions),
+                            compile_value(
+                                options,
+                                compiled,
+                                mangled_prefix,
+                                of,
+                                seen_native_functions
+                            ),
                             index,
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 value,
                                 seen_native_functions
@@ -523,7 +534,7 @@ fn compile_block(
                             compile_location(mangled_prefix, *to),
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 callee,
                                 seen_native_functions
@@ -541,7 +552,13 @@ fn compile_block(
                         format!(
                             " {} = {}.tag;",
                             compile_location(mangled_prefix, *to),
-                            compile_value(options, ssa, mangled_prefix, of, seen_native_functions)
+                            compile_value(
+                                options,
+                                compiled,
+                                mangled_prefix,
+                                of,
+                                seen_native_functions
+                            )
                         )
                         .as_str(),
                     );
@@ -567,7 +584,7 @@ fn compile_block(
                             " if {} {{ {mangled_prefix}_block_index = {}; }} else {{ {mangled_prefix}_block_index = {}; }}",
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 condition,
                                 seen_native_functions
@@ -586,7 +603,7 @@ fn compile_block(
                             " return {};",
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 value,
                                 seen_native_functions
@@ -608,7 +625,7 @@ fn compile_block(
             buffer.push_str(
                 compile_block(
                     options,
-                    ssa,
+                    compiled,
                     mangled_prefix,
                     block_data,
                     next_block,
@@ -622,7 +639,7 @@ fn compile_block(
             buffer.push_str(
                 compile_block(
                     options,
-                    ssa,
+                    compiled,
                     mangled_prefix,
                     block_data,
                     next_block,
@@ -643,14 +660,16 @@ fn compile_block(
 #[allow(clippy::too_many_lines)]
 fn compile_value(
     options: &ApartOptions,
-    ssa: &Ir<IrValue>,
+    compiled: &CompileSuccess<'_>,
     mangled_prefix: &str,
-    value: &ValueOrLocation<IrValue>,
+    value: &ValueOrLocation<IrTypedValue>,
     seen_native_functions: &mut HashSet<NativeFn>,
 ) -> String {
+    let ir = &compiled.result().ir();
+
     match value {
         ValueOrLocation::At(location) => compile_location(mangled_prefix, *location),
-        ValueOrLocation::Value(value) => match value {
+        ValueOrLocation::Value(value) => match value.value() {
             IrValue::Never => "null".to_string(),
             IrValue::U8(value) => value.to_string(),
             IrValue::I8(value) => value.to_string(),
@@ -666,7 +685,7 @@ fn compile_value(
             IrValue::Unit => "\"{}\"".to_string(),
             IrValue::String(value) => format!("[\"{value}\"]"),
             IrValue::Fn { block_index, .. } => {
-                if let Some(IrInstruction::FnLabel(function_label)) = ssa
+                if let Some(IrInstruction::FnLabel(function_label)) = ir
                     .blocks()
                     .get(usize::from(*block_index))
                     .and_then(|block| block.instructions().first())
@@ -724,8 +743,14 @@ fn compile_value(
                     buffer.push_str("a0: ");
 
                     buffer.push_str(
-                        compile_value(options, ssa, mangled_prefix, value, seen_native_functions)
-                            .as_str(),
+                        compile_value(
+                            options,
+                            compiled,
+                            mangled_prefix,
+                            value,
+                            seen_native_functions,
+                        )
+                        .as_str(),
                     );
 
                     for (field_index, value) in values.iter().enumerate().skip(1) {
@@ -734,7 +759,7 @@ fn compile_value(
                         buffer.push_str(
                             compile_value(
                                 options,
-                                ssa,
+                                compiled,
                                 mangled_prefix,
                                 value,
                                 seen_native_functions,
@@ -758,8 +783,14 @@ fn compile_value(
                     buffer.push_str(format!(", a{field_index}: ").as_str());
 
                     buffer.push_str(
-                        compile_value(options, ssa, mangled_prefix, value, seen_native_functions)
-                            .as_str(),
+                        compile_value(
+                            options,
+                            compiled,
+                            mangled_prefix,
+                            value,
+                            seen_native_functions,
+                        )
+                        .as_str(),
                     );
                 }
 
@@ -771,10 +802,10 @@ fn compile_value(
     }
 }
 
-fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &ValueOrLocation<IrValue>) {
+fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &ValueOrLocation<IrTypedValue>) {
     match value {
         ValueOrLocation::At(Location::Register(_)) => {}
-        ValueOrLocation::Value(value) => match value {
+        ValueOrLocation::Value(value) => match value.value() {
             IrValue::Never
             | IrValue::U8(_)
             | IrValue::I8(_)

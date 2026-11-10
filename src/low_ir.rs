@@ -1,14 +1,17 @@
 use crate::{
     ApartOptions, Compiled,
-    basic_blocks::{BlockIndex, Instruction as IrInstruction, Value as IrValue},
+    basic_blocks::{
+        BlockIndex, Instruction as IrInstruction, TypedValue as IrTypedValue, Value as IrValue,
+    },
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
     ssa::{Block as IrBlock, BlockTerminator, Ssa},
+    type_check::TypeIndex,
 };
 
 use std::fmt;
 
 #[must_use]
-pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
+pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<TypedValue> {
     let blocks = compiled
         .result()
         .blocks()
@@ -176,6 +179,32 @@ crate::int_enum! {
 }
 
 #[derive(Debug)]
+pub struct TypedValue {
+    value: Value,
+    type_index: TypeIndex,
+}
+
+impl TypedValue {
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn value_mut(&mut self) -> &mut Value {
+        &mut self.value
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub const fn type_index(&self) -> TypeIndex {
+        self.type_index
+    }
+}
+
+#[derive(Debug)]
 pub enum Value {
     Never,
     U8(u8),
@@ -196,9 +225,9 @@ pub enum Value {
         max_register_count: u16,
     },
     NativeFn(NativeFn),
-    Compound(Vec<ValueOrLocation<Self>>),
+    Compound(Vec<ValueOrLocation<TypedValue>>),
     TaggedCompound {
-        fields: Vec<ValueOrLocation<Self>>,
+        fields: Vec<ValueOrLocation<TypedValue>>,
         tag: u16,
     },
 }
@@ -299,7 +328,7 @@ pub enum Instruction<T> {
 fn lower_block_terminator(
     compiled: &Compiled<'_, Ssa>,
     block_terminator: &BlockTerminator,
-) -> Instruction<Value> {
+) -> Instruction<TypedValue> {
     match block_terminator {
         BlockTerminator::Return(value) => Instruction::Return(lower_value(compiled, value)),
         BlockTerminator::Jump(jump_to) => Instruction::Jump(*jump_to),
@@ -319,7 +348,7 @@ fn lower_block_terminator(
 fn lower_instruction(
     compiled: &Compiled<'_, Ssa>,
     instruction: &IrInstruction,
-) -> Instruction<Value> {
+) -> Instruction<TypedValue> {
     match instruction {
         IrInstruction::NoOp => Instruction::NoOp,
         IrInstruction::Panic => Instruction::Panic,
@@ -407,34 +436,36 @@ fn lower_instruction(
 }
 
 #[must_use]
-fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation<Value> {
-    match value {
-        IrValue::CallArgument(_) | IrValue::Address(_) => {
-            unreachable!("these are eliminated by register allocation {value:?}")
-        }
-        IrValue::Never => ValueOrLocation::Value(Value::Never),
-        IrValue::U8(value) => ValueOrLocation::Value(Value::U8(*value)),
-        IrValue::I8(value) => ValueOrLocation::Value(Value::I8(*value)),
-        IrValue::U16(value) => ValueOrLocation::Value(Value::U16(*value)),
-        IrValue::I16(value) => ValueOrLocation::Value(Value::I16(*value)),
-        IrValue::U32(value) => ValueOrLocation::Value(Value::U32(*value)),
-        IrValue::I32(value) => ValueOrLocation::Value(Value::I32(*value)),
-        IrValue::U64(value) => ValueOrLocation::Value(Value::U64(*value)),
-        IrValue::I64(value) => ValueOrLocation::Value(Value::I64(*value)),
-        IrValue::F32(value) => ValueOrLocation::Value(Value::F32(*value)),
-        IrValue::F64(value) => ValueOrLocation::Value(Value::F64(*value)),
-        IrValue::Boolean(value) => ValueOrLocation::Value(Value::Boolean(*value)),
-        IrValue::Unit => ValueOrLocation::Value(Value::Unit),
-        IrValue::String(text) => ValueOrLocation::Value(Value::String(text.clone())),
-        IrValue::Fn(block_index) => ValueOrLocation::Value(Value::Fn {
-            block_index: *block_index,
-            max_register_count: compiled
-                .result()
-                .get_block(*block_index)
-                .map_or(0, IrBlock::max_register_count),
-        }),
-        IrValue::NativeFn { label, .. } => {
-            ValueOrLocation::Value(Value::NativeFn(match label.as_str() {
+fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrTypedValue) -> ValueOrLocation<TypedValue> {
+    let type_index = value.type_index();
+
+    ValueOrLocation::Value(TypedValue {
+        value: match value.value() {
+            IrValue::CallArgument(_) | IrValue::Address(_) => {
+                unreachable!("these are eliminated by register allocation {value:?}")
+            }
+            IrValue::Never => Value::Never,
+            IrValue::U8(value) => Value::U8(*value),
+            IrValue::I8(value) => Value::I8(*value),
+            IrValue::U16(value) => Value::U16(*value),
+            IrValue::I16(value) => Value::I16(*value),
+            IrValue::U32(value) => Value::U32(*value),
+            IrValue::I32(value) => Value::I32(*value),
+            IrValue::U64(value) => Value::U64(*value),
+            IrValue::I64(value) => Value::I64(*value),
+            IrValue::F32(value) => Value::F32(*value),
+            IrValue::F64(value) => Value::F64(*value),
+            IrValue::Boolean(value) => Value::Boolean(*value),
+            IrValue::Unit => Value::Unit,
+            IrValue::String(text) => Value::String(text.clone()),
+            IrValue::Fn(block_index) => Value::Fn {
+                block_index: *block_index,
+                max_register_count: compiled
+                    .result()
+                    .get_block(*block_index)
+                    .map_or(0, IrBlock::max_register_count),
+            },
+            IrValue::NativeFn { label, .. } => Value::NativeFn(match label.as_str() {
                 "string~String~extend" => NativeFn::ExtendString,
                 "string~String~slice" => NativeFn::SliceString,
                 "string~String~length" => NativeFn::LengthString,
@@ -459,23 +490,26 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrValue) -> ValueOrLocation
                 "clock" => NativeFn::Clock,
                 "sleep" => NativeFn::Sleep,
                 _ => unreachable!("unknown native function: {label}"),
-            }))
-        }
-        IrValue::Register(_) => ValueOrLocation::At(lower_value_to_location(value)),
-        IrValue::Compound(fields) => ValueOrLocation::Value(Value::Compound(
-            fields
-                .iter()
-                .map(|field| lower_value(compiled, field))
-                .collect::<Vec<_>>(),
-        )),
-        IrValue::TaggedCompound { tag, fields } => ValueOrLocation::Value(Value::TaggedCompound {
-            tag: *tag,
-            fields: fields
-                .iter()
-                .map(|field| lower_value(compiled, field))
-                .collect::<Vec<_>>(),
-        }),
-    }
+            }),
+            IrValue::Register(_) => {
+                return ValueOrLocation::At(lower_value_to_location(value.value()));
+            }
+            IrValue::Compound(fields) => Value::Compound(
+                fields
+                    .iter()
+                    .map(|field| lower_value(compiled, field))
+                    .collect::<Vec<_>>(),
+            ),
+            IrValue::TaggedCompound { tag, fields } => Value::TaggedCompound {
+                tag: *tag,
+                fields: fields
+                    .iter()
+                    .map(|field| lower_value(compiled, field))
+                    .collect::<Vec<_>>(),
+            },
+        },
+        type_index,
+    })
 }
 
 #[must_use]

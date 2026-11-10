@@ -1,4 +1,4 @@
-use apart::{ApartOptions, Ir, IrValue, Target};
+use apart::{ApartOptions, Target};
 
 use std::{env, fs, iter, path::Path, process::ExitCode};
 
@@ -143,7 +143,7 @@ fn main() -> ExitCode {
 fn compile<'a>(
     options: &ApartOptions,
     sources: &[(usize, (&'a str, &'a str))],
-) -> Option<apart::Compiled<'a, Ir<IrValue>>> {
+) -> Option<apart::CompileSuccess<'a>> {
     match apart::compile(options, sources) {
         Ok(compiled) => Some(compiled),
         Err(compiled) => {

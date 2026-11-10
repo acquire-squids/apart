@@ -2,14 +2,15 @@ use crate::{
     ApartOptions,
     basic_blocks::{
         Address, BasicBlocks, BlockIndex, BlockTerminator as BasicBlockTerminator, Instruction,
-        Value,
+        TypedValue, Value,
     },
     optimize::eliminate_dead_code,
+    type_check::TypeChecker,
 };
 
 use std::{collections::HashSet, fmt};
 
-pub fn convert(_: &ApartOptions, basic_blocks: &BasicBlocks) -> Ssa {
+pub fn convert(_: &ApartOptions, types: &TypeChecker, basic_blocks: &BasicBlocks) -> Ssa {
     let mut ssa = Ssa { blocks: vec![] };
 
     for basic_block in basic_blocks.blocks() {
@@ -38,7 +39,7 @@ pub fn convert(_: &ApartOptions, basic_blocks: &BasicBlocks) -> Ssa {
     let mut changed = true;
 
     while changed {
-        changed = eliminate_dead_code::optimize(&mut ssa, false);
+        changed = eliminate_dead_code::optimize(types, &mut ssa, false);
     }
 
     ssa
@@ -107,11 +108,11 @@ pub struct Block {
 pub enum BlockTerminator {
     Jump(BlockIndex),
     Branch {
-        condition: Value,
+        condition: TypedValue,
         when_true: BlockIndex,
         otherwise: BlockIndex,
     },
-    Return(Value),
+    Return(TypedValue),
 }
 
 impl Block {
@@ -297,8 +298,8 @@ impl Ssa {
         ordered
     }
 
-    fn use_addresses(def_use: &mut [DefUse], (b, i): (usize, usize), value: &Value) {
-        match value {
+    fn use_addresses(def_use: &mut [DefUse], (b, i): (usize, usize), value: &TypedValue) {
+        match value.value() {
             Value::Address(address) => {
                 if let Some(def_use) = def_use
                     .get_mut(b)
@@ -630,7 +631,7 @@ impl Ssa {
                             | Instruction::Panic
                             | Instruction::NoOp => {}
                             Instruction::Push(value) => {
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
                             }
                             Instruction::Unary {
                                 operand: value,
@@ -653,7 +654,7 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             } => {
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
@@ -663,14 +664,14 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             } => {
-                                Self::value_uses_block(lhs, &mut frontier);
-                                Self::value_uses_block(rhs, &mut frontier);
+                                Self::value_uses_block(lhs.value(), &mut frontier);
+                                Self::value_uses_block(rhs.value(), &mut frontier);
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
                             Instruction::AccessAssign { of, value, .. } => {
-                                Self::value_uses_block(of, &mut frontier);
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(of.value(), &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
                             }
                         }
                     }
@@ -680,7 +681,7 @@ impl Ssa {
                             condition: value, ..
                         }
                         | BlockTerminator::Return(value) => {
-                            Self::value_uses_block(value, &mut frontier);
+                            Self::value_uses_block(value.value(), &mut frontier);
                         }
                         BlockTerminator::Jump(_) => {}
                     }
@@ -723,7 +724,7 @@ impl Ssa {
                             | Instruction::Panic
                             | Instruction::NoOp => {}
                             Instruction::Push(value) => {
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
                             }
                             Instruction::Unary {
                                 operand: value,
@@ -746,7 +747,7 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             } => {
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
@@ -756,14 +757,14 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             } => {
-                                Self::value_uses_block(lhs, &mut frontier);
-                                Self::value_uses_block(rhs, &mut frontier);
+                                Self::value_uses_block(lhs.value(), &mut frontier);
+                                Self::value_uses_block(rhs.value(), &mut frontier);
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
                             Instruction::AccessAssign { of, value, .. } => {
-                                Self::value_uses_block(of, &mut frontier);
-                                Self::value_uses_block(value, &mut frontier);
+                                Self::value_uses_block(of.value(), &mut frontier);
+                                Self::value_uses_block(value.value(), &mut frontier);
                             }
                         }
                     }
@@ -773,7 +774,7 @@ impl Ssa {
                             condition: value, ..
                         }
                         | BlockTerminator::Return(value) => {
-                            Self::value_uses_block(value, &mut frontier);
+                            Self::value_uses_block(value.value(), &mut frontier);
                         }
                         BlockTerminator::Jump(_) => {}
                     }
@@ -793,7 +794,7 @@ impl Ssa {
             }
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
-                    Self::value_uses_block(value, frontier);
+                    Self::value_uses_block(value.value(), frontier);
                 }
             }
             _ => {}
@@ -807,7 +808,7 @@ impl Ssa {
         match value {
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
-                    f(value);
+                    f(value.value_mut());
                 }
             }
             _ => {
@@ -826,7 +827,7 @@ impl Ssa {
                 match instruction {
                     Instruction::FnLabel { .. } | Instruction::Panic | Instruction::NoOp => {}
                     Instruction::Push(value) => {
-                        Self::nested_values(value, &mut f);
+                        Self::nested_values(value.value_mut(), &mut f);
                     }
                     Instruction::Unary {
                         operand: value,
@@ -849,7 +850,7 @@ impl Ssa {
                         temporary: to,
                         ..
                     } => {
-                        Self::nested_values(value, &mut f);
+                        Self::nested_values(value.value_mut(), &mut f);
 
                         Self::nested_values(to, &mut f);
                     }
@@ -859,14 +860,14 @@ impl Ssa {
                         temporary: to,
                         ..
                     } => {
-                        Self::nested_values(lhs, &mut f);
-                        Self::nested_values(rhs, &mut f);
+                        Self::nested_values(lhs.value_mut(), &mut f);
+                        Self::nested_values(rhs.value_mut(), &mut f);
 
                         Self::nested_values(to, &mut f);
                     }
                     Instruction::AccessAssign { of, value, .. } => {
-                        Self::nested_values(of, &mut f);
-                        Self::nested_values(value, &mut f);
+                        Self::nested_values(of.value_mut(), &mut f);
+                        Self::nested_values(value.value_mut(), &mut f);
                     }
                 }
             }
@@ -876,7 +877,7 @@ impl Ssa {
                     condition: value, ..
                 }
                 | BlockTerminator::Return(value) => {
-                    Self::nested_values(value, &mut f);
+                    Self::nested_values(value.value_mut(), &mut f);
                 }
                 BlockTerminator::Jump(_) => {}
             }
@@ -947,15 +948,15 @@ impl Ssa {
                         | Instruction::Access { of: value, .. }
                         | Instruction::GetTag { of: value, .. }
                         | Instruction::Assign { value, .. } => {
-                            Self::map_address(value, addresses);
+                            Self::map_address(value.value_mut(), addresses);
                         }
                         Instruction::Binary { lhs, rhs, .. } => {
-                            Self::map_address(lhs, addresses);
-                            Self::map_address(rhs, addresses);
+                            Self::map_address(lhs.value_mut(), addresses);
+                            Self::map_address(rhs.value_mut(), addresses);
                         }
                         Instruction::AccessAssign { of, value, .. } => {
-                            Self::map_address(of, addresses);
-                            Self::map_address(value, addresses);
+                            Self::map_address(of.value_mut(), addresses);
+                            Self::map_address(value.value_mut(), addresses);
                         }
                     }
                 }
@@ -966,7 +967,7 @@ impl Ssa {
                         condition: value, ..
                     }
                     | BlockTerminator::Return(value) => {
-                        Self::map_address(value, addresses);
+                        Self::map_address(value.value_mut(), addresses);
                     }
                 }
             }
@@ -986,7 +987,7 @@ impl Ssa {
             }
             Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
                 for value in values {
-                    Self::map_address(value, addresses);
+                    Self::map_address(value.value_mut(), addresses);
                 }
             }
             _ => {}

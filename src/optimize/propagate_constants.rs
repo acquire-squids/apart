@@ -1,12 +1,13 @@
 use crate::{
     basic_blocks::{Instruction, Value},
     ssa::{Block, BlockTerminator, Ssa},
+    type_check::TypeChecker,
 };
 
 use std::collections::HashMap;
 
 #[allow(clippy::too_many_lines)]
-pub fn optimize(ssa: &mut Ssa) -> bool {
+pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
     let mut changed = false;
 
     let mut address_to_ip = HashMap::new();
@@ -45,7 +46,7 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                         | Instruction::Binary { lhs: value, .. }
                         | Instruction::AccessAssign { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
-                            if let Some(propagated_value) = clone_constant(value)
+                            if let Some(propagated_value) = clone_constant(value.value())
                                 && let Some(
                                     Instruction::Unary { operand: value, .. }
                                     | Instruction::Assign { value, .. }
@@ -58,9 +59,9 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                                 ) = ssa
                                     .get_block_mut(block_index)
                                     .and_then(|block| block.instructions_mut().get_mut(i))
-                                && propagated_value != *value
+                                && &propagated_value != value.value()
                             {
-                                *value = propagated_value;
+                                *value.value_mut() = propagated_value;
 
                                 changed = true;
                             }
@@ -71,13 +72,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 if let Some(Instruction::Binary { rhs: value, .. }) = ssa
                     .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
-                    && let Some(propagated_value) = clone_constant(value)
+                    && let Some(propagated_value) = clone_constant(value.value())
                     && let Some(Instruction::Binary { rhs: value, .. }) = ssa
                         .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
-                    && propagated_value != *value
+                    && &propagated_value != value.value()
                 {
-                    *value = propagated_value;
+                    *value.value_mut() = propagated_value;
 
                     changed = true;
                 }
@@ -85,13 +86,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 if let Some(Instruction::AccessAssign { value, .. }) = ssa
                     .get_block(block_index)
                     .and_then(|block| block.instructions().get(i))
-                    && let Some(propagated_value) = clone_constant(value)
+                    && let Some(propagated_value) = clone_constant(value.value())
                     && let Some(Instruction::AccessAssign { value, .. }) = ssa
                         .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
-                    && propagated_value != *value
+                    && &propagated_value != value.value()
                 {
-                    *value = propagated_value;
+                    *value.value_mut() = propagated_value;
 
                     changed = true;
                 }
@@ -101,12 +102,12 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                 match block.terminator() {
                     BlockTerminator::Jump(_) => {}
                     BlockTerminator::Return(value) => {
-                        if let Some(propagated_value) = clone_constant(value)
+                        if let Some(propagated_value) = clone_constant(value.value())
                             && let Some(BlockTerminator::Return(value)) =
                                 ssa.get_block_mut(block_index).map(Block::terminator_mut)
-                            && propagated_value != *value
+                            && &propagated_value != value.value()
                         {
-                            *value = propagated_value;
+                            *value.value_mut() = propagated_value;
 
                             changed = true;
                         }
@@ -114,13 +115,13 @@ pub fn optimize(ssa: &mut Ssa) -> bool {
                     BlockTerminator::Branch {
                         condition: value, ..
                     } => {
-                        if let Some(propagated_value) = clone_constant(value)
+                        if let Some(propagated_value) = clone_constant(value.value())
                             && let Some(BlockTerminator::Branch {
                                 condition: value, ..
                             }) = ssa.get_block_mut(block_index).map(Block::terminator_mut)
-                            && propagated_value != *value
+                            && &propagated_value != value.value()
                         {
-                            *value = propagated_value;
+                            *value.value_mut() = propagated_value;
 
                             changed = true;
                         }
