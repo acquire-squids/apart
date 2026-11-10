@@ -458,11 +458,7 @@ where
             let value_index = *value_index;
 
             match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                Some(
-                    Value::Compound(values)
-                    | Value::TaggedCompound { fields: values, .. }
-                    | Value::Vec(values),
-                ) => {
+                Some(Value::Compound(values) | Value::TaggedCompound { fields: values, .. }) => {
                     let mut taken_values = std::mem::take(values);
 
                     let mut changed = false;
@@ -476,6 +472,27 @@ where
                         Some(
                             Value::Compound(values) | Value::TaggedCompound { fields: values, .. },
                         ) => {
+                            *values = taken_values;
+                        }
+                        _ => unreachable!(
+                            "the outer match guarantees only these variants are matched"
+                        ),
+                    }
+
+                    changed
+                }
+                Some(Value::Vec(values)) => {
+                    let mut taken_values = std::mem::take(values);
+
+                    let mut changed = false;
+
+                    for value in &mut taken_values {
+                        changed |=
+                            backpatch_value(value, block_addresses, address_to_label, disassembler);
+                    }
+
+                    match disassembler.values_mut().get_mut(usize::from(value_index)) {
+                        Some(Value::Vec(values)) => {
                             *values = taken_values;
                         }
                         _ => unreachable!(
@@ -561,9 +578,9 @@ pub enum CopyableValue {
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    Compound(Vec<CopyableValue>),
+    Compound(Box<[CopyableValue]>),
     TaggedCompound {
-        fields: Vec<CopyableValue>,
+        fields: Box<[CopyableValue]>,
         tag: u16,
     },
     String(String),
@@ -1916,7 +1933,9 @@ where
                     fields.push(Self::disassemble(bytecode, disassembler));
                 }
 
-                disassembler.values_mut().push(Value::Compound(fields));
+                disassembler
+                    .values_mut()
+                    .push(Value::Compound(fields.into_boxed_slice()));
 
                 let value_index = ValueIndex(disassembler.values_mut().len() - 1);
 
@@ -1935,9 +1954,10 @@ where
                     fields.push(Self::disassemble(bytecode, disassembler));
                 }
 
-                disassembler
-                    .values_mut()
-                    .push(Value::TaggedCompound { tag, fields });
+                disassembler.values_mut().push(Value::TaggedCompound {
+                    tag,
+                    fields: fields.into_boxed_slice(),
+                });
 
                 let value_index = ValueIndex(disassembler.values_mut().len() - 1);
 

@@ -1529,7 +1529,8 @@ impl Vm {
                             .map(|value| self.dereference_value(value, make_constant))
                             .collect::<Vec<_>>();
 
-                        self.values.push(Value::Compound(dereferenced_values));
+                        self.values
+                            .push(Value::Compound(dereferenced_values.into_boxed_slice()));
 
                         let value_index =
                             CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
@@ -1551,7 +1552,7 @@ impl Vm {
                             .collect::<Vec<_>>();
 
                         self.values.push(Value::TaggedCompound {
-                            fields: dereferenced_values,
+                            fields: dereferenced_values.into_boxed_slice(),
                             tag,
                         });
 
@@ -1582,7 +1583,7 @@ impl Vm {
     #[allow(dead_code)]
     fn option_some(&mut self, value: CopyableValue) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![value],
+            fields: vec![value].into_boxed_slice(),
             tag: 1,
         });
 
@@ -1596,7 +1597,7 @@ impl Vm {
     #[allow(dead_code)]
     fn option_none(&mut self) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![],
+            fields: vec![].into_boxed_slice(),
             tag: 0,
         });
 
@@ -1610,7 +1611,7 @@ impl Vm {
     #[allow(dead_code)]
     fn result_ok(&mut self, value: CopyableValue) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![value],
+            fields: vec![value].into_boxed_slice(),
             tag: 1,
         });
 
@@ -1624,7 +1625,7 @@ impl Vm {
     #[allow(dead_code)]
     fn result_err(&mut self) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![],
+            fields: vec![].into_boxed_slice(),
             tag: 0,
         });
 
@@ -1710,8 +1711,16 @@ impl Vm {
                     | (
                         Value::TaggedCompound { fields: lhs, .. },
                         Value::TaggedCompound { fields: rhs, .. },
-                    )
-                    | (Value::Vec(lhs), Value::Vec(rhs)) => {
+                    ) => {
+                        for (lhs, rhs) in lhs.iter().zip(rhs) {
+                            if !self.values_eq(*lhs, *rhs) {
+                                return false;
+                            }
+                        }
+
+                        true
+                    }
+                    (Value::Vec(lhs), Value::Vec(rhs)) => {
                         for (lhs, rhs) in lhs.iter().zip(rhs) {
                             if !self.values_eq(*lhs, *rhs) {
                                 return false;
@@ -1771,9 +1780,12 @@ impl Vm {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
                 Value::String(_) => {}
-                Value::Compound(values)
-                | Value::TaggedCompound { fields: values, .. }
-                | Value::Vec(values) => {
+                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
+                    for value in values {
+                        self.mark_value(marked, *value, marked_count);
+                    }
+                }
+                Value::Vec(values) => {
                     for value in values {
                         self.mark_value(marked, *value, marked_count);
                     }
@@ -1845,7 +1857,10 @@ impl Vm {
                                 .map(|value| self.retain_value(replacement_values, *value, marked))
                                 .collect::<Vec<_>>();
 
-                            replacement_values.push((replacement_index, Value::Compound(values)));
+                            replacement_values.push((
+                                replacement_index,
+                                Value::Compound(values.into_boxed_slice()),
+                            ));
                         }
                         Value::TaggedCompound {
                             fields: values,
@@ -1859,7 +1874,7 @@ impl Vm {
                             replacement_values.push((
                                 replacement_index,
                                 Value::TaggedCompound {
-                                    fields: values,
+                                    fields: values.into_boxed_slice(),
                                     tag: *tag,
                                 },
                             ));

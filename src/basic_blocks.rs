@@ -305,8 +305,8 @@ pub enum Value {
     NativeFn { label: String },
     CallArgument(u8),
     Register(usize),
-    Compound(Vec<TypedValue>),
-    TaggedCompound { fields: Vec<TypedValue>, tag: u16 },
+    Compound(Box<[TypedValue]>),
+    TaggedCompound { fields: Box<[TypedValue]>, tag: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1875,7 +1875,7 @@ impl Translator<'_> {
         }
 
         self.push_value(TypedValue {
-            value: Value::Compound(values),
+            value: Value::Compound(values.into_boxed_slice()),
             type_index: types[ir[expr].resolved()],
         });
 

@@ -908,11 +908,12 @@ fn find_labels(labels: &mut [bool], disassembler: &Disassembler, value: Copyable
         }
         CopyableValue::ValueIndex(value_index) => {
             match disassembler.values.get(usize::from(value_index)) {
-                Some(
-                    Value::Compound(values)
-                    | Value::TaggedCompound { fields: values, .. }
-                    | Value::Vec(values),
-                ) => {
+                Some(Value::Compound(values) | Value::TaggedCompound { fields: values, .. }) => {
+                    for value in values {
+                        find_labels(labels, disassembler, *value);
+                    }
+                }
+                Some(Value::Vec(values)) => {
                     for value in values {
                         find_labels(labels, disassembler, *value);
                     }

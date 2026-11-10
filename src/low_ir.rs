@@ -225,9 +225,9 @@ pub enum Value {
         max_register_count: u16,
     },
     NativeFn(NativeFn),
-    Compound(Vec<ValueOrLocation<TypedValue>>),
+    Compound(Box<[ValueOrLocation<TypedValue>]>),
     TaggedCompound {
-        fields: Vec<ValueOrLocation<TypedValue>>,
+        fields: Box<[ValueOrLocation<TypedValue>]>,
         tag: u16,
     },
 }
@@ -498,14 +498,16 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrTypedValue) -> ValueOrLoc
                 fields
                     .iter()
                     .map(|field| lower_value(compiled, field))
-                    .collect::<Vec<_>>(),
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
             ),
             IrValue::TaggedCompound { tag, fields } => Value::TaggedCompound {
                 tag: *tag,
                 fields: fields
                     .iter()
                     .map(|field| lower_value(compiled, field))
-                    .collect::<Vec<_>>(),
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
             },
         },
         type_index,
