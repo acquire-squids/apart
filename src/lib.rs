@@ -19,7 +19,7 @@ pub use {
     expand_macros::Error as MacroExpansionError,
     low_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register,
-        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
+        Typed as IrTyped, UnaryOp, Value as IrValue, ValueOrLocation,
     },
     name_resolve::Error as NameResolveError,
     parse::Error as ParseError,
@@ -70,14 +70,14 @@ impl<'a, T> Compiled<'a, T> {
 }
 
 pub struct CompileSuccessResult {
-    ir: Ir<IrTypedValue>,
+    ir: Ir<IrValue>,
     types: TypeChecker,
 }
 
 impl CompileSuccessResult {
     #[allow(dead_code)]
     #[must_use]
-    pub const fn ir(&self) -> &Ir<IrTypedValue> {
+    pub const fn ir(&self) -> &Ir<IrValue> {
         &self.ir
     }
 
@@ -314,7 +314,7 @@ pub fn compile<'a>(
         result: ssa,
     };
 
-    let low_ir = low_ir::lower(options, &compiled);
+    let low_ir = low_ir::lower(options, &types, &compiled);
 
     if cfg!(feature = "print_lowir") {
         print!("{low_ir}");

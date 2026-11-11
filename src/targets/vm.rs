@@ -2,8 +2,9 @@ use crate::{
     ApartOptions, CompileSuccess,
     low_ir::{
         BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Register,
-        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
+        Typed, UnaryOp, Value as IrValue, ValueOrLocation,
     },
+    type_check::TypeIndex,
 };
 
 use std::collections::HashMap;
@@ -62,17 +63,22 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
             u32::try_from(b).expect("block index was not a valid u32"),
         );
 
-        bytecode.extend(Instruction::Label.assemble(&mut assembler));
+        bytecode.extend(Instruction::Label.assemble(compiled, &mut assembler));
 
         for instruction in block.instructions() {
             if !options.strip_debug_info || !matches!(instruction, IrInstruction::FnLabel(_)) {
-                bytecode.append(&mut instruction.assemble(&mut assembler));
+                bytecode.append(&mut instruction.assemble(compiled, &mut assembler));
             }
         }
     }
 
     loop {
-        if !backpatch(&mut bytecode, block_addresses.as_slice(), &address_to_label) {
+        if !backpatch(
+            compiled,
+            &mut bytecode,
+            block_addresses.as_slice(),
+            &address_to_label,
+        ) {
             break;
         }
 
@@ -138,6 +144,7 @@ where
 }
 
 fn backpatch(
+    compiled: &CompileSuccess<'_>,
     bytecode: &mut Vec<u8>,
     block_addresses: &[u32],
     address_to_label: &HashMap<u32, u32>,
@@ -161,7 +168,7 @@ fn backpatch(
             &mut disassembler,
             &mut instruction,
         ) {
-            replace_instruction(bytecode, &mut disassembler, &instruction, at);
+            replace_instruction(compiled, bytecode, &mut disassembler, &instruction, at);
 
             changed |= true;
         }
@@ -171,6 +178,7 @@ fn backpatch(
 }
 
 fn replace_instruction<T>(
+    compiled: &CompileSuccess<'_>,
     bytecode: &mut Vec<u8>,
     disassembler: &mut T,
     instruction: &Instruction,
@@ -180,7 +188,7 @@ fn replace_instruction<T>(
 {
     let ip = *disassembler.ip_mut();
 
-    let assembled = instruction.assemble(disassembler);
+    let assembled = instruction.assemble(compiled, disassembler);
 
     let changed_instruction_byte_count = assembled.len();
 
@@ -600,28 +608,32 @@ pub trait Assemble<T>
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8>;
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8>;
 }
 
-impl<T> Assemble<T> for IrInstruction<IrTypedValue>
+impl<T> Assemble<T> for IrInstruction<IrValue>
 where
     T: Instructive,
 {
     #[allow(clippy::too_many_lines)]
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         match self {
             Self::NoOp => vec![],
-            Self::Panic => Instruction::Panic.assemble(assembler),
+            Self::Panic => Instruction::Panic.assemble(compiled, assembler),
             Self::FnLabel(fn_label) => Instruction::FnLabel {
                 fn_label: Box::new(FnLabel::new(
                     fn_label.file_name().to_string(),
                     fn_label.function_label().to_string(),
                 )),
             }
-            .assemble(assembler),
-            Self::Unary { op, operand, to } => match (to, op, operand) {
+            .assemble(compiled, assembler),
+            Self::Unary {
+                op,
+                operand: ir_operand,
+                to,
+            } => match (to, op, ir_operand.kind()) {
                 (
                     Location::Register(to),
                     UnaryOp::Not,
@@ -630,16 +642,16 @@ where
                     to: *to,
                     operand: *operand,
                 }
-                .assemble(assembler),
-                (Location::Register(to), UnaryOp::Not, ValueOrLocation::Value(value)) => {
+                .assemble(compiled, assembler),
+                (Location::Register(to), UnaryOp::Not, ValueOrLocation::Value(_)) => {
                     Instruction::NotValue {
                         to: *to,
                         operand: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
+                            ir_operand.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
                 (
                     Location::Register(to),
@@ -649,19 +661,19 @@ where
                     to: *to,
                     operand: *operand,
                 }
-                .assemble(assembler),
-                (Location::Register(to), UnaryOp::Negate, ValueOrLocation::Value(value)) => {
+                .assemble(compiled, assembler),
+                (Location::Register(to), UnaryOp::Negate, ValueOrLocation::Value(_)) => {
                     Instruction::NegateValue {
                         to: *to,
                         operand: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
+                            ir_operand.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
             },
-            Self::Binary { op, lhs, rhs, to } => match (to, op, lhs, rhs) {
+            Self::Binary { op, lhs, rhs, to } => match (to, op, lhs.kind(), rhs.kind()) {
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
@@ -672,43 +684,55 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::MultiplyRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::MultiplyValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::MultiplyValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide | BinaryOp::IntegerDivide,
+                    BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::DivideRegisterRegister {
@@ -716,40 +740,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide | BinaryOp::IntegerDivide,
+                    BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::DivideRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide | BinaryOp::IntegerDivide,
-                    ValueOrLocation::Value(lhs),
+                    BinaryOp::Divide,
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::DivideValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
-                    BinaryOp::Divide | BinaryOp::IntegerDivide,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    BinaryOp::Divide,
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::DivideValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
@@ -760,40 +796,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::RemainderRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::RemainderValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::RemainderValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
@@ -804,40 +852,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::AddRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::AddValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::AddValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
@@ -848,40 +908,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::SubtractRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::SubtractValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::SubtractValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
@@ -892,40 +964,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::LessRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::LessValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::LessValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
@@ -936,40 +1020,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::GreaterRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::GreaterValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::GreaterValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
@@ -980,40 +1076,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::LessOrEqualRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::LessOrEqualValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::LessOrEqualValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
@@ -1024,40 +1132,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::GreaterOrEqualRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::GreaterOrEqualValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::GreaterOrEqualValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
@@ -1068,40 +1188,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::EqualRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::EqualValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::EqualValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
@@ -1112,40 +1244,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::NotEqualRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::NotEqualValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::NotEqualValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::And,
@@ -1156,40 +1300,52 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::AndRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::And,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::AndValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::And,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::AndValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
@@ -1200,110 +1356,121 @@ where
                     lhs: *lhs,
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
                     ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::OrRegisterValue {
                     to: *to,
                     lhs: *lhs,
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
-                    ValueOrLocation::Value(lhs),
+                    ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
                 ) => Instruction::OrValueRegister {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                     rhs: *rhs,
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
-                    ValueOrLocation::Value(lhs),
-                    ValueOrLocation::Value(rhs),
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
                 ) => Instruction::OrValueValue {
                     to: *to,
-                    lhs: CopyableValue::disassemble(lhs.assemble(assembler).as_slice(), assembler),
-                    rhs: CopyableValue::disassemble(rhs.assemble(assembler).as_slice(), assembler),
+                    lhs: CopyableValue::disassemble(
+                        lhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                    rhs: CopyableValue::disassemble(
+                        rhs.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             },
-            Self::Assign { value, to } => match (to, value) {
+            Self::Assign { value, to } => match (to, value.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
                     Instruction::AssignRegister {
                         to: *to,
                         operand: *operand,
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (Location::Register(to), ValueOrLocation::Value(value)) => {
-                    Instruction::AssignValue {
-                        to: *to,
-                        operand: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
-                            assembler,
-                        ),
-                    }
-                    .assemble(assembler)
-                }
-            },
-            Self::Push(value) => match value {
-                ValueOrLocation::At(Location::Register(operand)) => {
-                    Instruction::PushRegister { operand: *operand }.assemble(assembler)
-                }
-                ValueOrLocation::Value(value) => Instruction::PushValue {
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AssignValue {
+                    to: *to,
                     operand: CopyableValue::disassemble(
-                        value.assemble(assembler).as_slice(),
+                        value.assemble(compiled, assembler).as_slice(),
                         assembler,
                     ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             },
-            Self::Call { callee, arity, to } => match (to, callee) {
+            Self::Push(value) => match value.kind() {
+                ValueOrLocation::At(Location::Register(operand)) => {
+                    Instruction::PushRegister { operand: *operand }.assemble(compiled, assembler)
+                }
+                ValueOrLocation::Value(_) => Instruction::PushValue {
+                    operand: CopyableValue::disassemble(
+                        value.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
+                }
+                .assemble(compiled, assembler),
+            },
+            Self::Call { callee, arity, to } => match (to, callee.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(callee))) => {
                     Instruction::CallRegister {
                         to: *to,
                         arity: *arity,
                         callee: *callee,
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (Location::Register(to), ValueOrLocation::Value(callee)) => {
-                    Instruction::CallValue {
-                        to: *to,
-                        arity: *arity,
-                        callee: CopyableValue::disassemble(
-                            callee.assemble(assembler).as_slice(),
-                            assembler,
-                        ),
-                    }
-                    .assemble(assembler)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::CallValue {
+                    to: *to,
+                    arity: *arity,
+                    callee: CopyableValue::disassemble(
+                        callee.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
+                .assemble(compiled, assembler),
             },
-            Self::Access { index, of, to } => match (to, of) {
+            Self::Access { index, of, to } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(of))) => {
                     Instruction::AccessRegister {
                         to: *to,
                         index: *index,
                         of: *of,
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (Location::Register(to), ValueOrLocation::Value(of)) => Instruction::AccessValue {
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AccessValue {
                     to: *to,
                     index: *index,
-                    of: CopyableValue::disassemble(of.assemble(assembler).as_slice(), assembler),
+                    of: CopyableValue::disassemble(
+                        of.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             },
-            Self::AccessAssign { index, of, value } => match (of, value) {
+            Self::AccessAssign { index, of, value } => match (of.kind(), value.kind()) {
                 (
                     ValueOrLocation::At(Location::Register(to)),
                     ValueOrLocation::At(Location::Register(value)),
@@ -1312,140 +1479,142 @@ where
                     to: *to,
                     value: *value,
                 }
-                .assemble(assembler),
-                (ValueOrLocation::At(Location::Register(to)), ValueOrLocation::Value(value)) => {
+                .assemble(compiled, assembler),
+                (ValueOrLocation::At(Location::Register(to)), ValueOrLocation::Value(_)) => {
                     Instruction::AccessAssignRegisterValue {
                         index: *index,
                         to: *to,
                         value: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
+                            value.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (ValueOrLocation::Value(to), ValueOrLocation::At(Location::Register(value))) => {
+                (ValueOrLocation::Value(_), ValueOrLocation::At(Location::Register(value))) => {
                     Instruction::AccessAssignValueRegister {
                         index: *index,
                         to: CopyableValue::disassemble(
-                            to.assemble(assembler).as_slice(),
+                            of.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                         value: *value,
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (ValueOrLocation::Value(to), ValueOrLocation::Value(value)) => {
+                (ValueOrLocation::Value(_), ValueOrLocation::Value(_)) => {
                     Instruction::AccessAssignValueValue {
                         index: *index,
                         to: CopyableValue::disassemble(
-                            to.assemble(assembler).as_slice(),
+                            of.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                         value: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
+                            value.assemble(compiled, assembler).as_slice(),
                             assembler,
                         ),
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
             },
-            Self::GetTag { of, to } => match (to, of) {
+            Self::GetTag { of, to } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
                     Instruction::GetTagRegister {
                         to: *to,
                         of: *operand,
                     }
-                    .assemble(assembler)
+                    .assemble(compiled, assembler)
                 }
-                (Location::Register(to), ValueOrLocation::Value(value)) => {
-                    Instruction::GetTagValue {
-                        to: *to,
-                        of: CopyableValue::disassemble(
-                            value.assemble(assembler).as_slice(),
-                            assembler,
-                        ),
-                    }
-                    .assemble(assembler)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::GetTagValue {
+                    to: *to,
+                    of: CopyableValue::disassemble(
+                        of.assemble(compiled, assembler).as_slice(),
+                        assembler,
+                    ),
                 }
+                .assemble(compiled, assembler),
             },
             Self::Jump(destination) => Instruction::Jump {
                 destination: u32::from(*destination),
             }
-            .assemble(assembler),
+            .assemble(compiled, assembler),
             Self::Branch {
                 condition,
                 when_true,
                 otherwise,
-            } => match condition {
+            } => match condition.kind() {
                 ValueOrLocation::At(Location::Register(condition)) => Instruction::BranchRegister {
                     condition: *condition,
                     when_true: u32::from(*when_true),
                     otherwise: u32::from(*otherwise),
                 }
-                .assemble(assembler),
-                ValueOrLocation::Value(condition) => Instruction::BranchValue {
+                .assemble(compiled, assembler),
+                ValueOrLocation::Value(_) => Instruction::BranchValue {
                     condition: CopyableValue::disassemble(
-                        condition.assemble(assembler).as_slice(),
+                        condition.assemble(compiled, assembler).as_slice(),
                         assembler,
                     ),
                     when_true: u32::from(*when_true),
                     otherwise: u32::from(*otherwise),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             },
-            Self::Return(value) => match value {
+            Self::Return(value) => match value.kind() {
                 ValueOrLocation::At(Location::Register(value)) => {
-                    Instruction::ReturnRegister { value: *value }.assemble(assembler)
+                    Instruction::ReturnRegister { value: *value }.assemble(compiled, assembler)
                 }
-                ValueOrLocation::Value(value) => Instruction::ReturnValue {
+                ValueOrLocation::Value(_) => Instruction::ReturnValue {
                     value: CopyableValue::disassemble(
-                        value.assemble(assembler).as_slice(),
+                        value.assemble(compiled, assembler).as_slice(),
                         assembler,
                     ),
                 }
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             },
         }
     }
 }
 
-impl<T> Assemble<T> for ValueOrLocation<IrTypedValue>
+impl<T> Assemble<T> for Typed<ValueOrLocation<IrValue>>
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
-        match self {
-            Self::Value(value) => value.assemble(assembler),
-            Self::At(location) => location.assemble(assembler),
+        match self.kind() {
+            ValueOrLocation::Value(value) => {
+                (value, self.type_index()).assemble(compiled, assembler)
+            }
+            ValueOrLocation::At(location) => {
+                (*location, self.type_index()).assemble(compiled, assembler)
+            }
         }
     }
 }
 
-impl<T> Assemble<T> for Location
+impl<T> Assemble<T> for (Location, TypeIndex)
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
-        match self {
-            Self::Register(index) => index.assemble(assembler),
+        match self.0 {
+            Location::Register(index) => index.assemble(compiled, assembler),
         }
     }
 }
 
-impl<T> Assemble<T> for IrTypedValue
+impl<T> Assemble<T> for (&IrValue, TypeIndex)
 where
     T: Instructive,
 {
     #[allow(clippy::too_many_lines)]
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
-        match self.value() {
+        match self.0 {
             IrValue::Never => {
                 vec![u8::from(Instruction::Never)]
             }
@@ -1567,7 +1736,7 @@ where
                 );
 
                 for value in values {
-                    bytes.extend(value.assemble(assembler));
+                    bytes.extend(value.assemble(compiled, assembler));
                 }
 
                 bytes
@@ -1584,7 +1753,7 @@ where
                 );
 
                 for value in fields {
-                    bytes.extend(value.assemble(assembler));
+                    bytes.extend(value.assemble(compiled, assembler));
                 }
 
                 bytes
@@ -1616,7 +1785,7 @@ macro_rules! we_make_numbers_here {
         where
             T: $crate::targets::vm::Instructive,
         {
-            fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+            fn assemble(&self, _: &$crate::CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
                 *assembler.ip_mut() = 0;
 
                 self.to_le_bytes().to_vec()
@@ -1666,7 +1835,7 @@ impl<T> Assemble<T> for bool
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, _: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         u8::from(*self).to_le_bytes().to_vec()
@@ -1700,7 +1869,7 @@ impl<T> Assemble<T> for String
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, _: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         let mut bytes = u64::try_from(self.len())
@@ -1744,14 +1913,18 @@ impl<T> Assemble<T> for Register
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         let register = u16::from(*self);
 
         let register = register.to_le_bytes();
 
-        [Instruction::Register.assemble(assembler), register.to_vec()].concat()
+        [
+            Instruction::Register.assemble(compiled, assembler),
+            register.to_vec(),
+        ]
+        .concat()
     }
 }
 
@@ -1771,10 +1944,12 @@ impl<T> Assemble<T> for Box<FnLabel>
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         [
-            self.file_name().to_string().assemble(assembler),
-            self.function_label().to_string().assemble(assembler),
+            self.file_name().to_string().assemble(compiled, assembler),
+            self.function_label()
+                .to_string()
+                .assemble(compiled, assembler),
         ]
         .concat()
     }
@@ -1796,79 +1971,79 @@ impl<T> Assemble<T> for CopyableValue
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         match self {
-            Self::Never => Instruction::Never.assemble(assembler),
+            Self::Never => Instruction::Never.assemble(compiled, assembler),
             Self::U8(value) => [
-                Instruction::U8.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::U8.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::I8(value) => [
-                Instruction::I8.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::I8.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::U16(value) => [
-                Instruction::U16.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::U16.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::I16(value) => [
-                Instruction::I16.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::I16.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::U32(value) => [
-                Instruction::U32.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::U32.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::I32(value) => [
-                Instruction::I32.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::I32.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::U64(value) => [
-                Instruction::U64.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::U64.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::I64(value) => [
-                Instruction::I64.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::I64.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::F32(value) => [
-                Instruction::F32.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::F32.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::F64(value) => [
-                Instruction::F64.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::F64.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
             Self::Boolean(value) => [
-                Instruction::Boolean.assemble(assembler),
-                value.assemble(assembler),
+                Instruction::Boolean.assemble(compiled, assembler),
+                value.assemble(compiled, assembler),
             ]
             .concat(),
-            Self::Unit => Instruction::Unit.assemble(assembler),
+            Self::Unit => Instruction::Unit.assemble(compiled, assembler),
             Self::Fn {
                 address,
                 max_register_count,
             } => [
-                Instruction::Fn.assemble(assembler),
-                address.assemble(assembler),
-                max_register_count.assemble(assembler),
+                Instruction::Fn.assemble(compiled, assembler),
+                address.assemble(compiled, assembler),
+                max_register_count.assemble(compiled, assembler),
             ]
             .concat(),
             Self::NativeFn(native_fn) => [
-                Instruction::NativeFn.assemble(assembler),
-                u32::from(*native_fn).assemble(assembler),
+                Instruction::NativeFn.assemble(compiled, assembler),
+                u32::from(*native_fn).assemble(compiled, assembler),
             ]
             .concat(),
             Self::ValueIndex(value_index) => assembler
@@ -1878,10 +2053,10 @@ where
                 .unwrap_or_else(|| {
                     panic!("tried to assemble a value that doesn't exist {value_index:?}")
                 })
-                .assemble(assembler),
+                .assemble(compiled, assembler),
             Self::Register(index) => [
-                Instruction::Register.assemble(assembler),
-                index.assemble(assembler),
+                Instruction::Register.assemble(compiled, assembler),
+                index.assemble(compiled, assembler),
             ]
             .concat(),
         }
@@ -2006,12 +2181,12 @@ impl<T> Assemble<T> for Value
 where
     T: Instructive,
 {
-    fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
         *assembler.ip_mut() = 0;
 
         match self {
             Self::Compound(values) => {
-                let mut bytes = Instruction::Compound.assemble(assembler);
+                let mut bytes = Instruction::Compound.assemble(compiled, assembler);
 
                 bytes.extend(
                     u16::try_from(values.len())
@@ -2020,7 +2195,7 @@ where
                 );
 
                 for value in values {
-                    bytes.extend(value.assemble(assembler));
+                    bytes.extend(value.assemble(compiled, assembler));
                 }
 
                 bytes
@@ -2029,7 +2204,7 @@ where
                 tag,
                 fields: values,
             } => {
-                let mut bytes = Instruction::TaggedCompound.assemble(assembler);
+                let mut bytes = Instruction::TaggedCompound.assemble(compiled, assembler);
 
                 bytes.extend(tag.to_le_bytes());
 
@@ -2040,13 +2215,13 @@ where
                 );
 
                 for value in values {
-                    bytes.extend(value.assemble(assembler));
+                    bytes.extend(value.assemble(compiled, assembler));
                 }
 
                 bytes
             }
             Self::String(value) => {
-                let mut bytes = Instruction::String.assemble(assembler);
+                let mut bytes = Instruction::String.assemble(compiled, assembler);
 
                 bytes.extend(
                     u64::try_from(value.len())
@@ -2059,7 +2234,7 @@ where
                 bytes
             }
             Self::Vec(values) => {
-                let mut bytes = Instruction::Vec.assemble(assembler);
+                let mut bytes = Instruction::Vec.assemble(compiled, assembler);
 
                 bytes.extend(
                     u64::try_from(values.len())
@@ -2068,7 +2243,7 @@ where
                 );
 
                 for value in values {
-                    bytes.extend(value.assemble(assembler));
+                    bytes.extend(value.assemble(compiled, assembler));
                 }
 
                 bytes
@@ -2091,17 +2266,17 @@ macro_rules! instruction {
         where
             T: $crate::targets::vm::Instructive,
         {
-            fn assemble(&self, assembler: &mut T) -> Vec<u8> {
+            fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
                 *assembler.ip_mut() = 0;
 
                 match self {
                     $(
                         Self::$name $({ $operand $(, $operands)* })? => {
                             $(
-                                let $operand = <$operand_ty as $crate::targets::vm::Assemble<T>>::assemble($operand, assembler);
+                                let $operand = <$operand_ty as $crate::targets::vm::Assemble<T>>::assemble($operand, compiled, assembler);
 
                                 $(
-                                    let $operands = <$operands_ty as $crate::targets::vm::Assemble<T>>::assemble($operands, assembler);
+                                    let $operands = <$operands_ty as $crate::targets::vm::Assemble<T>>::assemble($operands, compiled, assembler);
                                 )*
                             )?
 

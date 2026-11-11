@@ -458,30 +458,6 @@ fn fold_binary(
             (BinaryOp::Multiply, Value::I64(lhs), Value::I64(rhs)) => {
                 *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_mul lhs rhs) => I64, type_i64);
             }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::U8(lhs), Value::U8(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => U8, type_u8);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::I8(lhs), Value::I8(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => I8, type_i8);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::U16(lhs), Value::U16(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => U16, type_u16);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::I16(lhs), Value::I16(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => I16, type_i16);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::U32(lhs), Value::U32(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => U32, type_u32);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::I32(lhs), Value::I32(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => I32, type_i32);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::U64(lhs), Value::U64(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => U64, type_u64);
-            }
-            (BinaryOp::Divide | BinaryOp::IntegerDivide, Value::I64(lhs), Value::I64(rhs)) => {
-                *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_div lhs rhs) => I64, type_i64);
-            }
             (BinaryOp::Remainder, Value::U8(lhs), Value::U8(rhs)) => {
                 *changed |= fold_binary_op!(types, instruction, block_index, i ; (checked_rem lhs rhs) => U8, type_u8);
             }
@@ -898,7 +874,6 @@ fn fold_binary(
                 BinaryOp::PathAccess
                 | BinaryOp::Access
                 | BinaryOp::Multiply
-                | BinaryOp::IntegerDivide
                 | BinaryOp::Divide
                 | BinaryOp::Remainder
                 | BinaryOp::Add

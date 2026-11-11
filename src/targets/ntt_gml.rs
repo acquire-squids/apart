@@ -3,8 +3,9 @@ use crate::{
     basic_blocks::BlockIndex,
     low_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Location, NativeFn, Register,
-        TypedValue as IrTypedValue, UnaryOp, Value as IrValue, ValueOrLocation,
+        Typed as IrTyped, UnaryOp, Value as IrValue, ValueOrLocation,
     },
+    type_check::{Primitive, Type},
 };
 
 use std::{collections::HashSet, path::PathBuf};
@@ -414,7 +415,6 @@ fn compile_block(
                                 )
                             }
                             BinaryOp::Multiply
-                            | BinaryOp::IntegerDivide
                             | BinaryOp::Divide
                             | BinaryOp::Remainder
                             | BinaryOp::Add
@@ -436,8 +436,80 @@ fn compile_block(
                                 ),
                                 match op {
                                     BinaryOp::Multiply => "*",
-                                    BinaryOp::IntegerDivide => "div",
-                                    BinaryOp::Divide => "/",
+                                    BinaryOp::Divide => match (
+                                        &compiled.result().types()[lhs.type_index()],
+                                        &compiled.result().types()[rhs.type_index()]
+                                    ) {
+                                        (
+                                            Type::Primitive { primitive: lhs, .. },
+                                            Type::Primitive { primitive: rhs, .. },
+                                        ) => match (lhs.kind(), rhs.kind()) {
+                                            (Primitive::U8, Primitive::U8)
+                                            | (Primitive::I8, Primitive::I8)
+                                            | (Primitive::U16, Primitive::U16)
+                                            | (Primitive::I16, Primitive::I16)
+                                            | (Primitive::U32, Primitive::U32)
+                                            | (Primitive::I32, Primitive::I32)
+                                            | (Primitive::U64, Primitive::U64)
+                                            | (Primitive::I64, Primitive::I64) => "div",
+                                            (
+                                                Primitive::U8
+                                                | Primitive::I8
+                                                | Primitive::U16
+                                                | Primitive::I16
+                                                | Primitive::U32
+                                                | Primitive::I32
+                                                | Primitive::U64
+                                                | Primitive::I64
+                                                | Primitive::F32
+                                                | Primitive::F64
+                                                | Primitive::Boolean
+                                                | Primitive::Unit
+                                                | Primitive::String
+                                                | Primitive::Never
+                                                | Primitive::Vec,
+                                                Primitive::U8
+                                                | Primitive::I8
+                                                | Primitive::U16
+                                                | Primitive::I16
+                                                | Primitive::U32
+                                                | Primitive::I32
+                                                | Primitive::U64
+                                                | Primitive::I64
+                                                | Primitive::F32
+                                                | Primitive::F64
+                                                | Primitive::Boolean
+                                                | Primitive::Unit
+                                                | Primitive::String
+                                                | Primitive::Never
+                                                | Primitive::Vec,
+                                            ) => "/",
+                                        },
+                                        (
+                                            Type::Primitive { .. }
+                                            | Type::Integer(_)
+                                            | Type::NegativeInteger(_)
+                                            | Type::Float(_)
+                                            | Type::Error
+                                            | Type::Fn { .. }
+                                            | Type::Existential(_)
+                                            | Type::Generic(_)
+                                            | Type::Product { .. }
+                                            | Type::Sum { .. }
+                                            | Type::Associations(_),
+                                            Type::Primitive { .. }
+                                            | Type::Integer(_)
+                                            | Type::NegativeInteger(_)
+                                            | Type::Float(_)
+                                            | Type::Error
+                                            | Type::Fn { .. }
+                                            | Type::Existential(_)
+                                            | Type::Generic(_)
+                                            | Type::Product { .. }
+                                            | Type::Sum { .. }
+                                            | Type::Associations(_),
+                                        ) => "/",
+                                    },
                                     BinaryOp::Remainder => "%",
                                     BinaryOp::Add => "+",
                                     BinaryOp::Subtract => "-",
@@ -662,14 +734,14 @@ fn compile_value(
     options: &ApartOptions,
     compiled: &CompileSuccess<'_>,
     mangled_prefix: &str,
-    value: &ValueOrLocation<IrTypedValue>,
+    value: &IrTyped<ValueOrLocation<IrValue>>,
     seen_native_functions: &mut HashSet<NativeFn>,
 ) -> String {
     let ir = &compiled.result().ir();
 
-    match value {
+    match value.kind() {
         ValueOrLocation::At(location) => compile_location(mangled_prefix, *location),
-        ValueOrLocation::Value(value) => match value.value() {
+        ValueOrLocation::Value(value) => match value {
             IrValue::Never => "null".to_string(),
             IrValue::U8(value) => value.to_string(),
             IrValue::I8(value) => value.to_string(),
@@ -802,10 +874,10 @@ fn compile_value(
     }
 }
 
-fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &ValueOrLocation<IrTypedValue>) {
-    match value {
-        ValueOrLocation::At(Location::Register(_)) => {}
-        ValueOrLocation::Value(value) => match value.value() {
+fn find_functions(block_data: &mut HashSet<BlockIndex>, value: &IrTyped<ValueOrLocation<IrValue>>) {
+    match value.kind() {
+        ValueOrLocation::At(_) => {}
+        ValueOrLocation::Value(value) => match value {
             IrValue::Never
             | IrValue::U8(_)
             | IrValue::I8(_)

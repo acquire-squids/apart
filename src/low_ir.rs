@@ -5,13 +5,13 @@ use crate::{
     },
     parse::{BinaryOp as AstBinaryOp, UnaryOp as AstUnaryOp},
     ssa::{Block as IrBlock, BlockTerminator, Ssa},
-    type_check::TypeIndex,
+    type_check::{TypeChecker, TypeIndex},
 };
 
 use std::fmt;
 
 #[must_use]
-pub fn lower(_: &ApartOptions, compiled: &Compiled<'_, Ssa>) -> Ir<TypedValue> {
+pub fn lower(_: &ApartOptions, _: &TypeChecker, compiled: &Compiled<'_, Ssa>) -> Ir<Value> {
     let blocks = compiled
         .result()
         .blocks()
@@ -175,26 +175,25 @@ crate::int_enum! {
     NotEqual => 0x0A,
     And => 0x0B,
     Or => 0x0C,
-    IntegerDivide => 0x0D,
 }
 
 #[derive(Debug)]
-pub struct TypedValue {
-    value: Value,
+pub struct Typed<T> {
+    kind: T,
     type_index: TypeIndex,
 }
 
-impl TypedValue {
+impl<T> Typed<T> {
     #[allow(dead_code)]
     #[must_use]
-    pub const fn value(&self) -> &Value {
-        &self.value
+    pub const fn kind(&self) -> &T {
+        &self.kind
     }
 
     #[allow(dead_code)]
     #[must_use]
-    pub const fn value_mut(&mut self) -> &mut Value {
-        &mut self.value
+    pub const fn kind_mut(&mut self) -> &mut T {
+        &mut self.kind
     }
 
     #[allow(dead_code)]
@@ -225,14 +224,14 @@ pub enum Value {
         max_register_count: u16,
     },
     NativeFn(NativeFn),
-    Compound(Box<[ValueOrLocation<TypedValue>]>),
+    Compound(Box<[Typed<ValueOrLocation<Self>>]>),
     TaggedCompound {
-        fields: Box<[ValueOrLocation<TypedValue>]>,
+        fields: Box<[Typed<ValueOrLocation<Self>>]>,
         tag: u16,
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub enum ValueOrLocation<T> {
     Value(T),
     At(Location),
@@ -282,53 +281,53 @@ pub enum Instruction<T> {
     Panic,
     Unary {
         op: UnaryOp,
-        operand: ValueOrLocation<T>,
+        operand: Typed<ValueOrLocation<T>>,
         to: Location,
     },
     Binary {
         op: BinaryOp,
-        lhs: ValueOrLocation<T>,
-        rhs: ValueOrLocation<T>,
+        lhs: Typed<ValueOrLocation<T>>,
+        rhs: Typed<ValueOrLocation<T>>,
         to: Location,
     },
     Assign {
         to: Location,
-        value: ValueOrLocation<T>,
+        value: Typed<ValueOrLocation<T>>,
     },
-    Push(ValueOrLocation<T>),
+    Push(Typed<ValueOrLocation<T>>),
     Access {
         index: u8,
-        of: ValueOrLocation<T>,
+        of: Typed<ValueOrLocation<T>>,
         to: Location,
     },
     AccessAssign {
         index: u8,
-        of: ValueOrLocation<T>,
-        value: ValueOrLocation<T>,
+        of: Typed<ValueOrLocation<T>>,
+        value: Typed<ValueOrLocation<T>>,
     },
     Call {
-        callee: ValueOrLocation<T>,
+        callee: Typed<ValueOrLocation<T>>,
         arity: u8,
         to: Location,
     },
     GetTag {
-        of: ValueOrLocation<T>,
+        of: Typed<ValueOrLocation<T>>,
         to: Location,
     },
     Jump(BlockIndex),
     Branch {
-        condition: ValueOrLocation<T>,
+        condition: Typed<ValueOrLocation<T>>,
         when_true: BlockIndex,
         otherwise: BlockIndex,
     },
-    Return(ValueOrLocation<T>),
+    Return(Typed<ValueOrLocation<T>>),
 }
 
 #[must_use]
 fn lower_block_terminator(
     compiled: &Compiled<'_, Ssa>,
     block_terminator: &BlockTerminator,
-) -> Instruction<TypedValue> {
+) -> Instruction<Value> {
     match block_terminator {
         BlockTerminator::Return(value) => Instruction::Return(lower_value(compiled, value)),
         BlockTerminator::Jump(jump_to) => Instruction::Jump(*jump_to),
@@ -348,7 +347,7 @@ fn lower_block_terminator(
 fn lower_instruction(
     compiled: &Compiled<'_, Ssa>,
     instruction: &IrInstruction,
-) -> Instruction<TypedValue> {
+) -> Instruction<Value> {
     match instruction {
         IrInstruction::NoOp => Instruction::NoOp,
         IrInstruction::Panic => Instruction::Panic,
@@ -383,7 +382,6 @@ fn lower_instruction(
                 }
                 AstBinaryOp::Multiply => BinaryOp::Multiply,
                 AstBinaryOp::Divide => BinaryOp::Divide,
-                AstBinaryOp::IntegerDivide => BinaryOp::IntegerDivide,
                 AstBinaryOp::Remainder => BinaryOp::Remainder,
                 AstBinaryOp::Add => BinaryOp::Add,
                 AstBinaryOp::Subtract => BinaryOp::Subtract,
@@ -436,11 +434,14 @@ fn lower_instruction(
 }
 
 #[must_use]
-fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrTypedValue) -> ValueOrLocation<TypedValue> {
+fn lower_value(
+    compiled: &Compiled<'_, Ssa>,
+    value: &IrTypedValue,
+) -> Typed<ValueOrLocation<Value>> {
     let type_index = value.type_index();
 
-    ValueOrLocation::Value(TypedValue {
-        value: match value.value() {
+    Typed {
+        kind: ValueOrLocation::Value(match value.value() {
             IrValue::CallArgument(_) | IrValue::Address(_) => {
                 unreachable!("these are eliminated by register allocation {value:?}")
             }
@@ -492,7 +493,10 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrTypedValue) -> ValueOrLoc
                 _ => unreachable!("unknown native function: {label}"),
             }),
             IrValue::Register(_) => {
-                return ValueOrLocation::At(lower_value_to_location(value.value()));
+                return Typed {
+                    kind: ValueOrLocation::At(lower_value_to_location(value.value())),
+                    type_index: value.type_index(),
+                };
             }
             IrValue::Compound(fields) => Value::Compound(
                 fields
@@ -509,9 +513,9 @@ fn lower_value(compiled: &Compiled<'_, Ssa>, value: &IrTypedValue) -> ValueOrLoc
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
             },
-        },
+        }),
         type_index,
-    })
+    }
 }
 
 #[must_use]

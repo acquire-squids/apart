@@ -1282,17 +1282,7 @@ impl Translator<'_> {
 
         self.push_instruction(Instruction::Binary {
             // TODO: this injection of integer division feels hacky.  improve it later
-            op: if
-                matches!(op, BinaryOp::Divide)
-                && (
-                    matches!(types[types[ir[expr].span()]], Type::Integer(_) | Type::NegativeInteger(_))
-                    || matches!(&types[types[ir[expr].span()]], Type::Primitive { primitive, .. } if matches!(primitive.kind(), Primitive::U8 | Primitive::I8 | Primitive::U16 | Primitive::I16 | Primitive::U32 | Primitive::I32 | Primitive::U64 | Primitive::I64))
-                )
-            {
-                BinaryOp::IntegerDivide
-            } else {
-                op
-            },
+            op,
             lhs,
             rhs,
             temporary: Value::Address(address),
