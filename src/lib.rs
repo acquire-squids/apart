@@ -43,6 +43,7 @@ pub enum Target {
 
 #[derive(Debug, Clone)]
 pub struct ApartOptions {
+    pub debug_print_filter: String,
     pub output: String,
     pub optimize: bool,
     pub print_blocks: PrintBlocks,
@@ -154,6 +155,10 @@ impl Reportable for Error {}
 
 pub type CompileSuccess<'a> = Compiled<'a, CompileSuccessResult>;
 pub type CompileFailure<'a> = Compiled<'a, Vec<Spanned<Error>>>;
+
+pub trait DebugPrint {
+    fn debug_print(&self, filter: &str);
+}
 
 /// # Errors
 /// Will error if compilation fails, returning the errors for the relevant stage
@@ -298,14 +303,16 @@ pub fn compile<'a>(
         };
 
     if matches!(options.print_blocks, PrintBlocks::Yes) {
-        print!("{basic_blocks}");
+        basic_blocks.debug_print(options.debug_print_filter.as_str());
+
         println!("---------");
     }
 
     let mut ssa = ssa::convert(options, &types, &basic_blocks);
 
     if matches!(options.print_ssa, PrintSsa::Yes) {
-        print!("{ssa}");
+        ssa.debug_print(options.debug_print_filter.as_str());
+
         println!("---------");
     }
 
@@ -314,7 +321,8 @@ pub fn compile<'a>(
     }
 
     if matches!(options.print_optimized, PrintOptimized::Yes) {
-        print!("{ssa}");
+        ssa.debug_print(options.debug_print_filter.as_str());
+
         println!("---------");
     }
 
@@ -344,7 +352,8 @@ pub fn compile<'a>(
     }
 
     if matches!(options.print_allocated, PrintAllocated::Yes) {
-        print!("{ssa}");
+        ssa.debug_print(options.debug_print_filter.as_str());
+
         println!("---------");
     }
 
@@ -356,7 +365,8 @@ pub fn compile<'a>(
     let low_ir = low_ir::lower(options, &types, &compiled);
 
     if matches!(options.print_lowir, PrintLowIr::Yes) {
-        print!("{low_ir}");
+        low_ir.debug_print(options.debug_print_filter.as_str());
+
         println!("---------");
     }
 
@@ -375,6 +385,7 @@ macro_rules! __test_vm_output_single_function {
         #[test]
         fn $test_name() {
             let options = $crate::ApartOptions {
+                debug_print_filter: String::new(),
                 output: String::new(),
                 optimize: $optimized,
                 print_blocks: $crate::PrintBlocks::No,
@@ -487,6 +498,7 @@ macro_rules! __test_compilation_errors {
             fn compilation_error() {
                 let result = $crate::compile(
                     &$crate::ApartOptions {
+                        debug_print_filter: String::new(),
                         output: String::new(),
                         optimize: false,
                         print_blocks: $crate::PrintBlocks::No,

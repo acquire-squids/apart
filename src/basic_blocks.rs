@@ -1,5 +1,5 @@
 use crate::{
-    ApartOptions, Span, Spanned,
+    ApartOptions, DebugPrint, Span, Spanned,
     high_ir::{
         BinaryOp, Expr, ExprIndex, Ir, Item, ItemIndex, MatchCase, PathElement, Pattern, Resolved,
         UnaryOp,
@@ -95,14 +95,66 @@ pub struct Block {
     terminator: Option<BlockTerminator>,
 }
 
-impl fmt::Display for BasicBlocks {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (b, block) in self.blocks().iter().enumerate() {
-            writeln!(f, "{b}:")?;
-            write!(f, "{block}")?;
-        }
+impl DebugPrint for BasicBlocks {
+    fn debug_print(&self, filter: &str) {
+        print!("---{}", std::any::type_name::<Self>());
 
-        Ok(())
+        if filter.is_empty() {
+            println!("---");
+
+            for (b, block) in self.blocks().iter().enumerate() {
+                println!("{b}:");
+                print!("{block}");
+            }
+        } else {
+            println!(" (with filter {filter:?})---");
+
+            let mut to_print = vec![];
+            let mut explore = vec![];
+
+            for (b, _) in self.blocks().iter().enumerate().filter(|(_, block)| {
+                matches!(
+                    block.instructions()
+                        .first(),
+                    Some(Instruction::FnLabel { function_label, .. })
+                        if function_label.starts_with(filter)
+                )
+            }) {
+                explore.push(b);
+            }
+
+            while let Some(block_index) = explore.pop() {
+                if !to_print.contains(&block_index) {
+                    to_print.push(block_index);
+
+                    match self.blocks().get(block_index).map(Block::terminator) {
+                        Some(BlockTerminator::Jump(destination)) => {
+                            explore.push(usize::from(*destination));
+                        }
+                        Some(BlockTerminator::Branch {
+                            when_true,
+                            otherwise,
+                            ..
+                        }) => {
+                            explore.push(usize::from(*when_true));
+                            explore.push(usize::from(*otherwise));
+                        }
+                        Some(BlockTerminator::Return(_)) | None => {}
+                    }
+                }
+            }
+
+            to_print.sort_unstable();
+
+            for (b, block) in to_print.iter().filter_map(|block_index| {
+                self.blocks()
+                    .get(*block_index)
+                    .map(|block| (*block_index, block))
+            }) {
+                println!("{b}:");
+                print!("{block}");
+            }
+        }
     }
 }
 

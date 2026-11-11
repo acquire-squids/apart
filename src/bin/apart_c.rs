@@ -226,6 +226,9 @@ Description:
 
         run with --list-ir-stages to see valid IR stages
 
+    --debug-print-filter FILTER
+        filter printed debug representations to only show functions whose path start with FILTER
+
     -r, --run
         also compile to bytecode and run the bytecode directly, without outputting to a file
 
@@ -260,6 +263,7 @@ const IR_STAGES: &str = concat!(
 #[allow(clippy::too_many_lines)]
 fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
     let mut options = ApartOptions {
+        debug_print_filter: String::new(),
         output: "main".to_string(),
         optimize: false,
         print_blocks: apart::PrintBlocks::No,
@@ -274,6 +278,17 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
 
     while let Some(argument) = arguments.peek() {
         match argument.as_str() {
+            "--debug-print-filter" => {
+                arguments.next();
+
+                if let Some(debug_print_filter) = arguments.next() {
+                    options.debug_print_filter = debug_print_filter;
+                } else {
+                    eprintln!("expected a filter to apply to debug printing");
+
+                    return Err(ExitCode::FAILURE);
+                }
+            }
             "--debug-print" => {
                 arguments.next();
 

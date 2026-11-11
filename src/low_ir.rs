@@ -1,5 +1,5 @@
 use crate::{
-    ApartOptions, Compiled,
+    ApartOptions, Compiled, DebugPrint,
     basic_blocks::{
         BlockIndex, Instruction as IrInstruction, TypedValue as IrTypedValue, Value as IrValue,
     },
@@ -98,18 +98,87 @@ impl<T> Block<T> {
     }
 }
 
-impl<T> fmt::Display for Ir<T>
+impl<T> DebugPrint for Ir<T>
 where
     T: fmt::Debug,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (b, block) in self.blocks().iter().enumerate() {
-            writeln!(f, "{b}:")?;
+    fn debug_print(&self, filter: &str) {
+        print!("---{}", std::any::type_name::<Self>());
 
-            write!(f, "{block}")?;
+        if filter.is_empty() {
+            println!("---");
+
+            for (b, block) in self.blocks().iter().enumerate() {
+                println!("{b}:");
+                print!("{block}");
+            }
+        } else {
+            println!(" (with filter {filter:?})---");
+
+            let mut to_print = vec![];
+            let mut explore = vec![];
+
+            for (b, _) in self.blocks().iter().enumerate().filter(|(_, block)| {
+                matches!(
+                    block.instructions()
+                        .first(),
+                    Some(Instruction::FnLabel(function_label))
+                        if function_label.function_label().starts_with(filter)
+                )
+            }) {
+                explore.push(b);
+            }
+
+            while let Some(block_index) = explore.pop() {
+                if !to_print.contains(&block_index) {
+                    to_print.push(block_index);
+
+                    match self
+                        .blocks()
+                        .get(block_index)
+                        .and_then(|block| block.instructions().last())
+                    {
+                        Some(Instruction::Jump(destination)) => {
+                            explore.push(usize::from(*destination));
+                        }
+                        Some(Instruction::Branch {
+                            when_true,
+                            otherwise,
+                            ..
+                        }) => {
+                            explore.push(usize::from(*when_true));
+                            explore.push(usize::from(*otherwise));
+                        }
+                        Some(
+                            Instruction::FnLabel(_)
+                            | Instruction::NoOp
+                            | Instruction::Panic
+                            | Instruction::Unary { .. }
+                            | Instruction::Binary { .. }
+                            | Instruction::Assign { .. }
+                            | Instruction::Push(_)
+                            | Instruction::Access { .. }
+                            | Instruction::AccessAssign { .. }
+                            | Instruction::Call { .. }
+                            | Instruction::GetTag { .. }
+                            | Instruction::Return(_),
+                        )
+                        | None => {}
+                    }
+                }
+            }
+
+            to_print.sort_unstable();
+
+            for (b, block) in to_print.iter().filter_map(|block_index| {
+                self.blocks()
+                    .get(*block_index)
+                    .map(|block| (*block_index, block))
+            }) {
+                println!("{b}:");
+                print!("{block}");
+            }
         }
-
-        Ok(())
     }
 }
 
