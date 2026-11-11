@@ -18,11 +18,6 @@ lto = true
 reporting = { path = "./reporting" }
 
 [features]
-print_blocks = []
-print_ssa = []
-print_optimized = []
-print_allocated = []
-print_lowir = []
 stress_gc = []
 step = []
 

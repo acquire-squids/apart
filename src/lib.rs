@@ -45,9 +45,44 @@ pub enum Target {
 pub struct ApartOptions {
     pub output: String,
     pub optimize: bool,
+    pub print_blocks: PrintBlocks,
+    pub print_ssa: PrintSsa,
+    pub print_optimized: PrintOptimized,
+    pub print_allocated: PrintAllocated,
+    pub print_lowir: PrintLowIr,
     pub run: bool,
     pub strip_debug_info: bool,
     pub target: Target,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintBlocks {
+    No,
+    Yes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintSsa {
+    No,
+    Yes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintOptimized {
+    No,
+    Yes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintAllocated {
+    No,
+    Yes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrintLowIr {
+    No,
+    Yes,
 }
 
 pub struct Compiled<'a, T> {
@@ -262,22 +297,25 @@ pub fn compile<'a>(
             }
         };
 
-    if cfg!(feature = "print_blocks") {
+    if matches!(options.print_blocks, PrintBlocks::Yes) {
         print!("{basic_blocks}");
+        println!("---------");
     }
 
     let mut ssa = ssa::convert(options, &types, &basic_blocks);
 
-    if cfg!(feature = "print_ssa") {
+    if matches!(options.print_ssa, PrintSsa::Yes) {
         print!("{ssa}");
+        println!("---------");
     }
 
     if options.optimize {
         optimize::optimize(options, &types, &mut ssa);
+    }
 
-        if cfg!(feature = "print_optimized") {
-            print!("{ssa}");
-        }
+    if matches!(options.print_optimized, PrintOptimized::Yes) {
+        print!("{ssa}");
+        println!("---------");
     }
 
     if let Err(errors) = allocate_registers::allocate(options, &mut ssa) {
@@ -305,8 +343,9 @@ pub fn compile<'a>(
         });
     }
 
-    if cfg!(feature = "print_allocated") {
+    if matches!(options.print_allocated, PrintAllocated::Yes) {
         print!("{ssa}");
+        println!("---------");
     }
 
     let compiled = Compiled {
@@ -316,8 +355,9 @@ pub fn compile<'a>(
 
     let low_ir = low_ir::lower(options, &types, &compiled);
 
-    if cfg!(feature = "print_lowir") {
+    if matches!(options.print_lowir, PrintLowIr::Yes) {
         print!("{low_ir}");
+        println!("---------");
     }
 
     Ok(Compiled {
@@ -337,6 +377,11 @@ macro_rules! __test_vm_output_single_function {
             let options = $crate::ApartOptions {
                 output: String::new(),
                 optimize: $optimized,
+                print_blocks: $crate::PrintBlocks::No,
+                print_ssa: $crate::PrintSsa::No,
+                print_optimized: $crate::PrintOptimized::No,
+                print_allocated: $crate::PrintAllocated::No,
+                print_lowir: $crate::PrintLowIr::No,
                 run: true,
                 strip_debug_info: true,
                 target: $crate::Target::Vm,
@@ -444,6 +489,11 @@ macro_rules! __test_compilation_errors {
                     &$crate::ApartOptions {
                         output: String::new(),
                         optimize: false,
+                        print_blocks: $crate::PrintBlocks::No,
+                        print_ssa: $crate::PrintSsa::No,
+                        print_optimized: $crate::PrintOptimized::No,
+                        print_allocated: $crate::PrintAllocated::No,
+                        print_lowir: $crate::PrintLowIr::No,
                         run: true,
                         strip_debug_info: true,
                         target: $crate::Target::Vm,

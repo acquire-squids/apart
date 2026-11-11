@@ -192,6 +192,10 @@ fn print_targets() {
     eprintln!("{}", TARGETS.trim());
 }
 
+fn print_ir_stages() {
+    eprintln!("{}", IR_STAGES.trim());
+}
+
 const DESCRIPTION: &str = concat!(
     "Usage: ",
     env!("CARGO_BIN_NAME"),
@@ -203,6 +207,9 @@ Description:
     -h, --help
         view this text
 
+    --list-ir-stages
+        list all valid IR stages
+
     -l, --list-targets
         list all valid targets
 
@@ -211,6 +218,13 @@ Description:
 
     -O, --optimize
         perform optimizations during compilation
+
+    --debug-print IR_TYPES
+        print debug representations of an IR when compiling
+
+        IR_TYPES should be one or more stages of the IR, separated by spaces
+
+        run with --list-ir-stages to see valid IR stages
 
     -r, --run
         also compile to bytecode and run the bytecode directly, without outputting to a file
@@ -232,17 +246,76 @@ const TARGETS: &str = concat!(
 "
 );
 
+const IR_STAGES: &str = concat!(
+    "Valid ",
+    env!("CARGO_BIN_NAME"),
+    " IR stages:
+    blocks
+    ssa
+    optimized
+    allocated
+    lowir"
+);
+
+#[allow(clippy::too_many_lines)]
 fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptions, ExitCode> {
     let mut options = ApartOptions {
         output: "main".to_string(),
-        strip_debug_info: false,
         optimize: false,
-        target: Target::Vm,
+        print_blocks: apart::PrintBlocks::No,
+        print_ssa: apart::PrintSsa::No,
+        print_optimized: apart::PrintOptimized::No,
+        print_allocated: apart::PrintAllocated::No,
+        print_lowir: apart::PrintLowIr::No,
         run: false,
+        strip_debug_info: false,
+        target: Target::Vm,
     };
 
     while let Some(argument) = arguments.peek() {
         match argument.as_str() {
+            "--debug-print" => {
+                arguments.next();
+
+                if let Some(stages) = arguments.next() {
+                    for stage in stages.split_whitespace() {
+                        match stage {
+                            "blocks" => {
+                                options.print_blocks = apart::PrintBlocks::Yes;
+                            }
+                            "ssa" => {
+                                options.print_ssa = apart::PrintSsa::Yes;
+                            }
+                            "optimized" => {
+                                options.print_optimized = apart::PrintOptimized::Yes;
+                            }
+                            "allocated" => {
+                                options.print_allocated = apart::PrintAllocated::Yes;
+                            }
+                            "lowir" => {
+                                options.print_lowir = apart::PrintLowIr::Yes;
+                            }
+                            _ => {
+                                eprintln!(
+                                    "expected a list of space-separated IR stages to debug print"
+                                );
+
+                                eprintln!(
+                                    "run with \"--list-ir-stages\" to view a list of valid IR stages"
+                                );
+
+                                return Err(ExitCode::FAILURE);
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("expected a list of space-separated IR stages to debug print");
+
+                    eprintln!("run with \"--list-ir-stages\" to view a list of valid IR stages");
+
+                    return Err(ExitCode::FAILURE);
+                }
+            }
             "-h" | "--help" => {
                 print_usage();
 
@@ -250,6 +323,11 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
             }
             "-l" | "--list-targets" => {
                 print_targets();
+
+                return Err(ExitCode::SUCCESS);
+            }
+            "--list-ir-stages" => {
+                print_ir_stages();
 
                 return Err(ExitCode::SUCCESS);
             }
