@@ -1,0 +1,7 @@
+funky main() {
+	should_panic();
+}
+
+funky should_panic() -> String {
+	panic("failed successfully");
+}

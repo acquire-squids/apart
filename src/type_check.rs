@@ -3023,10 +3023,14 @@ impl TypeChecker {
                                 .expect("these spans are from the same source"),
                         ));
 
+                        self.type_map.insert(ir[expr].span(), self.type_error());
+
                         return self.type_error();
                     } else {
                         self.errors
                             .push(Spanned::new(Error::NonExistentMethod, ir[*method].span()));
+
+                        self.type_map.insert(ir[expr].span(), self.type_error());
 
                         return self.type_error();
                     }
@@ -3092,7 +3096,11 @@ impl TypeChecker {
             Expr::AsUnit(expr) => {
                 self.infer(sources, ir, *expr, context);
 
-                if let Expr::Return(_) = ir[*expr].kind() {
+                if matches!(
+                    &self[self[ir[*expr].resolved()]],
+                    Type::Primitive { primitive, .. }
+                        if matches!(primitive.kind(), Primitive::Never)
+                ) {
                     self.type_never()
                 } else {
                     self.type_unit()
@@ -4788,6 +4796,8 @@ impl TypeChecker {
                                 .push(Spanned::new(Error::NonExistentSumVariant, name_span));
                         }
 
+                        self.type_map.insert(pattern.span(), self.type_error());
+
                         return Err(self.type_error());
                     }
                 } else {
@@ -4799,6 +4809,8 @@ impl TypeChecker {
                     ) {
                         self.errors.push(Spanned::new(Error::NotASum, name_span));
                     }
+
+                    self.type_map.insert(pattern.span(), self.type_error());
 
                     return Err(self.type_error());
                 };

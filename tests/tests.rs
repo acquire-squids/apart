@@ -12,6 +12,15 @@ macro_rules! output_tests {
             apart::$test_macro!(and_and_or, "and_and_or.txt", Ok("true\n"));
 
             apart::$test_macro!(
+                as_unit_never,
+                "as_unit_never.txt",
+                Err((
+                    "failed successfully\nVM panicked\n",
+                    apart::vm::Interrupt::Panic
+                ))
+            );
+
+            apart::$test_macro!(
                 assign_to_fn_parameter,
                 "assign_to_fn_parameter.txt",
                 Ok("{}\n")
