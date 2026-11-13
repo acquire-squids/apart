@@ -14,7 +14,18 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+
     steps:
+      - name: Update toolchain
+        id: update_toolchain
+        run: |
+          rustup update ${{ matrix.toolchain }}
+          rustup default ${{ matrix.toolchain }}
+
       - uses: actions/checkout@v7
         with:
           submodules: 'recursive'
