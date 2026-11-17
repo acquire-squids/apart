@@ -16,10 +16,11 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
             BlockTerminator::Jump(destination) => {
                 let destination = *destination;
 
-                if block.instructions().is_empty()
+                if (block.instructions().is_empty()
                     || block.instructions().iter().all(|instruction| {
                         matches!(instruction, Instruction::NoOp | Instruction::FnLabel { .. })
-                    })
+                    }))
+                    && block_swaps[usize::from(destination)].is_none()
                 {
                     block_swaps[usize::from(destination)] = Some(BlockIndex(
                         u32::try_from(b).expect("this is verified fine by previous stages"),
