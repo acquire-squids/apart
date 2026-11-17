@@ -1,0 +1,9 @@
+funky main() {
+	print_unit(return_break_loop());
+}
+
+funky return_break_loop() {
+	"label" => while true {
+		break "label"
+	}
+}

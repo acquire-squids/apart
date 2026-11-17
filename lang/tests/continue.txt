@@ -1,0 +1,15 @@
+funky main() {
+	let
+		i = 0,
+	in {
+		while i < 3 {
+			i = i + 1;
+
+			if i % 2 == 0 {
+				continue;
+			}
+
+			print_u8(i);
+		}
+	};
+}

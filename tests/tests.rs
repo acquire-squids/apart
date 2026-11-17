@@ -26,6 +26,14 @@ macro_rules! output_tests {
                 Ok("{}\n")
             );
 
+            apart::$test_macro!(r#break, "break.txt", Ok("1\n2\n3\n"));
+
+            apart::$test_macro!(break_labeled, "break_labeled.txt", Ok("1\n2\n3\n"));
+
+            apart::$test_macro!(r#continue, "continue.txt", Ok("1\n3\n"));
+
+            apart::$test_macro!(continue_labeled, "continue_labeled.txt", Ok("21\n"));
+
             apart::$test_macro!(callee_is_access, "callee_is_access.txt", Ok("true\n"));
 
             apart::$test_macro!(callee_is_call, "callee_is_call.txt", Ok("true\n"));
@@ -45,6 +53,8 @@ macro_rules! output_tests {
             apart::$test_macro!(directive, "directive.txt", Ok("vm\n"));
 
             apart::$test_macro!(empty, "empty.txt", Ok(""));
+
+            apart::$test_macro!(empty_label, "empty_label.txt", Ok("1\n2\n3\n"));
 
             apart::$test_macro!(equality, "equality.txt", Ok("true\nfalse\ntrue\nfalse\n"));
 
@@ -210,6 +220,8 @@ macro_rules! output_tests {
                 ))
             );
 
+            apart::$test_macro!(return_break_loop, "return_break_loop.txt", Ok("{}\n"));
+
             apart::$test_macro!(root_path, "root_path.txt", Ok("97\n"));
 
             apart::$test_macro!(
@@ -365,6 +377,38 @@ mod compilation_error {
     );
 
     apart::test_compilation_errors!(
+        break_no_loop,
+        "break_no_loop.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::CannotBreak
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        cannot_label,
+        "cannot_label.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::CannotLabel
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        conflicting_label,
+        "conflicting_label.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::ConflictingLabel
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        continue_no_loop,
+        "continue_no_loop.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::CannotContinue
+        )]
+    );
+
+    apart::test_compilation_errors!(
         callee_is_access_error,
         "callee_is_access_error.txt",
         [apart::Error::TypeCheck(
@@ -496,6 +540,22 @@ mod compilation_error {
         "invalid_assign_target.txt",
         [apart::Error::NameResolve(
             apart::NameResolveError::InvalidAssignTarget
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        label_does_not_exist,
+        "label_does_not_exist.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::LabelDoesNotExist
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        label_is_not_string,
+        "label_is_not_string.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::LabelIsNotString
         )]
     );
 
@@ -679,6 +739,14 @@ mod compilation_error {
         "some_without_option.txt",
         [apart::Error::NameResolve(
             apart::NameResolveError::NameNotDeclared
+        )]
+    );
+
+    apart::test_compilation_errors!(
+        stacked_label,
+        "stacked_label.txt",
+        [apart::Error::NameResolve(
+            apart::NameResolveError::StackedLabel
         )]
     );
 

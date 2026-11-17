@@ -1,0 +1,15 @@
+funky main() {
+	let
+		i = 0,
+	in {
+		"outer" => while i < 5 {
+			i = i + 21;
+
+			print_u8(i);
+
+			"inner" => while true {
+				continue "outer";
+			}
+		}
+	};
+}

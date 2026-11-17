@@ -30,6 +30,7 @@ pub fn resolve_names(_: &ApartOptions, ast: &Ast) -> Result<Names, Vec<Spanned<E
             resolved: resolver.names,
             associations: resolver.associations,
             definitions: resolver.definitions,
+            labeled_jumps: resolver.labeled_jumps,
         })
     } else {
         Err(resolver.errors)
@@ -58,7 +59,17 @@ struct NameResolver {
     module_id: ModuleId,
     current_visibility: Vec<Visibility>,
     current_type: Vec<Span>,
+    labels: Vec<Label>,
+    labeled_jumps: HashMap<ExprIndex, LabelId>,
+    label_id: LabelId,
 }
+
+enum Label {
+    Loop { label: String, from: LabelId },
+    UnlabeledLoop(LabelId),
+}
+
+pub type LabelId = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
@@ -92,9 +103,17 @@ pub enum Error {
     OverlappingName,
     DuplicateAlias,
     RecursiveAlias,
+    LabelIsNotString,
+    CannotLabel,
+    StackedLabel,
+    ConflictingLabel,
+    LabelDoesNotExist,
+    CannotBreak,
+    CannotContinue,
 }
 
 impl fmt::Display for Error {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NameUsedInItsDeclaration => {
@@ -193,6 +212,22 @@ impl fmt::Display for Error {
             Self::OverlappingName => write!(f, "this name resolves to more than one definition"),
             Self::DuplicateAlias => write!(f, "this alias name is already in use in this scope"),
             Self::RecursiveAlias => write!(f, "this alias is infinitely recursive and not allowed"),
+            Self::LabelIsNotString => write!(f, "labels must be strings"),
+            Self::CannotLabel => write!(f, "only blocks and loops can be labeled"),
+            Self::StackedLabel => write!(f, "you cannot label a labeled expression"),
+            Self::ConflictingLabel => {
+                write!(f, "this label is within an expression with the same label")
+            }
+            Self::LabelDoesNotExist => {
+                write!(f, "this is not within an expression with this label")
+            }
+            Self::CannotBreak => write!(
+                f,
+                "\"break\" can only be used within loops, or within labeled blocks if a label follows the break"
+            ),
+            Self::CannotContinue => {
+                write!(f, "\"continue\" can only be used within loops")
+            }
         }
     }
 }
@@ -282,6 +317,7 @@ pub struct Names {
     resolved: ResolvedNames,
     associations: Associations,
     definitions: Definitions,
+    labeled_jumps: HashMap<ExprIndex, LabelId>,
 }
 
 impl Index<Span> for Names {
@@ -324,6 +360,12 @@ impl Names {
     pub fn take(self) -> (Associations, Definitions) {
         (self.associations, self.definitions)
     }
+
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn resolved_label(&self, expr: ExprIndex) -> Option<LabelId> {
+        self.labeled_jumps.get(&expr).copied()
+    }
 }
 
 impl NameResolver {
@@ -339,6 +381,9 @@ impl NameResolver {
             module_id: ROOT_MODULE_ID,
             current_visibility: vec![],
             current_type: vec![],
+            labels: vec![],
+            labeled_jumps: HashMap::new(),
+            label_id: 0,
         }
     }
 
@@ -1214,6 +1259,155 @@ impl NameResolver {
             Expr::Match { expr, .. } => {
                 self.resolve_expr(ast, *expr, resolved_path);
             }
+            Expr::Break => {
+                if let Some(from) = self
+                    .labels
+                    .iter()
+                    .rev()
+                    .map(|labeled| match labeled {
+                        Label::Loop { from, .. } | Label::UnlabeledLoop(from) => *from,
+                    })
+                    .next()
+                {
+                    self.labeled_jumps.insert(expr, from);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::CannotBreak, ast[expr].span()));
+                }
+            }
+            Expr::Continue => {
+                if let Some(from) = self
+                    .labels
+                    .iter()
+                    .rev()
+                    .map(|labeled| match labeled {
+                        Label::Loop { from, .. } | Label::UnlabeledLoop(from) => *from,
+                    })
+                    .next()
+                {
+                    self.labeled_jumps.insert(expr, from);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::CannotContinue, ast[expr].span()));
+                }
+            }
+            Expr::BreakLabeled(label) => {
+                if let Some(from) = self.labels.iter().rev().find_map(|labeled| match labeled {
+                    Label::Loop {
+                        from,
+                        label: labeled_label,
+                    } => {
+                        if labeled_label == label {
+                            Some(*from)
+                        } else {
+                            None
+                        }
+                    }
+                    Label::UnlabeledLoop(_) => None,
+                }) {
+                    self.labeled_jumps.insert(expr, from);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::LabelDoesNotExist, ast[expr].span()));
+                }
+            }
+            Expr::ContinueLabeled(label) => {
+                if let Some(from) = self.labels.iter().rev().find_map(|labeled| match labeled {
+                    Label::Loop {
+                        from,
+                        label: labeled_label,
+                    } => {
+                        if labeled_label == label {
+                            Some(*from)
+                        } else {
+                            None
+                        }
+                    }
+                    Label::UnlabeledLoop(_) => None,
+                }) {
+                    self.labeled_jumps.insert(expr, from);
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::LabelDoesNotExist, ast[expr].span()));
+                }
+            }
+            Expr::While { .. } => {
+                if !self.labeled_jumps.contains_key(&expr) {
+                    let label_id = {
+                        self.label_id += 1;
+                        self.label_id - 1
+                    };
+
+                    self.labels.push(Label::UnlabeledLoop(label_id));
+
+                    self.labeled_jumps.insert(expr, label_id);
+                }
+            }
+            Expr::Labeled { label, expr } => {
+                let label_span = ast[*label].span();
+
+                if let Expr::String(label) = ast[*label].kind() {
+                    if self.labels.iter().any(|other_label| matches!(other_label, Label::Loop { label: other_label, .. } if other_label == label)) {
+                        self.errors.push(Spanned::new(Error::ConflictingLabel, label_span));
+                    } else {
+                        match ast[*expr].kind() {
+                            Expr::While { .. } => {
+                                let label_id = {
+                                    self.label_id += 1;
+                                    self.label_id - 1
+                                };
+
+                                self.labeled_jumps.entry(*expr).or_insert(label_id);
+
+                                self.labels.push(Label::Loop {
+                                    label: label.clone(),
+                                    from: label_id,
+                                });
+                            },
+                            Expr::Labeled { .. } => {
+                                self.errors
+                                    .push(Spanned::new(Error::StackedLabel, ast[*expr].span()));
+                            }
+                            Expr::Never
+                            | Expr::Integer(_)
+                            | Expr::NegativeInteger(_)
+                            | Expr::Float
+                            | Expr::Boolean(_)
+                            | Expr::Unit
+                            | Expr::Unary { .. }
+                            | Expr::Binary { .. }
+                            | Expr::BinaryNoLhs { .. }
+                            | Expr::Group(_)
+                            | Expr::Name(_)
+                            | Expr::Let { .. }
+                            | Expr::If { .. }
+                            | Expr::CallNoCallee { .. }
+                            | Expr::MethodCall { .. }
+                            | Expr::Return(_)
+                            | Expr::Block(_)
+                            | Expr::AsUnitNoValue
+                            | Expr::AsUnit(_)
+                            | Expr::Product { .. }
+                            | Expr::ProductNoName(_)
+                            | Expr::PathElement(_)
+                            | Expr::Match { .. }
+                            | Expr::String(_)
+                            | Expr::LabeledNoLabel(_)
+                            | Expr::Break
+                            | Expr::Continue
+                            | Expr::BreakLabeled(_)
+                            | Expr::ContinueLabeled(_)
+                            | Expr::Call { .. } => {
+                                self.errors
+                                    .push(Spanned::new(Error::CannotLabel, ast[*expr].span()));
+                            }
+                        }
+                    }
+                } else {
+                    self.errors
+                        .push(Spanned::new(Error::LabelIsNotString, ast[*label].span()));
+                }
+            }
             _ => {}
         }
 
@@ -1252,6 +1446,9 @@ impl NameResolver {
             }
             Expr::Block(_) => {
                 self.variable_scopes.pop();
+            }
+            Expr::While { .. } => {
+                self.labels.pop();
             }
             Expr::Binary {
                 op: BinaryOp::Assign,

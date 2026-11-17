@@ -1,0 +1,9 @@
+funky main() {
+	print_unit(return_continue_loop());
+}
+
+funky return_continue_loop() {
+	"label" => while true {
+		continue "label"
+	}
+}

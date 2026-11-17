@@ -203,6 +203,12 @@ fn interpret(ast: &Ast, options: &ApartOptions, expr: ExprIndex) -> Result<Value
         | Expr::PathElement(_)
         | Expr::ProductNoName(_)
         | Expr::Match { .. }
+        | Expr::Break
+        | Expr::Continue
+        | Expr::BreakLabeled(_)
+        | Expr::ContinueLabeled(_)
+        | Expr::Labeled { .. }
+        | Expr::LabeledNoLabel(_)
         | Expr::Never => Err(Spanned::new(
             Error::InvalidDirectiveExpression,
             ast[expr].span(),

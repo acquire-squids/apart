@@ -104,6 +104,7 @@ pub enum Error {
     AliasWithoutSemicolon,
     UnknownExprDirective,
     ExpectedConditionalItem,
+    LabelWithoutExpr,
 }
 
 impl fmt::Display for Error {
@@ -390,6 +391,9 @@ impl fmt::Display for Error {
                 f,
                 "expected an item to conditionally enable after this compiler directive"
             ),
+            Self::LabelWithoutExpr => {
+                write!(f, "there should be an expression to apply the label to")
+            }
         }
     }
 }
@@ -473,7 +477,8 @@ impl Reportable for Error {
             | Self::UnaryWithoutOperand
             | Self::AliasWithoutEqual
             | Self::AliasWithoutSemicolon
-            | Self::UnknownExprDirective => vec![],
+            | Self::UnknownExprDirective
+            | Self::LabelWithoutExpr => vec![],
         }
     }
 }
@@ -639,6 +644,15 @@ pub enum Expr {
         fallback: ExprIndex,
     },
     String(String),
+    LabeledNoLabel(ExprIndex),
+    Labeled {
+        label: ExprIndex,
+        expr: ExprIndex,
+    },
+    Break,
+    Continue,
+    BreakLabeled(String),
+    ContinueLabeled(String),
 }
 
 #[derive(Debug, Clone)]
@@ -927,9 +941,14 @@ impl Ast {
             | Expr::PathElement(_)
             | Expr::ProductNoName(_)
             | Expr::CallNoCallee(_)
+            | Expr::LabeledNoLabel(_)
             | Expr::String(_)
-            | Expr::Never => {}
-            Expr::Unary { expr, .. } | Expr::Group(expr) => {
+            | Expr::Never
+            | Expr::Break
+            | Expr::Continue
+            | Expr::BreakLabeled(_)
+            | Expr::ContinueLabeled(_) => {}
+            Expr::Unary { expr, .. } | Expr::Group(expr) | Expr::Labeled { expr, .. } => {
                 f(self, *expr);
             }
             Expr::Binary {
@@ -1025,7 +1044,7 @@ impl<'s, 'p> Parser<'s, 'p> {
             "primitive" | "native" if self.is_core => Some(lexeme),
             "let" | "in" | "if" | "else" | "true" | "false" | "funky" | "while" | "return"
             | "product" | "sum" | "pub" | "mod" | "teach" | "Self" | "root" | "super" | "match"
-            | "alias" => Some(lexeme),
+            | "alias" | "break" | "continue" => Some(lexeme),
             _ => None,
         }
     }
@@ -1940,6 +1959,8 @@ mod precedence {
 
     pub const PRIMARY: u16 = 0xEE00;
 
+    pub const LABELED: u16 = 0xEE00;
+
     pub const AS_PRODUCT: u16 = 0xEE00;
 
     pub const LEFT_PATH_ACCESS: u16 = 0xCC00;
@@ -1994,6 +2015,9 @@ mod precedence {
     pub const RIGHT_OR: u16 = 0x4450;
 
     pub const RETURN: u16 = 0x3800;
+
+    pub const BREAK: u16 = 0x3800;
+    pub const CONTINUE: u16 = 0x3800;
 
     pub const LEFT_ASSIGN: u16 = 0x3350;
     pub const RIGHT_ASSIGN: u16 = 0x3300;
@@ -2184,6 +2208,18 @@ impl<'s, 'p> Parser<'s, 'p> {
                             );
                         }
                     }
+                    Expr::LabeledNoLabel(expr) => {
+                        ast[unfinished_postfix] = Spanned::new(
+                            Expr::Labeled {
+                                label: lhs,
+                                expr: *expr,
+                            },
+                            ast[unfinished_postfix]
+                                .span()
+                                .combine_with(prefix_span)
+                                .expect("these spans are from the same source"),
+                        );
+                    }
                     Expr::AsUnitNoValue => {
                         ast[unfinished_postfix] = Spanned::new(
                             Expr::AsUnit(lhs),
@@ -2372,6 +2408,16 @@ impl<'s, 'p> Parser<'s, 'p> {
 
                             Some((precedence::RETURN, (Self::return_expr, span)))
                         }
+                        Some("break") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::BREAK, (Self::break_expr, span)))
+                        }
+                        Some("continue") => {
+                            self.advance_token_tree()?;
+
+                            Some((precedence::CONTINUE, (Self::continue_expr, span)))
+                        }
                         Some("true") => {
                             self.advance_token_tree()?;
 
@@ -2408,6 +2454,35 @@ impl<'s, 'p> Parser<'s, 'p> {
                 self.advance_token_tree()?;
 
                 Some((precedence::AS_UNIT, (Self::as_unit, token.span())))
+            }
+            TokenTree::Token(token) if matches!(token.kind(), Token::Equal) => {
+                let current_tree = self.current_tree;
+                let at = self.at;
+
+                let token = self.match_next(Token::Equal)?;
+
+                if self.peek_token_tree().is_some_and(|next_token_tree| {
+                    matches!(next_token_tree, TokenTree::Token(next_token) if *next_token.kind() == Token::Greater
+                        && token.span().end() == next_token.span().start()
+                    )
+                }) && let Some(next_token) = self.match_next(Token::Greater)
+                {
+                    Some((
+                        precedence::LABELED,
+                        (
+                            Self::labeled,
+                            token
+                                .span()
+                                .combine_with(next_token.span())
+                                .expect("these spans are from the same source"),
+                        ),
+                    ))
+                } else {
+                    self.current_tree = current_tree;
+                    self.at = at;
+
+                    None
+                }
             }
             TokenTree::Tree { .. } | TokenTree::Token(_) => None,
         }
@@ -2700,6 +2775,7 @@ impl<'s, 'p> Parser<'s, 'p> {
                         | Expr::While { .. }
                         | Expr::AsUnit(_)
                         | Expr::Match { .. }
+                        | Expr::Labeled { .. }
                 ) && self.check_next(Token::EndOfTree).is_none()
                 {
                     self.consume_next(Token::Semicolon, Error::BlockWithoutSemicolon)?;
@@ -2941,6 +3017,21 @@ impl<'s, 'p> Parser<'s, 'p> {
         Ok(ast.push_expr(Spanned::new(Expr::CallNoCallee(arguments), span)))
     }
 
+    fn labeled(
+        &mut self,
+        ast: &mut Ast,
+        precedence: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        let expr = self.parse_expression(ast, precedence)?;
+
+        let span = span
+            .combine_with(ast[expr].span())
+            .expect("these spans are from the same source");
+
+        Ok(ast.push_expr(Spanned::new(Expr::LabeledNoLabel(expr), span)))
+    }
+
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     fn as_unit(&mut self, ast: &mut Ast, _: u16, span: Span) -> Result<ExprIndex, Spanned<Error>> {
         Ok(ast.push_expr(Spanned::new(Expr::AsUnitNoValue, span)))
@@ -2965,6 +3056,68 @@ impl<'s, 'p> Parser<'s, 'p> {
             .expect("these spans are from the same source");
 
         Ok(ast.push_expr(Spanned::new(Expr::Return(value), span)))
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn break_expr(
+        &mut self,
+        ast: &mut Ast,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        if let Some(token) = self.match_next(Token::String) {
+            Ok(ast.push_expr(Spanned::new(
+                token
+                    .span()
+                    .lexeme(self.source)
+                    .map(|text| {
+                        Expr::BreakLabeled(
+                            text.get(
+                                (text.char_indices().nth(1).map_or(0, |(i, _)| i))
+                                    ..(text.char_indices().next_back().map_or(0, |(i, _)| i)),
+                            )
+                            .unwrap_or_default()
+                            .to_string(),
+                        )
+                    })
+                    .expect("this string is from this source"),
+                span.combine_with(token.span())
+                    .expect("these spans are from the same source"),
+            )))
+        } else {
+            Ok(ast.push_expr(Spanned::new(Expr::Break, span)))
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn continue_expr(
+        &mut self,
+        ast: &mut Ast,
+        _: u16,
+        span: Span,
+    ) -> Result<ExprIndex, Spanned<Error>> {
+        if let Some(token) = self.match_next(Token::String) {
+            Ok(ast.push_expr(Spanned::new(
+                token
+                    .span()
+                    .lexeme(self.source)
+                    .map(|text| {
+                        Expr::ContinueLabeled(
+                            text.get(
+                                (text.char_indices().nth(1).map_or(0, |(i, _)| i))
+                                    ..(text.char_indices().next_back().map_or(0, |(i, _)| i)),
+                            )
+                            .unwrap_or_default()
+                            .to_string(),
+                        )
+                    })
+                    .expect("this string is from this source"),
+                span.combine_with(token.span())
+                    .expect("these spans are from the same source"),
+            )))
+        } else {
+            Ok(ast.push_expr(Spanned::new(Expr::Continue, span)))
+        }
     }
 
     fn product_expr(

@@ -1,0 +1,5 @@
+funky main() {
+	while true {
+		break "outer";
+	}
+}

@@ -1,0 +1,15 @@
+funky main() {
+	let
+		i = 0,
+	in {
+		{
+			i = i + 1;
+
+			print_u8(i);
+
+			if i >= 3 {
+				continue;
+			}
+		}
+	};
+}

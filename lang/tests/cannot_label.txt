@@ -1,0 +1,3 @@
+funky main() {
+	"unlabelable" => print_string("Hi!");
+}

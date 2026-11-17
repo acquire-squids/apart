@@ -1,6 +1,6 @@
 use crate::{
     Span, Spanned,
-    name_resolve::{Associations, Definitions, Names},
+    name_resolve::{Associations, Definitions, LabelId, Names},
     parse::{
         Ast, Expr as AstExpr, ExprIndex as AstExprIndex, Item as AstItem,
         ItemIndex as AstItemIndex, Pattern as AstPattern, TypeSignature as AstTypeSignature,
@@ -286,6 +286,7 @@ pub enum Expr {
     While {
         condition: ExprIndex,
         when_true: ExprIndex,
+        label_id: LabelId,
     },
     Return(ExprIndex),
     AsUnit(ExprIndex),
@@ -300,6 +301,12 @@ pub enum Expr {
         fallback: ExprIndex,
     },
     String(String),
+    Labeled {
+        label: LabelId,
+        expr: ExprIndex,
+    },
+    Break(LabelId),
+    Continue(LabelId),
 }
 
 #[derive(Debug, Clone)]
@@ -622,8 +629,17 @@ fn lower_expr(ast: &Ast, names: &Names, hir: &mut Ir, expr: AstExprIndex) -> Exp
             AstExpr::BinaryNoLhs { .. }
             | AstExpr::CallNoCallee { .. }
             | AstExpr::AsUnitNoValue
-            | AstExpr::ProductNoName { .. } => {
+            | AstExpr::ProductNoName { .. }
+            | AstExpr::LabeledNoLabel(_) => {
                 unreachable!("these variants don't exist after parsing successfully finishes")
+            }
+            AstExpr::Labeled { expr, .. } => {
+                let label = names.resolved_label(*expr).expect("if the label couldn't be resolved, we wouldn't make it this far since name resolution would have errored previously");
+
+                Expr::Labeled {
+                    label,
+                    expr: lower_expr(ast, names, hir, *expr),
+                }
             }
             AstExpr::Never => Expr::Never,
             AstExpr::Integer(radix) => Expr::Integer(*radix),
@@ -712,6 +728,7 @@ fn lower_expr(ast: &Ast, names: &Names, hir: &mut Ir, expr: AstExprIndex) -> Exp
             } => Expr::While {
                 condition: lower_expr(ast, names, hir, *condition),
                 when_true: lower_expr(ast, names, hir, *when_true),
+                label_id: names.resolved_label(expr).expect("if the label couldn't be resolved, we wouldn't make it this far since name resolution would have errored previously"),
             },
             AstExpr::Return(expr) => Expr::Return(lower_expr(ast, names, hir, *expr)),
             AstExpr::AsUnit(expr) => Expr::AsUnit(lower_expr(ast, names, hir, *expr)),
@@ -741,6 +758,8 @@ fn lower_expr(ast: &Ast, names: &Names, hir: &mut Ir, expr: AstExprIndex) -> Exp
                 fallback: lower_expr(ast, names, hir, *fallback),
             },
             AstExpr::String(text) => Expr::String(text.clone()),
+            AstExpr::Break | AstExpr::BreakLabeled(_) => Expr::Break(names.resolved_label(expr).expect("if the label couldn't be resolved, we wouldn't make it this far since name resolution would have errored previously")),
+            AstExpr::Continue | AstExpr::ContinueLabeled(_) => Expr::Continue(names.resolved_label(expr).expect("if the label couldn't be resolved, we wouldn't make it this far since name resolution would have errored previously")),
         },
         ast[expr].span(),
     );
@@ -821,7 +840,9 @@ impl Ir {
             | Expr::Name(_)
             | Expr::PathElement(_)
             | Expr::String(_)
-            | Expr::Never => {}
+            | Expr::Never
+            | Expr::Break(_)
+            | Expr::Continue(_) => {}
             Expr::Unary { operand, .. } => {
                 f(self, *operand);
             }
@@ -872,6 +893,7 @@ impl Ir {
             Expr::While {
                 condition,
                 when_true,
+                ..
             } => {
                 f(self, *condition);
                 f(self, *when_true);
@@ -893,6 +915,9 @@ impl Ir {
                 }
 
                 f(self, *fallback);
+            }
+            Expr::Labeled { expr, .. } => {
+                f(self, *expr);
             }
         }
     }

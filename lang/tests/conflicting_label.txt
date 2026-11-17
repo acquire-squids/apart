@@ -1,0 +1,7 @@
+funky main() {
+	"label" => while false {
+		"label" => while false {
+			
+		}
+	}
+}

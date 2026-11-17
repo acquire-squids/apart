@@ -1964,7 +1964,10 @@ impl TypeChecker {
             | Expr::PathElement(_)
             | Expr::Match { .. }
             | Expr::String(_)
-            | Expr::Call { .. } => {}
+            | Expr::Call { .. }
+            | Expr::Break(_)
+            | Expr::Continue(_)
+            | Expr::Labeled { .. } => {}
         }
     }
 
@@ -2130,7 +2133,12 @@ impl TypeChecker {
                 | Expr::Name(_)
                 | Expr::Integer(_)
                 | Expr::NegativeInteger(_)
-                | Expr::Float => {}
+                | Expr::Float
+                | Expr::Break(_)
+                | Expr::Continue(_) => {}
+                Expr::Labeled { expr, .. } => {
+                    changed |= self.propagate(sources, ir, *expr, type_index);
+                }
                 Expr::Unary { operand, .. } => {
                     changed |= self.propagate(sources, ir, *operand, type_index);
                 }
@@ -2175,7 +2183,6 @@ impl TypeChecker {
                         }
                     }
                 },
-                Expr::Block(exprs) if exprs.is_empty() => {}
                 Expr::Block(exprs) => {
                     for expr in exprs.iter().take(exprs.len() - 1) {
                         changed |= self.propagate(sources, ir, *expr, None);
@@ -2187,7 +2194,7 @@ impl TypeChecker {
                         exprs
                             .last()
                             .copied()
-                            .expect("the above match arm guarantees this block isn't empty"),
+                            .expect("conversion from AST to HIR guarantees no block is empty"),
                         type_index,
                     );
 
@@ -2195,10 +2202,9 @@ impl TypeChecker {
                         ir,
                         expr,
                         Some(
-                            self[ir[exprs
-                                .last()
-                                .copied()
-                                .expect("the above match arm guarantees it's not empty")]
+                            self[ir[exprs.last().copied().expect(
+                                "conversion from AST to HIR guarantees no block is empty",
+                            )]
                             .resolved()],
                         ),
                     );
@@ -2235,6 +2241,7 @@ impl TypeChecker {
                 Expr::While {
                     condition,
                     when_true,
+                    ..
                 } => {
                     changed |= self.propagate(sources, ir, *condition, Some(self.type_boolean()));
 
@@ -2748,6 +2755,8 @@ impl TypeChecker {
 
                 self.type_error()
             }
+            Expr::Never | Expr::Break(_) | Expr::Continue(_) => self.type_never(),
+            Expr::Labeled { expr, .. } => self.infer(sources, ir, *expr, context),
             Expr::Integer(radix) => {
                 if self.get_type(span).is_some() {
                     self[span]
@@ -2771,7 +2780,6 @@ impl TypeChecker {
             }
             Expr::Boolean(_) => self.type_boolean(),
             Expr::Unit => self.type_unit(),
-            Expr::Never => self.type_never(),
             Expr::Name(_) => {
                 let mut context = context.to_vec();
 
@@ -2817,7 +2825,7 @@ impl TypeChecker {
                     exprs
                         .last()
                         .copied()
-                        .expect("the block won't be empty because of the earlier match arm"),
+                        .expect("conversion from AST to HIR guarantees no block is empty"),
                     context,
                 )
             }
@@ -2871,6 +2879,7 @@ impl TypeChecker {
             Expr::While {
                 condition,
                 when_true,
+                ..
             } => {
                 let mut context = context.to_vec();
 
@@ -3397,7 +3406,7 @@ impl TypeChecker {
             Err(functions
                 .into_iter()
                 .find_map(Result::err)
-                .expect("if it's not empty and there's no ok, there's at leir one error"))
+                .expect("if it's not empty and there's no ok, there's at least one error"))
         } else if ok_functions.len() > 1 {
             Err(Spanned::new(Error::AmbiguousFunction, callee_span))
         } else {
@@ -3930,13 +3939,11 @@ impl TypeChecker {
     }
 
     fn expr_span(ir: &Ir, mut expr: ExprIndex) -> Span {
-        while let Expr::Block(exprs) = ir[expr].kind()
-            && !exprs.is_empty()
-        {
+        while let Expr::Block(exprs) = ir[expr].kind() {
             expr = exprs
                 .last()
                 .copied()
-                .expect("the while condition guarantees there is at leir one expression");
+                .expect("conversion from AST to HIR guarantees no block is empty");
         }
 
         ir[expr].span()

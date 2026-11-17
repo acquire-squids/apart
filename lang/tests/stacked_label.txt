@@ -1,0 +1,5 @@
+funky main() {
+	"outer" => "alias" => while false {
+		
+	}
+}

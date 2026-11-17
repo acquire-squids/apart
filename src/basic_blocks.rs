@@ -4,6 +4,7 @@ use crate::{
         BinaryOp, Expr, ExprIndex, Ir, Item, ItemIndex, MatchCase, PathElement, Pattern, Resolved,
         UnaryOp,
     },
+    name_resolve::LabelId,
     type_check::{Primitive, Type, TypeChecker, TypeIndex},
 };
 
@@ -33,6 +34,47 @@ pub fn translate(
     let function_count = translator.blocks.len();
 
     translator.translate_items(options, sources, (ir, types), ir.roots())?;
+
+    while let Some(labeled_jump) = translator.labeled_jumps_to_backpatch.pop() {
+        match labeled_jump {
+            LabeledJump::Break {
+                label_id,
+                block_index,
+            } => {
+                let Some(Label::Loop { end, .. }) = translator.expr_labels.get(&label_id) else {
+                    unreachable!(
+                        "all labeled jumps are resolved earlier in the compilation process"
+                    );
+                };
+
+                let end = *end;
+
+                let Some(block) = translator.get_block_mut(block_index) else {
+                    unreachable!("all blocks exist");
+                };
+
+                block.terminator = Some(BlockTerminator::Jump(end));
+            }
+            LabeledJump::Continue {
+                label_id,
+                block_index,
+            } => {
+                let Some(Label::Loop { start, .. }) = translator.expr_labels.get(&label_id) else {
+                    unreachable!(
+                        "all labeled jumps are resolved earlier in the compilation process"
+                    );
+                };
+
+                let start = *start;
+
+                let Some(block) = translator.get_block_mut(block_index) else {
+                    unreachable!("all blocks exist");
+                };
+
+                block.terminator = Some(BlockTerminator::Jump(start));
+            }
+        }
+    }
 
     for (b, block) in translator.blocks.iter_mut().enumerate() {
         if block.terminator.is_none() {
@@ -262,6 +304,19 @@ struct Translator<'a> {
     addresses: HashMap<Span, TypedAddresslike>,
     last_in_fn: bool,
     label: Vec<&'a str>,
+    expr_labels: HashMap<LabelId, Label>,
+    labeled_jumps_to_backpatch: Vec<LabeledJump>,
+}
+
+enum LabeledJump {
+    Break {
+        label_id: LabelId,
+        block_index: BlockIndex,
+    },
+    Continue {
+        label_id: LabelId,
+        block_index: BlockIndex,
+    },
 }
 
 impl Translator<'_> {
@@ -273,6 +328,8 @@ impl Translator<'_> {
             addresses: HashMap::new(),
             last_in_fn: false,
             label: vec![],
+            expr_labels: HashMap::new(),
+            labeled_jumps_to_backpatch: vec![],
         }
     }
 
@@ -676,6 +733,10 @@ impl<'a> Translator<'a> {
     }
 }
 
+enum Label {
+    Loop { start: BlockIndex, end: BlockIndex },
+}
+
 impl Translator<'_> {
     fn assign_value(&mut self, value: TypedValue) -> Address {
         let address = self.next_address();
@@ -698,6 +759,10 @@ impl Translator<'_> {
             .expect("values are only popped after expressions, and all expressions produce a value")
     }
 
+    fn push_expr_label(&mut self, label_id: LabelId, label: Label) {
+        self.expr_labels.insert(label_id, label);
+    }
+
     #[allow(clippy::too_many_lines)]
     fn translate_expr(
         &mut self,
@@ -711,6 +776,49 @@ impl Translator<'_> {
                 unreachable!(
                     "type checking guarantees these path elements aren't used as expressions"
                 );
+            }
+            Expr::Labeled { expr, .. } => self.translate_expr(options, sources, (ir, types), *expr),
+            Expr::Break(label_id) => {
+                self.labeled_jumps_to_backpatch.push(LabeledJump::Break {
+                    label_id: *label_id,
+                    block_index: self
+                        .current_block
+                        .expect("expressions only occur within blocks"),
+                });
+
+                self.next_block()?;
+
+                self.push_value(TypedValue {
+                    value: Value::Never,
+                    type_index: types[ir[expr].resolved()],
+                });
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+
+                Ok(())
+            }
+            Expr::Continue(label_id) => {
+                self.labeled_jumps_to_backpatch.push(LabeledJump::Continue {
+                    label_id: *label_id,
+                    block_index: self
+                        .current_block
+                        .expect("expressions only occur within blocks"),
+                });
+
+                self.next_block()?;
+
+                self.push_value(TypedValue {
+                    value: Value::Never,
+                    type_index: types[ir[expr].resolved()],
+                });
+
+                if self.last_in_fn {
+                    self.emit_return();
+                }
+
+                Ok(())
             }
             Expr::Integer(radix) => {
                 self.push_value(
@@ -1017,11 +1125,12 @@ impl Translator<'_> {
             Expr::While {
                 condition,
                 when_true,
+                label_id,
             } => self.translate_while(
                 options,
                 sources,
                 (ir, types),
-                (expr, *condition, *when_true),
+                (expr, *condition, *when_true, *label_id),
             ),
             Expr::Return(value) => {
                 let last_in_fn = self.last_in_fn;
@@ -1817,7 +1926,7 @@ impl Translator<'_> {
         options: &ApartOptions,
         sources: &[(usize, (&str, &str))],
         (ir, types): (&Ir, &TypeChecker),
-        (expr, condition, when_true): (ExprIndex, ExprIndex, ExprIndex),
+        (expr, condition, when_true, label_id): (ExprIndex, ExprIndex, ExprIndex, LabelId),
     ) -> Result<(), Error> {
         let last_in_fn = self.last_in_fn;
 
@@ -1873,6 +1982,14 @@ impl Translator<'_> {
             value: Value::Unit,
             type_index: types[ir[expr].resolved()],
         });
+
+        self.push_expr_label(
+            label_id,
+            Label::Loop {
+                start: condition_block,
+                end: otherwise_block,
+            },
+        );
 
         if self.last_in_fn {
             self.emit_return();
