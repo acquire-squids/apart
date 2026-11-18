@@ -596,11 +596,32 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueIndex(pub usize);
+pub struct ValueIndex(pub u64);
+
+impl From<ValueIndex> for u64 {
+    fn from(value: ValueIndex) -> Self {
+        value.0
+    }
+}
 
 impl From<ValueIndex> for usize {
     fn from(value: ValueIndex) -> Self {
-        value.0
+        Self::try_from(value.0).unwrap_or_else(|_| panic!("number of values was not a valid usize"))
+    }
+}
+
+impl From<u64> for ValueIndex {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<usize> for ValueIndex {
+    fn from(value: usize) -> Self {
+        Self(
+            u64::try_from(value)
+                .unwrap_or_else(|_| panic!("number of values may not exceed {}", u64::MAX)),
+        )
     }
 }
 
@@ -2112,7 +2133,7 @@ where
                     .values_mut()
                     .push(Value::Compound(fields.into_boxed_slice()));
 
-                let value_index = ValueIndex(disassembler.values_mut().len() - 1);
+                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
                 disassembler.constants_mut().push(value_index);
 
@@ -2134,7 +2155,7 @@ where
                     fields: fields.into_boxed_slice(),
                 });
 
-                let value_index = ValueIndex(disassembler.values_mut().len() - 1);
+                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
                 disassembler.constants_mut().push(value_index);
 
@@ -2145,7 +2166,7 @@ where
 
                 disassembler.values_mut().push(Value::String(value));
 
-                let value_index = ValueIndex(disassembler.values_mut().len() - 1);
+                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
                 disassembler.constants_mut().push(value_index);
 
@@ -2163,7 +2184,7 @@ where
 
                 disassembler.values_mut().push(Value::Vec(fields));
 
-                let value_index = ValueIndex(disassembler.values_mut().len() - 1);
+                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
                 disassembler.constants_mut().push(value_index);
 

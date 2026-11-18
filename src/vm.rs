@@ -1533,7 +1533,7 @@ impl Vm {
                             .push(Value::Compound(dereferenced_values.into_boxed_slice()));
 
                         let value_index =
-                            CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
                         self.allocated += self.size_of_value(value_index);
 
@@ -1557,7 +1557,7 @@ impl Vm {
                         });
 
                         let value_index =
-                            CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
                         self.allocated += self.size_of_value(value_index);
 
@@ -1567,7 +1567,7 @@ impl Vm {
                         self.values.push(Value::String(text.clone()));
 
                         let value_index =
-                            CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
                         self.allocated += self.size_of_value(value_index);
 
@@ -1587,7 +1587,7 @@ impl Vm {
             tag: 1,
         });
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
         self.allocated += self.size_of_value(value_index);
 
@@ -1601,7 +1601,7 @@ impl Vm {
             tag: 0,
         });
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
         self.allocated += self.size_of_value(value_index);
 
@@ -1615,7 +1615,7 @@ impl Vm {
             tag: 1,
         });
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
         self.allocated += self.size_of_value(value_index);
 
@@ -1629,7 +1629,7 @@ impl Vm {
             tag: 0,
         });
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
         self.allocated += self.size_of_value(value_index);
 
@@ -1793,7 +1793,7 @@ impl Vm {
             }
 
             if marked[usize::from(index)].is_none() {
-                marked[usize::from(index)] = Some(ValueIndex(*marked_count));
+                marked[usize::from(index)] = Some(ValueIndex::from(*marked_count));
 
                 *marked_count += 1;
             }
@@ -2032,7 +2032,8 @@ impl Vm {
             if let Some(value) = value.get(start..end) {
                 self.values.push(Value::String(value.to_string()));
 
-                let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+                let value_index =
+                    CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
                 self.allocated += self.size_of_value(value_index);
 
@@ -2248,7 +2249,9 @@ impl Vm {
     {
         self.values.push(Value::Vec(vec![]));
 
-        Ok(CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1)))
+        Ok(CopyableValue::ValueIndex(ValueIndex::from(
+            self.values.len() - 1,
+        )))
     }
 
     fn native_fn_get_vec<O>(
@@ -2320,7 +2323,8 @@ impl Vm {
             if let Some(value) = value.get(start..end) {
                 self.values.push(Value::Vec(value.to_vec()));
 
-                let value_index = CopyableValue::ValueIndex(ValueIndex(self.values.len() - 1));
+                let value_index =
+                    CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
 
                 self.allocated += self.size_of_value(value_index);
 
