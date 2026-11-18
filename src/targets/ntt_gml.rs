@@ -239,7 +239,7 @@ fn is_function_hook(name: &str) -> bool {
 }
 
 fn normalize_function_name(name: &str) -> String {
-    name.replace('~', "_").replace(['[', ']'], "__")
+    name.replace('~', "__").replace(['[', ']', ','], "_")
 }
 
 fn compile_location(mangled_prefix: &str, location: Location) -> String {
