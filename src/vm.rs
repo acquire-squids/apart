@@ -312,16 +312,16 @@ impl Vm {
             }
 
             match value {
-                Value::Compound(values) => {
+                Value::Compound { fields, .. } => {
                     let mut buffer = "Compound(".to_string();
 
-                    if let Some(first_value) = values.first() {
-                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+                    if let Some(first_field) = fields.first() {
+                        buffer.push_str(self.value_to_string(*first_field, seen).as_str());
 
-                        for value in values.iter().skip(1) {
+                        for field in fields.iter().skip(1) {
                             buffer.push_str(", ");
 
-                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                            buffer.push_str(self.value_to_string(*field, seen).as_str());
                         }
                     }
 
@@ -329,19 +329,16 @@ impl Vm {
 
                     buffer
                 }
-                Value::TaggedCompound {
-                    tag,
-                    fields: values,
-                } => {
+                Value::TaggedCompound { tag, fields, .. } => {
                     let mut buffer = format!("TaggedCompound {{ tag: {tag}, fields: [");
 
-                    if let Some(first_value) = values.first() {
-                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+                    if let Some(first_field) = fields.first() {
+                        buffer.push_str(self.value_to_string(*first_field, seen).as_str());
 
-                        for value in values.iter().skip(1) {
+                        for field in fields.iter().skip(1) {
                             buffer.push_str(", ");
 
-                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                            buffer.push_str(self.value_to_string(*field, seen).as_str());
                         }
                     }
 
@@ -352,7 +349,7 @@ impl Vm {
                 Value::String(text) => {
                     format!("String({text:?})")
                 }
-                Value::Vec(values) => {
+                Value::Vec { values, .. } => {
                     let mut buffer = "Vec([".to_string();
 
                     if let Some(first_value) = values.first() {
@@ -1268,7 +1265,7 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value_index) = of
-            && let Value::Compound(fields) | Value::TaggedCompound { fields, .. } =
+            && let Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } =
                 &self.values[usize::from(value_index)]
         {
             self.assign(to, fields[usize::from(index)]);
@@ -1297,7 +1294,7 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value_index) = to
-            && let Value::Compound(fields) | Value::TaggedCompound { fields, .. } =
+            && let Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } =
                 &mut self.values[usize::from(value_index)]
         {
             fields[usize::from(index)] = value;
@@ -1522,15 +1519,22 @@ impl Vm {
             CopyableValue::Register(offset) => self.get_register(Register(offset)),
             CopyableValue::ValueIndex(value_index) => {
                 match &self.values[usize::from(value_index)] {
-                    Value::Compound(values) if make_constant => {
-                        let dereferenced_values = values
+                    Value::Compound {
+                        field_count,
+                        fields,
+                    } if make_constant => {
+                        let field_count = *field_count;
+
+                        let fields = fields
                             .clone()
                             .into_iter()
-                            .map(|value| self.dereference_value(value, make_constant))
+                            .map(|field| self.dereference_value(field, make_constant))
                             .collect::<Vec<_>>();
 
-                        self.values
-                            .push(Value::Compound(dereferenced_values.into_boxed_slice()));
+                        self.values.push(Value::Compound {
+                            field_count,
+                            fields: fields.into_boxed_slice(),
+                        });
 
                         let value_index =
                             CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -1540,20 +1544,24 @@ impl Vm {
                         value_index
                     }
                     Value::TaggedCompound {
-                        fields: values,
                         tag,
+                        field_count,
+                        fields,
                     } if make_constant => {
                         let tag = *tag;
 
-                        let dereferenced_values = values
+                        let field_count = *field_count;
+
+                        let fields = fields
                             .clone()
                             .into_iter()
-                            .map(|value| self.dereference_value(value, make_constant))
+                            .map(|field| self.dereference_value(field, make_constant))
                             .collect::<Vec<_>>();
 
                         self.values.push(Value::TaggedCompound {
-                            fields: dereferenced_values.into_boxed_slice(),
                             tag,
+                            field_count,
+                            fields: fields.into_boxed_slice(),
                         });
 
                         let value_index =
@@ -1583,8 +1591,9 @@ impl Vm {
     #[allow(dead_code)]
     fn option_some(&mut self, value: CopyableValue) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![value].into_boxed_slice(),
             tag: 1,
+            field_count: 1,
+            fields: vec![value].into_boxed_slice(),
         });
 
         let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -1597,8 +1606,9 @@ impl Vm {
     #[allow(dead_code)]
     fn option_none(&mut self) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![].into_boxed_slice(),
             tag: 0,
+            field_count: 0,
+            fields: vec![].into_boxed_slice(),
         });
 
         let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -1611,8 +1621,9 @@ impl Vm {
     #[allow(dead_code)]
     fn result_ok(&mut self, value: CopyableValue) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![value].into_boxed_slice(),
             tag: 1,
+            field_count: 1,
+            fields: vec![value].into_boxed_slice(),
         });
 
         let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -1623,10 +1634,11 @@ impl Vm {
     }
 
     #[allow(dead_code)]
-    fn result_err(&mut self) -> CopyableValue {
+    fn result_err(&mut self, value: CopyableValue) -> CopyableValue {
         self.values.push(Value::TaggedCompound {
-            fields: vec![].into_boxed_slice(),
             tag: 0,
+            field_count: 1,
+            fields: vec![value].into_boxed_slice(),
         });
 
         let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -1707,7 +1719,23 @@ impl Vm {
                         Value::TaggedCompound { tag: lhs, .. },
                         Value::TaggedCompound { tag: rhs, .. },
                     ) if lhs != rhs => false,
-                    (Value::Compound(lhs), Value::Compound(rhs))
+                    (
+                        Value::Compound {
+                            field_count: lhs, ..
+                        },
+                        Value::Compound {
+                            field_count: rhs, ..
+                        },
+                    )
+                    | (
+                        Value::TaggedCompound {
+                            field_count: lhs, ..
+                        },
+                        Value::TaggedCompound {
+                            field_count: rhs, ..
+                        },
+                    ) if lhs != rhs => false,
+                    (Value::Compound { fields: lhs, .. }, Value::Compound { fields: rhs, .. })
                     | (
                         Value::TaggedCompound { fields: lhs, .. },
                         Value::TaggedCompound { fields: rhs, .. },
@@ -1720,7 +1748,12 @@ impl Vm {
 
                         true
                     }
-                    (Value::Vec(lhs), Value::Vec(rhs)) => {
+                    (Value::Vec { length: lhs, .. }, Value::Vec { length: rhs, .. })
+                        if lhs != rhs =>
+                    {
+                        false
+                    }
+                    (Value::Vec { values: lhs, .. }, Value::Vec { values: rhs, .. }) => {
                         for (lhs, rhs) in lhs.iter().zip(rhs) {
                             if !self.values_eq(*lhs, *rhs) {
                                 return false;
@@ -1780,12 +1813,12 @@ impl Vm {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
                 Value::String(_) => {}
-                Value::Compound(values) | Value::TaggedCompound { fields: values, .. } => {
-                    for value in values {
-                        self.mark_value(marked, *value, marked_count);
+                Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } => {
+                    for field in fields {
+                        self.mark_value(marked, *field, marked_count);
                     }
                 }
-                Value::Vec(values) => {
+                Value::Vec { values, .. } => {
                     for value in values {
                         self.mark_value(marked, *value, marked_count);
                     }
@@ -1843,15 +1876,7 @@ impl Vm {
                     match &self.values[usize::from(index)] {
                         Value::String(text) => replacement_values
                             .push((replacement_index, Value::String(text.clone()))),
-                        Value::Vec(values) => {
-                            let values = values
-                                .iter()
-                                .map(|value| self.retain_value(replacement_values, *value, marked))
-                                .collect::<Vec<_>>();
-
-                            replacement_values.push((replacement_index, Value::Vec(values)));
-                        }
-                        Value::Compound(values) => {
+                        Value::Vec { length, values } => {
                             let values = values
                                 .iter()
                                 .map(|value| self.retain_value(replacement_values, *value, marked))
@@ -1859,23 +1884,45 @@ impl Vm {
 
                             replacement_values.push((
                                 replacement_index,
-                                Value::Compound(values.into_boxed_slice()),
+                                Value::Vec {
+                                    length: *length,
+                                    values,
+                                },
+                            ));
+                        }
+                        Value::Compound {
+                            field_count,
+                            fields,
+                        } => {
+                            let fields = fields
+                                .iter()
+                                .map(|field| self.retain_value(replacement_values, *field, marked))
+                                .collect::<Vec<_>>();
+
+                            replacement_values.push((
+                                replacement_index,
+                                Value::Compound {
+                                    field_count: *field_count,
+                                    fields: fields.into_boxed_slice(),
+                                },
                             ));
                         }
                         Value::TaggedCompound {
-                            fields: values,
                             tag,
+                            field_count,
+                            fields,
                         } => {
-                            let values = values
+                            let fields = fields
                                 .iter()
-                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .map(|field| self.retain_value(replacement_values, *field, marked))
                                 .collect::<Vec<_>>();
 
                             replacement_values.push((
                                 replacement_index,
                                 Value::TaggedCompound {
-                                    fields: values.into_boxed_slice(),
                                     tag: *tag,
+                                    field_count: *field_count,
+                                    fields: fields.into_boxed_slice(),
                                 },
                             ));
                         }
@@ -1891,22 +1938,22 @@ impl Vm {
     fn size_of_value(&self, value: CopyableValue) -> usize {
         if let CopyableValue::ValueIndex(index) = value {
             match &self.values[usize::from(index)] {
-                Value::Compound(values) => {
-                    values
+                Value::Compound { fields, .. } => {
+                    fields
                         .iter()
-                        .fold(0, |accum, value| accum + mem::size_of_val(value))
+                        .fold(0, |accum, field| accum + mem::size_of_val(field))
                         + mem::size_of_val(&self.values[usize::from(index)])
                 }
-                Value::TaggedCompound { fields: values, .. } => {
-                    values
+                Value::TaggedCompound { fields, .. } => {
+                    fields
                         .iter()
-                        .fold(0, |accum, value| accum + mem::size_of_val(value))
+                        .fold(0, |accum, field| accum + mem::size_of_val(field))
                         + mem::size_of_val(&self.values[usize::from(index)])
                 }
                 Value::String(text) => {
                     mem::size_of_val(text) + mem::size_of_val(&self.values[usize::from(index)])
                 }
-                Value::Vec(values) => {
+                Value::Vec { values, .. } => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
@@ -2247,7 +2294,10 @@ impl Vm {
     where
         O: Write,
     {
-        self.values.push(Value::Vec(vec![]));
+        self.values.push(Value::Vec {
+            length: 0,
+            values: vec![],
+        });
 
         Ok(CopyableValue::ValueIndex(ValueIndex::from(
             self.values.len() - 1,
@@ -2264,11 +2314,11 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
+            && let Some(Value::Vec { values, .. }) = self.values.get(usize::from(*value))
             && let CopyableValue::U64(index) = &call_arguments[1]
             && let Ok(index) = usize::try_from(*index)
         {
-            if let Some(value) = value.get(index) {
+            if let Some(value) = values.get(index) {
                 Ok(self.option_some(*value))
             } else {
                 Ok(self.option_none())
@@ -2289,13 +2339,20 @@ impl Vm {
     {
         if let CopyableValue::ValueIndex(target) = &call_arguments[0]
             && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
-            && let Some(Value::Vec(extension)) = self.values.get(usize::from(*extension)).cloned()
-            && let Some(Value::Vec(target)) = self.values.get_mut(usize::from(*target))
+            && let Some(Value::Vec {
+                length: extension_length,
+                values: extension,
+            }) = self.values.get(usize::from(*extension)).cloned()
+            && let Some(Value::Vec {
+                length: target_length,
+                values: target,
+            }) = self.values.get_mut(usize::from(*target))
         {
             for value in &extension {
                 self.allocated += mem::size_of_val(value);
             }
 
+            *target_length += extension_length;
             target.extend(extension);
 
             Ok(CopyableValue::Unit)
@@ -2314,14 +2371,19 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
+            && let Some(Value::Vec { values, .. }) = self.values.get(usize::from(*value))
             && let CopyableValue::U64(start) = &call_arguments[1]
             && let CopyableValue::U64(end) = &call_arguments[2]
             && let Ok(start) = usize::try_from(*start)
             && let Ok(end) = usize::try_from(*end)
         {
-            if let Some(value) = value.get(start..end) {
-                self.values.push(Value::Vec(value.to_vec()));
+            if let Some(value) = values.get(start..end) {
+                self.values.push(Value::Vec {
+                    length: u64::try_from(end - start).unwrap_or_else(|_| {
+                        panic!("since each operand is a valid u64, this should be fine")
+                    }),
+                    values: value.to_vec(),
+                });
 
                 let value_index =
                     CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
@@ -2347,10 +2409,9 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get(usize::from(*value))
-            && let Ok(length) = u64::try_from(value.len())
+            && let Some(Value::Vec { length, .. }) = self.values.get(usize::from(*value))
         {
-            Ok(CopyableValue::U64(length))
+            Ok(CopyableValue::U64(*length))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2366,11 +2427,14 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value))
+            && let Some(Value::Vec { length, values }) = self.values.get_mut(usize::from(*value))
             && let CopyableValue::U64(end) = &call_arguments[1]
             && let Ok(end) = usize::try_from(*end)
         {
-            for value in value.drain(end..) {
+            *length = u64::try_from(end)
+                .unwrap_or_else(|_| panic!("since this was originally a u64, it should be fine"));
+
+            for value in values.drain(end..) {
                 self.allocated -= mem::size_of_val(&value);
             }
 
@@ -2390,9 +2454,12 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value_index))
+            && let Some(Value::Vec { length, values }) =
+                self.values.get_mut(usize::from(*value_index))
         {
-            value.push(call_arguments[1]);
+            *length += 1;
+
+            values.push(call_arguments[1]);
 
             self.allocated += mem::size_of_val(&call_arguments[1]);
 
@@ -2412,9 +2479,12 @@ impl Vm {
         O: Write,
     {
         if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
-            && let Some(Value::Vec(value)) = self.values.get_mut(usize::from(*value_index))
+            && let Some(Value::Vec { length, values }) =
+                self.values.get_mut(usize::from(*value_index))
         {
-            if let Some(value) = value.pop() {
+            if let Some(value) = values.pop() {
+                *length -= 1;
+
                 self.allocated -= mem::size_of_val(&value);
 
                 Ok(self.option_some(value))

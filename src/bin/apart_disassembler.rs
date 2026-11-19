@@ -124,30 +124,27 @@ fn print_value(disassembler: &Disassembler, value: CopyableValue) {
                 .expect("the value will exist")
             {
                 Value::String(text) => print!("\"{text}\""),
-                Value::Compound(values) => {
+                Value::Compound { fields, .. } => {
                     print!("Compound([ ");
 
-                    for value in values {
-                        print_value(disassembler, *value);
+                    for field in fields {
+                        print_value(disassembler, *field);
                         print!(", ");
                     }
 
                     print!("])");
                 }
-                Value::TaggedCompound {
-                    tag,
-                    fields: values,
-                } => {
+                Value::TaggedCompound { tag, fields, .. } => {
                     print!("TaggedCompound {{ tag: {tag}, fields: [ ");
 
-                    for value in values {
-                        print_value(disassembler, *value);
+                    for field in fields {
+                        print_value(disassembler, *field);
                         print!(", ");
                     }
 
                     print!("] }}");
                 }
-                Value::Vec(values) => {
+                Value::Vec { values, .. } => {
                     print!("Vec([ ");
 
                     for value in values {
@@ -908,12 +905,12 @@ fn find_labels(labels: &mut [bool], disassembler: &Disassembler, value: Copyable
         }
         CopyableValue::ValueIndex(value_index) => {
             match disassembler.values.get(usize::from(value_index)) {
-                Some(Value::Compound(values) | Value::TaggedCompound { fields: values, .. }) => {
-                    for value in values {
-                        find_labels(labels, disassembler, *value);
+                Some(Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. }) => {
+                    for field in fields {
+                        find_labels(labels, disassembler, *field);
                     }
                 }
-                Some(Value::Vec(values)) => {
+                Some(Value::Vec { values, .. }) => {
                     for value in values {
                         find_labels(labels, disassembler, *value);
                     }

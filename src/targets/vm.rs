@@ -466,21 +466,21 @@ where
             let value_index = *value_index;
 
             match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                Some(Value::Compound(values) | Value::TaggedCompound { fields: values, .. }) => {
-                    let mut taken_values = std::mem::take(values);
+                Some(Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. }) => {
+                    let mut taken_fields = std::mem::take(fields);
 
                     let mut changed = false;
 
-                    for value in &mut taken_values {
+                    for field in &mut taken_fields {
                         changed |=
-                            backpatch_value(value, block_addresses, address_to_label, disassembler);
+                            backpatch_value(field, block_addresses, address_to_label, disassembler);
                     }
 
                     match disassembler.values_mut().get_mut(usize::from(value_index)) {
                         Some(
-                            Value::Compound(values) | Value::TaggedCompound { fields: values, .. },
+                            Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. },
                         ) => {
-                            *values = taken_values;
+                            *fields = taken_fields;
                         }
                         _ => unreachable!(
                             "the outer match guarantees only these variants are matched"
@@ -489,7 +489,7 @@ where
 
                     changed
                 }
-                Some(Value::Vec(values)) => {
+                Some(Value::Vec { values, .. }) => {
                     let mut taken_values = std::mem::take(values);
 
                     let mut changed = false;
@@ -500,7 +500,7 @@ where
                     }
 
                     match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                        Some(Value::Vec(values)) => {
+                        Some(Value::Vec { values, .. }) => {
                             *values = taken_values;
                         }
                         _ => unreachable!(
@@ -586,13 +586,20 @@ pub enum CopyableValue {
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    Compound(Box<[CopyableValue]>),
-    TaggedCompound {
+    Compound {
+        field_count: u8,
         fields: Box<[CopyableValue]>,
+    },
+    TaggedCompound {
         tag: u16,
+        field_count: u8,
+        fields: Box<[CopyableValue]>,
     },
     String(String),
-    Vec(Vec<CopyableValue>),
+    Vec {
+        length: u64,
+        values: Vec<CopyableValue>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1751,7 +1758,7 @@ where
                 let mut bytes = vec![u8::from(Instruction::Compound)];
 
                 bytes.extend(
-                    u16::try_from(values.len())
+                    u8::try_from(values.len())
                         .expect("type checking guarantees the number of fields fits within a u16")
                         .to_le_bytes(),
                 );
@@ -1768,7 +1775,7 @@ where
                 bytes.extend(tag.to_le_bytes());
 
                 bytes.extend(
-                    u16::try_from(fields.len())
+                    u8::try_from(fields.len())
                         .expect("type checking guarantees the number of fields fits within a u16")
                         .to_le_bytes(),
                 );
@@ -2121,7 +2128,7 @@ where
                 Self::NativeFn(native_fn)
             }
             Instruction::Compound => {
-                let field_count = u16::disassemble(bytecode, disassembler);
+                let field_count = u8::disassemble(bytecode, disassembler);
 
                 let mut fields = vec![];
 
@@ -2129,9 +2136,10 @@ where
                     fields.push(Self::disassemble(bytecode, disassembler));
                 }
 
-                disassembler
-                    .values_mut()
-                    .push(Value::Compound(fields.into_boxed_slice()));
+                disassembler.values_mut().push(Value::Compound {
+                    field_count,
+                    fields: fields.into_boxed_slice(),
+                });
 
                 let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
@@ -2142,7 +2150,7 @@ where
             Instruction::TaggedCompound => {
                 let tag = u16::disassemble(bytecode, disassembler);
 
-                let field_count = u16::disassemble(bytecode, disassembler);
+                let field_count = u8::disassemble(bytecode, disassembler);
 
                 let mut fields = vec![];
 
@@ -2152,6 +2160,7 @@ where
 
                 disassembler.values_mut().push(Value::TaggedCompound {
                     tag,
+                    field_count,
                     fields: fields.into_boxed_slice(),
                 });
 
@@ -2174,15 +2183,17 @@ where
             }
             Instruction::Never => Self::Never,
             Instruction::Vec => {
-                let field_count = u64::disassemble(bytecode, disassembler);
+                let length = u64::disassemble(bytecode, disassembler);
 
-                let mut fields = vec![];
+                let mut values = vec![];
 
-                for _ in 0..field_count {
-                    fields.push(Self::disassemble(bytecode, disassembler));
+                for _ in 0..length {
+                    values.push(Self::disassemble(bytecode, disassembler));
                 }
 
-                disassembler.values_mut().push(Value::Vec(fields));
+                disassembler
+                    .values_mut()
+                    .push(Value::Vec { length, values });
 
                 let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
 
@@ -2206,37 +2217,33 @@ where
         *assembler.ip_mut() = 0;
 
         match self {
-            Self::Compound(values) => {
+            Self::Compound {
+                field_count,
+                fields,
+            } => {
                 let mut bytes = Instruction::Compound.assemble(compiled, assembler);
 
-                bytes.extend(
-                    u16::try_from(values.len())
-                        .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes(),
-                );
+                bytes.extend(field_count.to_le_bytes());
 
-                for value in values {
-                    bytes.extend(value.assemble(compiled, assembler));
+                for field in fields {
+                    bytes.extend(field.assemble(compiled, assembler));
                 }
 
                 bytes
             }
             Self::TaggedCompound {
                 tag,
-                fields: values,
+                field_count,
+                fields,
             } => {
                 let mut bytes = Instruction::TaggedCompound.assemble(compiled, assembler);
 
                 bytes.extend(tag.to_le_bytes());
 
-                bytes.extend(
-                    u16::try_from(values.len())
-                        .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes(),
-                );
+                bytes.extend(field_count.to_le_bytes());
 
-                for value in values {
-                    bytes.extend(value.assemble(compiled, assembler));
+                for field in fields {
+                    bytes.extend(field.assemble(compiled, assembler));
                 }
 
                 bytes
@@ -2254,14 +2261,10 @@ where
 
                 bytes
             }
-            Self::Vec(values) => {
+            Self::Vec { length, values } => {
                 let mut bytes = Instruction::Vec.assemble(compiled, assembler);
 
-                bytes.extend(
-                    u64::try_from(values.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes(),
-                );
+                bytes.extend(length.to_le_bytes());
 
                 for value in values {
                     bytes.extend(value.assemble(compiled, assembler));
