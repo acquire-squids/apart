@@ -1,6 +1,6 @@
 use crate::{
-    low_ir::{FnLabel, NativeFn, Register},
-    targets::vm::{CopyableValue, Instruction, Instructive, Value, ValueIndex},
+    low_ir::{FnLabel, NativeFn},
+    targets::vm::{Instructive, ValueIndex, prelude::*},
 };
 
 use std::{
@@ -12,12 +12,12 @@ use std::{
 struct CallFrame {
     fp: usize,
     from: u32,
-    to: Register,
+    to: u16,
 }
 
 struct Vm {
-    registers: Vec<CopyableValue>,
-    values: Vec<Value>,
+    registers: Vec<Value>,
+    arena: Vec<GarbageCollectedValue>,
     allocated: usize,
     next_gc: usize,
     call_frames: Vec<CallFrame>,
@@ -39,8 +39,8 @@ impl Instructive for Vm {
         &mut self.constants
     }
 
-    fn values_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.values
+    fn arena_mut(&mut self) -> &mut Vec<GarbageCollectedValue> {
+        &mut self.arena
     }
 }
 
@@ -60,7 +60,7 @@ where
     O: Write,
 {
     let registers = vec![
-        const { CopyableValue::Never };
+        const { Value::Never(Never) };
         bytecode[..2]
             .as_array::<2>()
             .map(|array| u16::from_le_bytes(*array))
@@ -70,13 +70,13 @@ where
 
     let mut vm = Vm {
         registers,
-        values: vec![],
+        arena: vec![],
         allocated: 0,
         next_gc: DEFAULT_NEXT_GC,
         call_frames: vec![CallFrame {
             fp: 0,
             from: 0,
-            to: Register(0),
+            to: 0,
         }],
         function_labels: vec![],
         constants: vec![],
@@ -95,98 +95,98 @@ macro_rules! binary_op_arithmetic {
         $self:ident, $out:ident, $to:ident, $op:tt, $lhs:expr, $rhs:expr $(,)?
     ) => {{
         match ($lhs, $rhs) {
-            ($crate::targets::vm::CopyableValue::U8(lhs), $crate::targets::vm::CopyableValue::U8(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::U8(lhs $op rhs));
+            ($crate::targets::vm::Value::U8($crate::targets::vm::U8 { value: lhs }), $crate::targets::vm::Value::U8($crate::targets::vm::U8 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::U8($crate::targets::vm::U8 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I8(lhs), $crate::targets::vm::CopyableValue::I8(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::I8(lhs $op rhs));
+            ($crate::targets::vm::Value::I8($crate::targets::vm::I8 { value: lhs }), $crate::targets::vm::Value::I8($crate::targets::vm::I8 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::I8($crate::targets::vm::I8 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U16(lhs), $crate::targets::vm::CopyableValue::U16(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::U16(lhs $op rhs));
+            ($crate::targets::vm::Value::U16($crate::targets::vm::U16 { value: lhs }), $crate::targets::vm::Value::U16($crate::targets::vm::U16 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::U16($crate::targets::vm::U16 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I16(lhs), $crate::targets::vm::CopyableValue::I16(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::I16(lhs $op rhs));
+            ($crate::targets::vm::Value::I16($crate::targets::vm::I16 { value: lhs }), $crate::targets::vm::Value::I16($crate::targets::vm::I16 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::I16($crate::targets::vm::I16 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U32(lhs), $crate::targets::vm::CopyableValue::U32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::U32(lhs $op rhs));
+            ($crate::targets::vm::Value::U32($crate::targets::vm::U32 { value: lhs }), $crate::targets::vm::Value::U32($crate::targets::vm::U32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::U32($crate::targets::vm::U32 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I32(lhs), $crate::targets::vm::CopyableValue::I32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::I32(lhs $op rhs));
+            ($crate::targets::vm::Value::I32($crate::targets::vm::I32 { value: lhs }), $crate::targets::vm::Value::I32($crate::targets::vm::I32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::I32($crate::targets::vm::I32 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U64(lhs), $crate::targets::vm::CopyableValue::U64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::U64(lhs $op rhs));
+            ($crate::targets::vm::Value::U64($crate::targets::vm::U64 { value: lhs }), $crate::targets::vm::Value::U64($crate::targets::vm::U64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::U64($crate::targets::vm::U64 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I64(lhs), $crate::targets::vm::CopyableValue::I64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::I64(lhs $op rhs));
+            ($crate::targets::vm::Value::I64($crate::targets::vm::I64 { value: lhs }), $crate::targets::vm::Value::I64($crate::targets::vm::I64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::I64($crate::targets::vm::I64 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::F32(lhs), $crate::targets::vm::CopyableValue::F32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::F32(lhs $op rhs));
+            ($crate::targets::vm::Value::F32($crate::targets::vm::F32 { value: lhs }), $crate::targets::vm::Value::F32($crate::targets::vm::F32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::F32($crate::targets::vm::F32 { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::F64(lhs), $crate::targets::vm::CopyableValue::F64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::F64(lhs $op rhs));
+            ($crate::targets::vm::Value::F64($crate::targets::vm::F64 { value: lhs }), $crate::targets::vm::Value::F64($crate::targets::vm::F64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::F64($crate::targets::vm::F64 { value: lhs $op rhs }));
 
                 Ok(())
             }
             (
-                $crate::targets::vm::CopyableValue::U8(_)
-                | $crate::targets::vm::CopyableValue::I8(_)
-                | $crate::targets::vm::CopyableValue::U16(_)
-                | $crate::targets::vm::CopyableValue::I16(_)
-                | $crate::targets::vm::CopyableValue::U32(_)
-                | $crate::targets::vm::CopyableValue::I32(_)
-                | $crate::targets::vm::CopyableValue::U64(_)
-                | $crate::targets::vm::CopyableValue::I64(_)
-                | $crate::targets::vm::CopyableValue::F32(_)
-                | $crate::targets::vm::CopyableValue::F64(_)
-                | $crate::targets::vm::CopyableValue::Boolean(_)
-                | $crate::targets::vm::CopyableValue::Unit
-                | $crate::targets::vm::CopyableValue::Fn { .. }
-                | $crate::targets::vm::CopyableValue::NativeFn(_)
-                | $crate::targets::vm::CopyableValue::ValueIndex(_)
-                | $crate::targets::vm::CopyableValue::Never
-                | $crate::targets::vm::CopyableValue::Register(_),
-                $crate::targets::vm::CopyableValue::U8(_)
-                | $crate::targets::vm::CopyableValue::I8(_)
-                | $crate::targets::vm::CopyableValue::U16(_)
-                | $crate::targets::vm::CopyableValue::I16(_)
-                | $crate::targets::vm::CopyableValue::U32(_)
-                | $crate::targets::vm::CopyableValue::I32(_)
-                | $crate::targets::vm::CopyableValue::U64(_)
-                | $crate::targets::vm::CopyableValue::I64(_)
-                | $crate::targets::vm::CopyableValue::F32(_)
-                | $crate::targets::vm::CopyableValue::F64(_)
-                | $crate::targets::vm::CopyableValue::Boolean(_)
-                | $crate::targets::vm::CopyableValue::Unit
-                | $crate::targets::vm::CopyableValue::Fn { .. }
-                | $crate::targets::vm::CopyableValue::NativeFn(_)
-                | $crate::targets::vm::CopyableValue::ValueIndex(_)
-                | $crate::targets::vm::CopyableValue::Never
-                | $crate::targets::vm::CopyableValue::Register(_)
+                lhs @ ($crate::targets::vm::Value::U8(_)
+                | $crate::targets::vm::Value::I8(_)
+                | $crate::targets::vm::Value::U16(_)
+                | $crate::targets::vm::Value::I16(_)
+                | $crate::targets::vm::Value::U32(_)
+                | $crate::targets::vm::Value::I32(_)
+                | $crate::targets::vm::Value::U64(_)
+                | $crate::targets::vm::Value::I64(_)
+                | $crate::targets::vm::Value::F32(_)
+                | $crate::targets::vm::Value::F64(_)
+                | $crate::targets::vm::Value::Boolean(_)
+                | $crate::targets::vm::Value::Unit(_)
+                | $crate::targets::vm::Value::ApartFn(_)
+                | $crate::targets::vm::Value::ApartNativeFn(_)
+                | $crate::targets::vm::Value::ValueIndex(_)
+                | $crate::targets::vm::Value::Never(_)
+                | $crate::targets::vm::Value::ApartRegister(_)),
+                rhs @ ($crate::targets::vm::Value::U8(_)
+                | $crate::targets::vm::Value::I8(_)
+                | $crate::targets::vm::Value::U16(_)
+                | $crate::targets::vm::Value::I16(_)
+                | $crate::targets::vm::Value::U32(_)
+                | $crate::targets::vm::Value::I32(_)
+                | $crate::targets::vm::Value::U64(_)
+                | $crate::targets::vm::Value::I64(_)
+                | $crate::targets::vm::Value::F32(_)
+                | $crate::targets::vm::Value::F64(_)
+                | $crate::targets::vm::Value::Boolean(_)
+                | $crate::targets::vm::Value::Unit(_)
+                | $crate::targets::vm::Value::ApartFn(_)
+                | $crate::targets::vm::Value::ApartNativeFn(_)
+                | $crate::targets::vm::Value::ValueIndex(_)
+                | $crate::targets::vm::Value::Never(_)
+                | $crate::targets::vm::Value::ApartRegister(_)),
             ) => {
                 writeln!(
                     $out,
                     "invalid operands for {} (lhs is {}, rhs is {})",
                     stringify!($op),
-                    $self.value_to_string($lhs, &mut std::collections::HashSet::new()),
-                    $self.value_to_string($rhs, &mut std::collections::HashSet::new())
+                    $self.value_to_string(&lhs, &mut std::collections::HashSet::new()),
+                    $self.value_to_string(&rhs, &mut std::collections::HashSet::new())
                 )
                 .map_err(|_| $crate::vm::Interrupt::Panic)?;
 
@@ -201,98 +201,98 @@ macro_rules! binary_op_comparison {
         $self:ident, $out:ident, $to:ident, $op:tt, $lhs:expr, $rhs:expr $(,)?
     ) => {{
         match ($lhs, $rhs) {
-            ($crate::targets::vm::CopyableValue::U8(lhs), $crate::targets::vm::CopyableValue::U8(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::U8($crate::targets::vm::U8 { value: lhs }), $crate::targets::vm::Value::U8($crate::targets::vm::U8 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I8(lhs), $crate::targets::vm::CopyableValue::I8(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::I8($crate::targets::vm::I8 { value: lhs }), $crate::targets::vm::Value::I8($crate::targets::vm::I8 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U16(lhs), $crate::targets::vm::CopyableValue::U16(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::U16($crate::targets::vm::U16 { value: lhs }), $crate::targets::vm::Value::U16($crate::targets::vm::U16 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I16(lhs), $crate::targets::vm::CopyableValue::I16(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::I16($crate::targets::vm::I16 { value: lhs }), $crate::targets::vm::Value::I16($crate::targets::vm::I16 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U32(lhs), $crate::targets::vm::CopyableValue::U32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::U32($crate::targets::vm::U32 { value: lhs }), $crate::targets::vm::Value::U32($crate::targets::vm::U32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I32(lhs), $crate::targets::vm::CopyableValue::I32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::I32($crate::targets::vm::I32 { value: lhs }), $crate::targets::vm::Value::I32($crate::targets::vm::I32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::U64(lhs), $crate::targets::vm::CopyableValue::U64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::U64($crate::targets::vm::U64 { value: lhs }), $crate::targets::vm::Value::U64($crate::targets::vm::U64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::I64(lhs), $crate::targets::vm::CopyableValue::I64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::I64($crate::targets::vm::I64 { value: lhs }), $crate::targets::vm::Value::I64($crate::targets::vm::I64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::F32(lhs), $crate::targets::vm::CopyableValue::F32(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::F32($crate::targets::vm::F32 { value: lhs }), $crate::targets::vm::Value::F32($crate::targets::vm::F32 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
-            ($crate::targets::vm::CopyableValue::F64(lhs), $crate::targets::vm::CopyableValue::F64(rhs)) => {
-                $self.assign($to, $crate::targets::vm::CopyableValue::Boolean(lhs $op rhs));
+            ($crate::targets::vm::Value::F64($crate::targets::vm::F64 { value: lhs }), $crate::targets::vm::Value::F64($crate::targets::vm::F64 { value: rhs })) => {
+                $self.assign($to, $crate::targets::vm::Value::Boolean($crate::targets::vm::Boolean { value: lhs $op rhs }));
 
                 Ok(())
             }
             (
-                $crate::targets::vm::CopyableValue::U8(_)
-                | $crate::targets::vm::CopyableValue::I8(_)
-                | $crate::targets::vm::CopyableValue::U16(_)
-                | $crate::targets::vm::CopyableValue::I16(_)
-                | $crate::targets::vm::CopyableValue::U32(_)
-                | $crate::targets::vm::CopyableValue::I32(_)
-                | $crate::targets::vm::CopyableValue::U64(_)
-                | $crate::targets::vm::CopyableValue::I64(_)
-                | $crate::targets::vm::CopyableValue::F32(_)
-                | $crate::targets::vm::CopyableValue::F64(_)
-                | $crate::targets::vm::CopyableValue::Boolean(_)
-                | $crate::targets::vm::CopyableValue::Unit
-                | $crate::targets::vm::CopyableValue::Fn { .. }
-                | $crate::targets::vm::CopyableValue::NativeFn(_)
-                | $crate::targets::vm::CopyableValue::ValueIndex(_)
-                | $crate::targets::vm::CopyableValue::Never
-                | $crate::targets::vm::CopyableValue::Register(_),
-                $crate::targets::vm::CopyableValue::U8(_)
-                | $crate::targets::vm::CopyableValue::I8(_)
-                | $crate::targets::vm::CopyableValue::U16(_)
-                | $crate::targets::vm::CopyableValue::I16(_)
-                | $crate::targets::vm::CopyableValue::U32(_)
-                | $crate::targets::vm::CopyableValue::I32(_)
-                | $crate::targets::vm::CopyableValue::U64(_)
-                | $crate::targets::vm::CopyableValue::I64(_)
-                | $crate::targets::vm::CopyableValue::F32(_)
-                | $crate::targets::vm::CopyableValue::F64(_)
-                | $crate::targets::vm::CopyableValue::Boolean(_)
-                | $crate::targets::vm::CopyableValue::Unit
-                | $crate::targets::vm::CopyableValue::Fn { .. }
-                | $crate::targets::vm::CopyableValue::NativeFn(_)
-                | $crate::targets::vm::CopyableValue::ValueIndex(_)
-                | $crate::targets::vm::CopyableValue::Never
-                | $crate::targets::vm::CopyableValue::Register(_)
+                lhs @ ($crate::targets::vm::Value::U8(_)
+                | $crate::targets::vm::Value::I8(_)
+                | $crate::targets::vm::Value::U16(_)
+                | $crate::targets::vm::Value::I16(_)
+                | $crate::targets::vm::Value::U32(_)
+                | $crate::targets::vm::Value::I32(_)
+                | $crate::targets::vm::Value::U64(_)
+                | $crate::targets::vm::Value::I64(_)
+                | $crate::targets::vm::Value::F32(_)
+                | $crate::targets::vm::Value::F64(_)
+                | $crate::targets::vm::Value::Boolean(_)
+                | $crate::targets::vm::Value::Unit(_)
+                | $crate::targets::vm::Value::ApartFn(_)
+                | $crate::targets::vm::Value::ApartNativeFn(_)
+                | $crate::targets::vm::Value::ValueIndex(_)
+                | $crate::targets::vm::Value::Never(_)
+                | $crate::targets::vm::Value::ApartRegister(_)),
+                rhs @ ($crate::targets::vm::Value::U8(_)
+                | $crate::targets::vm::Value::I8(_)
+                | $crate::targets::vm::Value::U16(_)
+                | $crate::targets::vm::Value::I16(_)
+                | $crate::targets::vm::Value::U32(_)
+                | $crate::targets::vm::Value::I32(_)
+                | $crate::targets::vm::Value::U64(_)
+                | $crate::targets::vm::Value::I64(_)
+                | $crate::targets::vm::Value::F32(_)
+                | $crate::targets::vm::Value::F64(_)
+                | $crate::targets::vm::Value::Boolean(_)
+                | $crate::targets::vm::Value::Unit(_)
+                | $crate::targets::vm::Value::ApartFn(_)
+                | $crate::targets::vm::Value::ApartNativeFn(_)
+                | $crate::targets::vm::Value::ValueIndex(_)
+                | $crate::targets::vm::Value::Never(_)
+                | $crate::targets::vm::Value::ApartRegister(_)),
             ) => {
                 writeln!(
                     $out,
                     "invalid operands for {} (lhs is {}, rhs is {})",
                     stringify!($op),
-                    $self.value_to_string($lhs, &mut std::collections::HashSet::new()),
-                    $self.value_to_string($rhs, &mut std::collections::HashSet::new())
+                    $self.value_to_string(&lhs, &mut std::collections::HashSet::new()),
+                    $self.value_to_string(&rhs, &mut std::collections::HashSet::new())
                 )
                 .map_err(|_| $crate::vm::Interrupt::Panic)?;
 
@@ -303,25 +303,25 @@ macro_rules! binary_op_comparison {
 }
 
 impl Vm {
-    fn value_to_string(&self, value: CopyableValue, seen: &mut HashSet<ValueIndex>) -> String {
-        if let CopyableValue::ValueIndex(value_index) = value
-            && let Some(value) = self.values.get(usize::from(value_index))
+    fn value_to_string(&self, value: &Value, seen: &mut HashSet<ValueIndex>) -> String {
+        if let Value::ValueIndex(value_index) = value
+            && let Some(value) = self.arena.get(usize::from(*value_index))
         {
-            if !seen.insert(value_index) {
+            if !seen.insert(*value_index) {
                 return format!("{value_index:?}");
             }
 
             match value {
-                Value::Compound { fields, .. } => {
+                GarbageCollectedValue::Compound(Compound { fields, .. }) => {
                     let mut buffer = "Compound(".to_string();
 
                     if let Some(first_field) = fields.first() {
-                        buffer.push_str(self.value_to_string(*first_field, seen).as_str());
+                        buffer.push_str(self.value_to_string(first_field, seen).as_str());
 
                         for field in fields.iter().skip(1) {
                             buffer.push_str(", ");
 
-                            buffer.push_str(self.value_to_string(*field, seen).as_str());
+                            buffer.push_str(self.value_to_string(field, seen).as_str());
                         }
                     }
 
@@ -329,16 +329,16 @@ impl Vm {
 
                     buffer
                 }
-                Value::TaggedCompound { tag, fields, .. } => {
+                GarbageCollectedValue::TaggedCompound(TaggedCompound { tag, fields, .. }) => {
                     let mut buffer = format!("TaggedCompound {{ tag: {tag}, fields: [");
 
                     if let Some(first_field) = fields.first() {
-                        buffer.push_str(self.value_to_string(*first_field, seen).as_str());
+                        buffer.push_str(self.value_to_string(first_field, seen).as_str());
 
                         for field in fields.iter().skip(1) {
                             buffer.push_str(", ");
 
-                            buffer.push_str(self.value_to_string(*field, seen).as_str());
+                            buffer.push_str(self.value_to_string(field, seen).as_str());
                         }
                     }
 
@@ -346,19 +346,19 @@ impl Vm {
 
                     buffer
                 }
-                Value::String(text) => {
+                GarbageCollectedValue::ApartString(ApartString { value: text }) => {
                     format!("String({text:?})")
                 }
-                Value::Vec { values, .. } => {
+                GarbageCollectedValue::ApartVec(ApartVec { values, .. }) => {
                     let mut buffer = "Vec([".to_string();
 
                     if let Some(first_value) = values.first() {
-                        buffer.push_str(self.value_to_string(*first_value, seen).as_str());
+                        buffer.push_str(self.value_to_string(first_value, seen).as_str());
 
                         for value in values.iter().skip(1) {
                             buffer.push_str(", ");
 
-                            buffer.push_str(self.value_to_string(*value, seen).as_str());
+                            buffer.push_str(self.value_to_string(value, seen).as_str());
                         }
                     }
 
@@ -377,14 +377,14 @@ impl Vm {
 
         if let Some(first_value) = self.registers[(self.fp)..].first() {
             buffer.push_str(
-                self.value_to_string(*first_value, &mut HashSet::new())
+                self.value_to_string(first_value, &mut HashSet::new())
                     .as_str(),
             );
 
             for value in self.registers.iter().skip(self.fp + 1) {
                 buffer.push_str(", ");
 
-                buffer.push_str(self.value_to_string(*value, &mut HashSet::new()).as_str());
+                buffer.push_str(self.value_to_string(value, &mut HashSet::new()).as_str());
             }
         }
 
@@ -446,9 +446,9 @@ impl Vm {
         O: Write,
     {
         match instruction {
-            Instruction::NoOp | Instruction::Label => Ok(()),
-            Instruction::Panic => self.panic(out, None),
-            Instruction::FnLabel { fn_label } => {
+            Instruction::NoOp(NoOp) | Instruction::Label(Label) => Ok(()),
+            Instruction::Panic(Panic) => self.panic(out, None),
+            Instruction::ApartFnLabel(ApartFnLabel { fn_label }) => {
                 self.function_labels.push(FnLabel::new(
                     fn_label.file_name().to_string(),
                     fn_label.function_label().to_string(),
@@ -456,497 +456,498 @@ impl Vm {
 
                 Ok(())
             }
-            Instruction::NotRegister { to, operand } => {
+            Instruction::NotRegister(NotRegister { to, operand }) => {
                 let operand = self.get_register(*operand);
 
-                self.op_logical_not(out, *to, operand)
+                self.op_logical_not(out, *to, &operand)
             }
-            Instruction::NotValue { to, operand } => {
-                let operand = self.dereference_value(*operand, true);
+            Instruction::NotValue(NotValue { to, operand }) => {
+                let operand = self.dereference_value(operand, true);
 
-                self.op_logical_not(out, *to, operand)
+                self.op_logical_not(out, *to, &operand)
             }
-            Instruction::NegateRegister { to, operand } => {
+            Instruction::NegateRegister(NegateRegister { to, operand }) => {
                 let operand = self.get_register(*operand);
 
-                self.op_arithmetic_negate(out, *to, operand)
+                self.op_arithmetic_negate(out, *to, &operand)
             }
-            Instruction::NegateValue { to, operand } => {
-                let operand = self.dereference_value(*operand, true);
+            Instruction::NegateValue(NegateValue { to, operand }) => {
+                let operand = self.dereference_value(operand, true);
 
-                self.op_arithmetic_negate(out, *to, operand)
+                self.op_arithmetic_negate(out, *to, &operand)
             }
-            Instruction::MultiplyRegisterRegister { to, lhs, rhs } => {
+            Instruction::MultiplyRegisterRegister(MultiplyRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_multiply(out, *to, lhs, rhs)
+                self.op_arithmetic_multiply(out, *to, &lhs, &rhs)
             }
-            Instruction::MultiplyRegisterValue { to, lhs, rhs } => {
+            Instruction::MultiplyRegisterValue(MultiplyRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_multiply(out, *to, lhs, rhs)
+                self.op_arithmetic_multiply(out, *to, &lhs, &rhs)
             }
-            Instruction::MultiplyValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::MultiplyValueRegister(MultiplyValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_multiply(out, *to, lhs, rhs)
+                self.op_arithmetic_multiply(out, *to, &lhs, &rhs)
             }
-            Instruction::MultiplyValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::MultiplyValueValue(MultiplyValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_multiply(out, *to, lhs, rhs)
+                self.op_arithmetic_multiply(out, *to, &lhs, &rhs)
             }
-            Instruction::DivideRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_arithmetic_divide(out, *to, lhs, rhs)
-            }
-            Instruction::DivideRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_arithmetic_divide(out, *to, lhs, rhs)
-            }
-            Instruction::DivideValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_arithmetic_divide(out, *to, lhs, rhs)
-            }
-            Instruction::DivideValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_arithmetic_divide(out, *to, lhs, rhs)
-            }
-            Instruction::RemainderRegisterRegister { to, lhs, rhs } => {
+            Instruction::DivideRegisterRegister(DivideRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_remainder(out, *to, lhs, rhs)
+                self.op_arithmetic_divide(out, *to, &lhs, &rhs)
             }
-            Instruction::RemainderRegisterValue { to, lhs, rhs } => {
+            Instruction::DivideRegisterValue(DivideRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_remainder(out, *to, lhs, rhs)
+                self.op_arithmetic_divide(out, *to, &lhs, &rhs)
             }
-            Instruction::RemainderValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::DivideValueRegister(DivideValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_remainder(out, *to, lhs, rhs)
+                self.op_arithmetic_divide(out, *to, &lhs, &rhs)
             }
-            Instruction::RemainderValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::DivideValueValue(DivideValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_remainder(out, *to, lhs, rhs)
+                self.op_arithmetic_divide(out, *to, &lhs, &rhs)
             }
-            Instruction::AddRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_arithmetic_add(out, *to, lhs, rhs)
-            }
-            Instruction::AddRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_arithmetic_add(out, *to, lhs, rhs)
-            }
-            Instruction::AddValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_arithmetic_add(out, *to, lhs, rhs)
-            }
-            Instruction::AddValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_arithmetic_add(out, *to, lhs, rhs)
-            }
-            Instruction::SubtractRegisterRegister { to, lhs, rhs } => {
+            Instruction::RemainderRegisterRegister(RemainderRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_subtract(out, *to, lhs, rhs)
+                self.op_arithmetic_remainder(out, *to, &lhs, &rhs)
             }
-            Instruction::SubtractRegisterValue { to, lhs, rhs } => {
+            Instruction::RemainderRegisterValue(RemainderRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_subtract(out, *to, lhs, rhs)
+                self.op_arithmetic_remainder(out, *to, &lhs, &rhs)
             }
-            Instruction::SubtractValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::RemainderValueRegister(RemainderValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_arithmetic_subtract(out, *to, lhs, rhs)
+                self.op_arithmetic_remainder(out, *to, &lhs, &rhs)
             }
-            Instruction::SubtractValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::RemainderValueValue(RemainderValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_arithmetic_subtract(out, *to, lhs, rhs)
+                self.op_arithmetic_remainder(out, *to, &lhs, &rhs)
             }
-            Instruction::LessRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_less(out, *to, lhs, rhs)
-            }
-            Instruction::LessRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_less(out, *to, lhs, rhs)
-            }
-            Instruction::LessValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_less(out, *to, lhs, rhs)
-            }
-            Instruction::LessValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_less(out, *to, lhs, rhs)
-            }
-            Instruction::GreaterRegisterRegister { to, lhs, rhs } => {
+            Instruction::AddRegisterRegister(AddRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_greater(out, *to, lhs, rhs)
+                self.op_arithmetic_add(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterRegisterValue { to, lhs, rhs } => {
+            Instruction::AddRegisterValue(AddRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_greater(out, *to, lhs, rhs)
+                self.op_arithmetic_add(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::AddValueRegister(AddValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_greater(out, *to, lhs, rhs)
+                self.op_arithmetic_add(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::AddValueValue(AddValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_greater(out, *to, lhs, rhs)
+                self.op_arithmetic_add(out, *to, &lhs, &rhs)
             }
-            Instruction::LessOrEqualRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_less_or_equal(out, *to, lhs, rhs)
-            }
-            Instruction::LessOrEqualRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_less_or_equal(out, *to, lhs, rhs)
-            }
-            Instruction::LessOrEqualValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_less_or_equal(out, *to, lhs, rhs)
-            }
-            Instruction::LessOrEqualValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_less_or_equal(out, *to, lhs, rhs)
-            }
-            Instruction::GreaterOrEqualRegisterRegister { to, lhs, rhs } => {
+            Instruction::SubtractRegisterRegister(SubtractRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_greater_or_equal(out, *to, lhs, rhs)
+                self.op_arithmetic_subtract(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterOrEqualRegisterValue { to, lhs, rhs } => {
+            Instruction::SubtractRegisterValue(SubtractRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_greater_or_equal(out, *to, lhs, rhs)
+                self.op_arithmetic_subtract(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterOrEqualValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::SubtractValueRegister(SubtractValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_greater_or_equal(out, *to, lhs, rhs)
+                self.op_arithmetic_subtract(out, *to, &lhs, &rhs)
             }
-            Instruction::GreaterOrEqualValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::SubtractValueValue(SubtractValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_greater_or_equal(out, *to, lhs, rhs)
+                self.op_arithmetic_subtract(out, *to, &lhs, &rhs)
             }
-            Instruction::EqualRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_equal(out, *to, lhs, rhs)
-            }
-            Instruction::EqualRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_equal(out, *to, lhs, rhs)
-            }
-            Instruction::EqualValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_comparison_equal(out, *to, lhs, rhs)
-            }
-            Instruction::EqualValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_comparison_equal(out, *to, lhs, rhs)
-            }
-            Instruction::NotEqualRegisterRegister { to, lhs, rhs } => {
+            Instruction::LessRegisterRegister(LessRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_not_equal(out, *to, lhs, rhs)
+                self.op_comparison_less(out, *to, &lhs, &rhs)
             }
-            Instruction::NotEqualRegisterValue { to, lhs, rhs } => {
+            Instruction::LessRegisterValue(LessRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_not_equal(out, *to, lhs, rhs)
+                self.op_comparison_less(out, *to, &lhs, &rhs)
             }
-            Instruction::NotEqualValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::LessValueRegister(LessValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_comparison_not_equal(out, *to, lhs, rhs)
+                self.op_comparison_less(out, *to, &lhs, &rhs)
             }
-            Instruction::NotEqualValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::LessValueValue(LessValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_comparison_not_equal(out, *to, lhs, rhs)
+                self.op_comparison_less(out, *to, &lhs, &rhs)
             }
-            Instruction::AndRegisterRegister { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.get_register(*rhs);
-
-                self.op_logical_and(out, *to, lhs, rhs)
-            }
-            Instruction::AndRegisterValue { to, lhs, rhs } => {
-                let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_logical_and(out, *to, lhs, rhs)
-            }
-            Instruction::AndValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.get_register(*rhs);
-
-                self.op_logical_and(out, *to, lhs, rhs)
-            }
-            Instruction::AndValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
-
-                self.op_logical_and(out, *to, lhs, rhs)
-            }
-            Instruction::OrRegisterRegister { to, lhs, rhs } => {
+            Instruction::GreaterRegisterRegister(GreaterRegisterRegister { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
                 let rhs = self.get_register(*rhs);
 
-                self.op_logical_or(out, *to, lhs, rhs)
+                self.op_comparison_greater(out, *to, &lhs, &rhs)
             }
-            Instruction::OrRegisterValue { to, lhs, rhs } => {
+            Instruction::GreaterRegisterValue(GreaterRegisterValue { to, lhs, rhs }) => {
                 let lhs = self.get_register(*lhs);
-                let rhs = self.dereference_value(*rhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_logical_or(out, *to, lhs, rhs)
+                self.op_comparison_greater(out, *to, &lhs, &rhs)
             }
-            Instruction::OrValueRegister { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
+            Instruction::GreaterValueRegister(GreaterValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
                 let rhs = self.get_register(*rhs);
 
-                self.op_logical_or(out, *to, lhs, rhs)
+                self.op_comparison_greater(out, *to, &lhs, &rhs)
             }
-            Instruction::OrValueValue { to, lhs, rhs } => {
-                let lhs = self.dereference_value(*lhs, true);
-                let rhs = self.dereference_value(*rhs, true);
+            Instruction::GreaterValueValue(GreaterValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
 
-                self.op_logical_or(out, *to, lhs, rhs)
+                self.op_comparison_greater(out, *to, &lhs, &rhs)
             }
-            Instruction::AssignRegister { to, operand } => {
+            Instruction::LessOrEqualRegisterRegister(LessOrEqualRegisterRegister {
+                to,
+                lhs,
+                rhs,
+            }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_less_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::LessOrEqualRegisterValue(LessOrEqualRegisterValue { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_less_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::LessOrEqualValueRegister(LessOrEqualValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_less_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::LessOrEqualValueValue(LessOrEqualValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_less_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::GreaterOrEqualRegisterRegister(GreaterOrEqualRegisterRegister {
+                to,
+                lhs,
+                rhs,
+            }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_greater_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::GreaterOrEqualRegisterValue(GreaterOrEqualRegisterValue {
+                to,
+                lhs,
+                rhs,
+            }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_greater_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::GreaterOrEqualValueRegister(GreaterOrEqualValueRegister {
+                to,
+                lhs,
+                rhs,
+            }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_greater_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::GreaterOrEqualValueValue(GreaterOrEqualValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_greater_or_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::EqualRegisterRegister(EqualRegisterRegister { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::EqualRegisterValue(EqualRegisterValue { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::EqualValueRegister(EqualValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::EqualValueValue(EqualValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::NotEqualRegisterRegister(NotEqualRegisterRegister { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_not_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::NotEqualRegisterValue(NotEqualRegisterValue { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_not_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::NotEqualValueRegister(NotEqualValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_comparison_not_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::NotEqualValueValue(NotEqualValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_comparison_not_equal(out, *to, &lhs, &rhs)
+            }
+            Instruction::AndRegisterRegister(AndRegisterRegister { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_logical_and(out, *to, &lhs, &rhs)
+            }
+            Instruction::AndRegisterValue(AndRegisterValue { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_logical_and(out, *to, &lhs, &rhs)
+            }
+            Instruction::AndValueRegister(AndValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_logical_and(out, *to, &lhs, &rhs)
+            }
+            Instruction::AndValueValue(AndValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_logical_and(out, *to, &lhs, &rhs)
+            }
+            Instruction::OrRegisterRegister(OrRegisterRegister { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.get_register(*rhs);
+
+                self.op_logical_or(out, *to, &lhs, &rhs)
+            }
+            Instruction::OrRegisterValue(OrRegisterValue { to, lhs, rhs }) => {
+                let lhs = self.get_register(*lhs);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_logical_or(out, *to, &lhs, &rhs)
+            }
+            Instruction::OrValueRegister(OrValueRegister { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.get_register(*rhs);
+
+                self.op_logical_or(out, *to, &lhs, &rhs)
+            }
+            Instruction::OrValueValue(OrValueValue { to, lhs, rhs }) => {
+                let lhs = self.dereference_value(lhs, true);
+                let rhs = self.dereference_value(rhs, true);
+
+                self.op_logical_or(out, *to, &lhs, &rhs)
+            }
+            Instruction::AssignRegister(AssignRegister { to, operand }) => {
                 let operand = self.get_register(*operand);
 
                 self.op_assign(out, *to, operand)
             }
-            Instruction::AssignValue { to, operand } => {
-                let operand = self.dereference_value(*operand, true);
+            Instruction::AssignValue(AssignValue { to, operand }) => {
+                let operand = self.dereference_value(operand, true);
 
                 self.op_assign(out, *to, operand)
             }
-            Instruction::PushRegister { operand } => {
+            Instruction::PushRegister(PushRegister { operand }) => {
                 let operand = self.get_register(*operand);
 
                 self.op_push(out, operand)
             }
-            Instruction::PushValue { operand } => {
-                let operand = self.dereference_value(*operand, true);
+            Instruction::PushValue(PushValue { operand }) => {
+                let operand = self.dereference_value(operand, true);
 
                 self.op_push(out, operand)
             }
-            Instruction::AccessRegister { to, index, of } => {
+            Instruction::AccessRegister(AccessRegister { to, index, of }) => {
                 let of = self.get_register(*of);
 
-                self.op_access(out, *to, *index, of)
+                self.op_access(out, *to, *index, &of)
             }
-            Instruction::AccessValue { to, index, of } => {
-                let of = self.dereference_value(*of, true);
+            Instruction::AccessValue(AccessValue { to, index, of }) => {
+                let of = self.dereference_value(of, true);
 
-                self.op_access(out, *to, *index, of)
+                self.op_access(out, *to, *index, &of)
             }
-            Instruction::AccessAssignRegisterRegister { to, index, value } => {
+            Instruction::AccessAssignRegisterRegister(AccessAssignRegisterRegister {
+                to,
+                index,
+                value,
+            }) => {
                 let to = self.get_register(*to);
                 let value = self.get_register(*value);
 
-                self.op_access_assign(out, to, *index, value)
+                self.op_access_assign(out, &to, *index, value)
             }
-            Instruction::AccessAssignRegisterValue { to, index, value } => {
+            Instruction::AccessAssignRegisterValue(AccessAssignRegisterValue {
+                to,
+                index,
+                value,
+            }) => {
                 let to = self.get_register(*to);
-                let value = self.dereference_value(*value, true);
+                let value = self.dereference_value(value, true);
 
-                self.op_access_assign(out, to, *index, value)
+                self.op_access_assign(out, &to, *index, value)
             }
-            Instruction::AccessAssignValueRegister { to, index, value } => {
-                let to = self.dereference_value(*to, true);
+            Instruction::AccessAssignValueRegister(AccessAssignValueRegister {
+                to,
+                index,
+                value,
+            }) => {
+                let to = self.dereference_value(to, true);
                 let value = self.get_register(*value);
 
-                self.op_access_assign(out, to, *index, value)
+                self.op_access_assign(out, &to, *index, value)
             }
-            Instruction::AccessAssignValueValue { to, index, value } => {
-                let to = self.dereference_value(*to, true);
-                let value = self.dereference_value(*value, true);
+            Instruction::AccessAssignValueValue(AccessAssignValueValue { to, index, value }) => {
+                let to = self.dereference_value(to, true);
+                let value = self.dereference_value(value, true);
 
-                self.op_access_assign(out, to, *index, value)
+                self.op_access_assign(out, &to, *index, value)
             }
-            Instruction::GetTagRegister { to, of } => {
+            Instruction::GetTagRegister(GetTagRegister { to, of }) => {
                 let of = self.get_register(*of);
 
-                self.op_get_tag(out, *to, of)
+                self.op_get_tag(out, *to, &of)
             }
-            Instruction::GetTagValue { to, of } => {
-                let of = self.dereference_value(*of, true);
+            Instruction::GetTagValue(GetTagValue { to, of }) => {
+                let of = self.dereference_value(of, true);
 
-                self.op_get_tag(out, *to, of)
+                self.op_get_tag(out, *to, &of)
             }
-            Instruction::CallRegister { to, callee, .. } => {
+            Instruction::CallRegister(CallRegister { to, callee, .. }) => {
                 let callee = self.get_register(*callee);
 
-                self.op_call(out, *to, callee)
+                self.op_call(out, *to, &callee)
             }
-            Instruction::CallValue { to, callee, .. } => {
-                let callee = self.dereference_value(*callee, true);
+            Instruction::CallValue(CallValue { to, callee, .. }) => {
+                let callee = self.dereference_value(callee, true);
 
-                self.op_call(out, *to, callee)
+                self.op_call(out, *to, &callee)
             }
-            Instruction::Jump { destination } => self.op_jump(out, *destination),
-            Instruction::BranchRegister {
+            Instruction::Jump(Jump { destination }) => self.op_jump(out, *destination),
+            Instruction::BranchRegister(BranchRegister {
                 condition,
                 when_true,
                 otherwise,
-            } => {
+            }) => {
                 let condition = self.get_register(*condition);
 
-                self.op_branch(out, condition, *when_true, *otherwise)
+                self.op_branch(out, &condition, *when_true, *otherwise)
             }
-            Instruction::BranchValue {
+            Instruction::BranchValue(BranchValue {
                 condition,
                 when_true,
                 otherwise,
-            } => {
-                let condition = self.dereference_value(*condition, true);
+            }) => {
+                let condition = self.dereference_value(condition, true);
 
-                self.op_branch(out, condition, *when_true, *otherwise)
+                self.op_branch(out, &condition, *when_true, *otherwise)
             }
-            Instruction::ReturnRegister { value } => {
+            Instruction::ReturnRegister(ReturnRegister { value }) => {
                 let value = self.get_register(*value);
 
                 self.op_return(out, value)
             }
-            Instruction::ReturnValue { value } => {
-                let value = self.dereference_value(*value, true);
+            Instruction::ReturnValue(ReturnValue { value }) => {
+                let value = self.dereference_value(value, true);
 
                 self.op_return(out, value)
-            }
-            Instruction::I64
-            | Instruction::F64
-            | Instruction::Boolean
-            | Instruction::Unit
-            | Instruction::Fn
-            | Instruction::NativeFn
-            | Instruction::Compound
-            | Instruction::TaggedCompound
-            | Instruction::U8
-            | Instruction::I8
-            | Instruction::U16
-            | Instruction::I16
-            | Instruction::U32
-            | Instruction::I32
-            | Instruction::U64
-            | Instruction::F32
-            | Instruction::String
-            | Instruction::Vec
-            | Instruction::Register
-            | Instruction::Never => {
-                panic!("got a value where an instruction was expected")
             }
         }
     }
 
-    fn op_logical_not<O>(
-        &mut self,
-        out: &mut O,
-        to: Register,
-        operand: CopyableValue,
-    ) -> Result<(), Interrupt>
+    fn op_logical_not<O>(&mut self, out: &mut O, to: u16, operand: &Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
         match operand {
-            CopyableValue::Boolean(value) => {
-                self.assign(to, CopyableValue::Boolean(!value));
+            Value::Boolean(Boolean { value }) => {
+                self.assign(to, Value::Boolean(Boolean { value: !value }));
 
                 Ok(())
             }
-            CopyableValue::U8(_)
-            | CopyableValue::I8(_)
-            | CopyableValue::U16(_)
-            | CopyableValue::I16(_)
-            | CopyableValue::U32(_)
-            | CopyableValue::I32(_)
-            | CopyableValue::U64(_)
-            | CopyableValue::I64(_)
-            | CopyableValue::F32(_)
-            | CopyableValue::F64(_)
-            | CopyableValue::Unit
-            | CopyableValue::Fn { .. }
-            | CopyableValue::NativeFn(_)
-            | CopyableValue::ValueIndex(_)
-            | CopyableValue::Never
-            | CopyableValue::Register(_) => {
+            Value::U8(_)
+            | Value::I8(_)
+            | Value::U16(_)
+            | Value::I16(_)
+            | Value::U32(_)
+            | Value::I32(_)
+            | Value::U64(_)
+            | Value::I64(_)
+            | Value::F32(_)
+            | Value::F64(_)
+            | Value::Unit(_)
+            | Value::ApartFn(_)
+            | Value::ApartNativeFn(_)
+            | Value::ValueIndex(_)
+            | Value::Never(_)
+            | Value::ApartRegister(_) => {
                 writeln!(
                     out,
                     "invalid operand for logical not (got {})",
@@ -962,54 +963,54 @@ impl Vm {
     fn op_arithmetic_negate<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        operand: CopyableValue,
+        to: u16,
+        operand: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
         match operand {
-            CopyableValue::I8(value) => {
-                self.assign(to, CopyableValue::I8(-value));
+            Value::I8(I8 { value }) => {
+                self.assign(to, Value::I8(I8 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::I16(value) => {
-                self.assign(to, CopyableValue::I16(-value));
+            Value::I16(I16 { value }) => {
+                self.assign(to, Value::I16(I16 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::I32(value) => {
-                self.assign(to, CopyableValue::I32(-value));
+            Value::I32(I32 { value }) => {
+                self.assign(to, Value::I32(I32 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::I64(value) => {
-                self.assign(to, CopyableValue::I64(-value));
+            Value::I64(I64 { value }) => {
+                self.assign(to, Value::I64(I64 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::F32(value) => {
-                self.assign(to, CopyableValue::F32(-value));
+            Value::F32(F32 { value }) => {
+                self.assign(to, Value::F32(F32 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::F64(value) => {
-                self.assign(to, CopyableValue::F64(-value));
+            Value::F64(F64 { value }) => {
+                self.assign(to, Value::F64(F64 { value: -value }));
 
                 Ok(())
             }
-            CopyableValue::U8(_)
-            | CopyableValue::U16(_)
-            | CopyableValue::U32(_)
-            | CopyableValue::U64(_)
-            | CopyableValue::Boolean(_)
-            | CopyableValue::Unit
-            | CopyableValue::Fn { .. }
-            | CopyableValue::NativeFn(_)
-            | CopyableValue::ValueIndex(_)
-            | CopyableValue::Never
-            | CopyableValue::Register(_) => {
+            Value::U8(_)
+            | Value::U16(_)
+            | Value::U32(_)
+            | Value::U64(_)
+            | Value::Boolean(_)
+            | Value::Unit(_)
+            | Value::ApartFn(_)
+            | Value::ApartNativeFn(_)
+            | Value::ValueIndex(_)
+            | Value::Never(_)
+            | Value::ApartRegister(_) => {
                 writeln!(
                     out,
                     "invalid operand for arithmetic negate (got {})",
@@ -1025,9 +1026,9 @@ impl Vm {
     fn op_arithmetic_multiply<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1038,9 +1039,9 @@ impl Vm {
     fn op_arithmetic_divide<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1051,9 +1052,9 @@ impl Vm {
     fn op_arithmetic_remainder<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1064,9 +1065,9 @@ impl Vm {
     fn op_arithmetic_add<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1077,9 +1078,9 @@ impl Vm {
     fn op_arithmetic_subtract<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1090,9 +1091,9 @@ impl Vm {
     fn op_comparison_less<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1103,9 +1104,9 @@ impl Vm {
     fn op_comparison_greater<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1116,9 +1117,9 @@ impl Vm {
     fn op_comparison_less_or_equal<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1129,9 +1130,9 @@ impl Vm {
     fn op_comparison_greater_or_equal<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
@@ -1143,14 +1144,19 @@ impl Vm {
     fn op_comparison_equal<O>(
         &mut self,
         _: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        self.assign(to, CopyableValue::Boolean(self.values_eq(lhs, rhs)));
+        self.assign(
+            to,
+            Value::Boolean(Boolean {
+                value: self.values_eq(lhs, rhs),
+            }),
+        );
 
         Ok(())
     }
@@ -1159,14 +1165,19 @@ impl Vm {
     fn op_comparison_not_equal<O>(
         &mut self,
         _: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        self.assign(to, CopyableValue::Boolean(!self.values_eq(lhs, rhs)));
+        self.assign(
+            to,
+            Value::Boolean(Boolean {
+                value: !self.values_eq(lhs, rhs),
+            }),
+        );
 
         Ok(())
     }
@@ -1174,15 +1185,22 @@ impl Vm {
     fn op_logical_and<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        if let (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) = (lhs, rhs) {
-            self.assign(to, CopyableValue::Boolean(lhs && rhs));
+        if let (Value::Boolean(Boolean { value: lhs }), Value::Boolean(Boolean { value: rhs })) =
+            (&lhs, &rhs)
+        {
+            self.assign(
+                to,
+                Value::Boolean(Boolean {
+                    value: *lhs && *rhs,
+                }),
+            );
 
             Ok(())
         } else {
@@ -1190,7 +1208,7 @@ impl Vm {
                 out,
                 "invalid operands for logical and (lhs is {}, rhs is {})",
                 self.value_to_string(lhs, &mut HashSet::new()),
-                self.value_to_string(lhs, &mut HashSet::new())
+                self.value_to_string(rhs, &mut HashSet::new())
             )
             .map_err(|_| Interrupt::Panic)?;
 
@@ -1201,15 +1219,22 @@ impl Vm {
     fn op_logical_or<O>(
         &mut self,
         out: &mut O,
-        to: Register,
-        lhs: CopyableValue,
-        rhs: CopyableValue,
+        to: u16,
+        lhs: &Value,
+        rhs: &Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        if let (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) = (lhs, rhs) {
-            self.assign(to, CopyableValue::Boolean(lhs || rhs));
+        if let (Value::Boolean(Boolean { value: lhs }), Value::Boolean(Boolean { value: rhs })) =
+            (&lhs, &rhs)
+        {
+            self.assign(
+                to,
+                Value::Boolean(Boolean {
+                    value: *lhs || *rhs,
+                }),
+            );
 
             Ok(())
         } else {
@@ -1217,7 +1242,7 @@ impl Vm {
                 out,
                 "invalid operands for logical or (lhs is {}, rhs is {})",
                 self.value_to_string(lhs, &mut HashSet::new()),
-                self.value_to_string(lhs, &mut HashSet::new())
+                self.value_to_string(rhs, &mut HashSet::new())
             )
             .map_err(|_| Interrupt::Panic)?;
 
@@ -1226,12 +1251,7 @@ impl Vm {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn op_assign<O>(
-        &mut self,
-        _: &mut O,
-        to: Register,
-        operand: CopyableValue,
-    ) -> Result<(), Interrupt>
+    fn op_assign<O>(&mut self, _: &mut O, to: u16, operand: Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
@@ -1241,7 +1261,7 @@ impl Vm {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn op_push<O>(&mut self, _: &mut O, operand: CopyableValue) -> Result<(), Interrupt>
+    fn op_push<O>(&mut self, _: &mut O, operand: Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
@@ -1254,19 +1274,14 @@ impl Vm {
         Ok(())
     }
 
-    fn op_access<O>(
-        &mut self,
-        out: &mut O,
-        to: Register,
-        index: u8,
-        of: CopyableValue,
-    ) -> Result<(), Interrupt>
+    fn op_access<O>(&mut self, out: &mut O, to: u16, index: u8, of: &Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = of
-            && let Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } =
-                &self.values[usize::from(value_index)]
+        if let Value::ValueIndex(value_index) = of
+            && let GarbageCollectedValue::Compound(Compound { fields, .. })
+            | GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }) =
+                &self.arena[usize::from(*value_index)]
         {
             self.assign(to, fields[usize::from(index)]);
 
@@ -1286,16 +1301,17 @@ impl Vm {
     fn op_access_assign<O>(
         &mut self,
         out: &mut O,
-        to: CopyableValue,
+        to: &Value,
         index: u8,
-        value: CopyableValue,
+        value: Value,
     ) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = to
-            && let Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } =
-                &mut self.values[usize::from(value_index)]
+        if let Value::ValueIndex(value_index) = to
+            && let GarbageCollectedValue::Compound(Compound { fields, .. })
+            | GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }) =
+                &mut self.arena[usize::from(*value_index)]
         {
             fields[usize::from(index)] = value;
 
@@ -1312,19 +1328,15 @@ impl Vm {
         }
     }
 
-    fn op_get_tag<O>(
-        &mut self,
-        out: &mut O,
-        to: Register,
-        of: CopyableValue,
-    ) -> Result<(), Interrupt>
+    fn op_get_tag<O>(&mut self, out: &mut O, to: u16, of: &Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = of
-            && let Value::TaggedCompound { tag, .. } = self.values[usize::from(value_index)]
+        if let Value::ValueIndex(value_index) = of
+            && let GarbageCollectedValue::TaggedCompound(TaggedCompound { tag, .. }) =
+                self.arena[usize::from(*value_index)]
         {
-            self.assign(to, CopyableValue::U16(tag));
+            self.assign(to, Value::U16(U16 { value: tag }));
 
             Ok(())
         } else {
@@ -1339,22 +1351,17 @@ impl Vm {
         }
     }
 
-    fn op_call<O>(
-        &mut self,
-        out: &mut O,
-        to: Register,
-        callee: CopyableValue,
-    ) -> Result<(), Interrupt>
+    fn op_call<O>(&mut self, out: &mut O, to: u16, callee: &Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
         let sp = self.sp.take().unwrap_or(self.registers.len());
 
         match callee {
-            CopyableValue::Fn {
+            Value::ApartFn(ApartFn {
                 address,
                 max_register_count,
-            } => {
+            }) => {
                 if self.should_gc() {
                     self.gc();
                 }
@@ -1365,23 +1372,23 @@ impl Vm {
                     to,
                 };
 
-                self.ip = usize::try_from(address).expect("call address was not a valid usize");
+                self.ip = usize::try_from(*address).expect("call address was not a valid usize");
 
                 self.fp = sp;
 
                 self.call_frames.push(call_frame);
 
                 self.registers.resize_with(
-                    self.registers.len() + usize::from(max_register_count),
-                    || CopyableValue::Never,
+                    self.registers.len() + usize::from(*max_register_count),
+                    || Value::Never(Never),
                 );
 
                 Ok(())
             }
-            CopyableValue::NativeFn(native_fn) => {
+            Value::ApartNativeFn(ApartNativeFn { value: native_fn }) => {
                 let call_arguments = self.registers.drain(sp..).collect::<Vec<_>>();
 
-                self.native_fn_call(call_arguments.as_slice(), native_fn, out)
+                self.native_fn_call(call_arguments.as_slice(), *native_fn, out)
                     .map(|value| {
                         self.assign(to, value);
                     })
@@ -1417,7 +1424,7 @@ impl Vm {
     fn op_branch<O>(
         &mut self,
         out: &mut O,
-        condition: CopyableValue,
+        condition: &Value,
         when_true: u32,
         otherwise: u32,
     ) -> Result<(), Interrupt>
@@ -1425,8 +1432,8 @@ impl Vm {
         O: Write,
     {
         match condition {
-            CopyableValue::Boolean(true) => self.op_jump(out, when_true),
-            CopyableValue::Boolean(false) => self.op_jump(out, otherwise),
+            Value::Boolean(Boolean { value: true }) => self.op_jump(out, when_true),
+            Value::Boolean(Boolean { value: false }) => self.op_jump(out, otherwise),
             _ => {
                 writeln!(
                     out,
@@ -1440,7 +1447,7 @@ impl Vm {
         }
     }
 
-    fn op_return<O>(&mut self, out: &mut O, value: CopyableValue) -> Result<(), Interrupt>
+    fn op_return<O>(&mut self, out: &mut O, value: Value) -> Result<(), Interrupt>
     where
         O: Write,
     {
@@ -1476,14 +1483,15 @@ impl Vm {
         }
     }
 
-    fn assign(&mut self, to: Register, value: CopyableValue) {
-        let offset = self.fp + usize::from(u16::from(to));
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn assign(&mut self, to: u16, value: Value) {
+        let offset = self.fp + usize::from(to);
 
         self.registers[offset] = value;
     }
 
-    fn get_register(&self, from: Register) -> CopyableValue {
-        self.registers[self.fp + usize::from(u16::from(from))]
+    fn get_register(&self, from: u16) -> Value {
+        self.registers[self.fp + usize::from(from)]
     }
 
     fn panic<O>(&self, out: &mut O, location: Option<(usize, usize)>) -> Result<(), Interrupt>
@@ -1514,136 +1522,141 @@ impl Vm {
         Err(Interrupt::Panic)
     }
 
-    fn dereference_value(&mut self, value: CopyableValue, make_constant: bool) -> CopyableValue {
+    fn dereference_value(&mut self, value: &Value, make_constant: bool) -> Value {
         match value {
-            CopyableValue::Register(offset) => self.get_register(Register(offset)),
-            CopyableValue::ValueIndex(value_index) => {
-                match &self.values[usize::from(value_index)] {
-                    Value::Compound {
+            Value::ApartRegister(ApartRegister { index }) => self.get_register(*index),
+            Value::ValueIndex(value_index) => match &self.arena[usize::from(*value_index)] {
+                GarbageCollectedValue::Compound(Compound {
+                    field_count,
+                    fields,
+                }) if make_constant => {
+                    let field_count = *field_count;
+
+                    let fields = fields
+                        .clone()
+                        .into_iter()
+                        .map(|field| self.dereference_value(&field, make_constant))
+                        .collect::<Vec<_>>();
+
+                    self.arena.push(GarbageCollectedValue::Compound(Compound {
                         field_count,
-                        fields,
-                    } if make_constant => {
-                        let field_count = *field_count;
+                        fields: fields.into_boxed_slice(),
+                    }));
 
-                        let fields = fields
-                            .clone()
-                            .into_iter()
-                            .map(|field| self.dereference_value(field, make_constant))
-                            .collect::<Vec<_>>();
+                    let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-                        self.values.push(Value::Compound {
-                            field_count,
-                            fields: fields.into_boxed_slice(),
-                        });
+                    self.allocated += self.size_of_value(&value_index);
 
-                        let value_index =
-                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+                    value_index
+                }
+                GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                    tag,
+                    field_count,
+                    fields,
+                }) if make_constant => {
+                    let tag = *tag;
 
-                        self.allocated += self.size_of_value(value_index);
+                    let field_count = *field_count;
 
-                        value_index
-                    }
-                    Value::TaggedCompound {
-                        tag,
-                        field_count,
-                        fields,
-                    } if make_constant => {
-                        let tag = *tag;
+                    let fields = fields
+                        .clone()
+                        .into_iter()
+                        .map(|field| self.dereference_value(&field, make_constant))
+                        .collect::<Vec<_>>();
 
-                        let field_count = *field_count;
-
-                        let fields = fields
-                            .clone()
-                            .into_iter()
-                            .map(|field| self.dereference_value(field, make_constant))
-                            .collect::<Vec<_>>();
-
-                        self.values.push(Value::TaggedCompound {
+                    self.arena
+                        .push(GarbageCollectedValue::TaggedCompound(TaggedCompound {
                             tag,
                             field_count,
                             fields: fields.into_boxed_slice(),
-                        });
+                        }));
 
-                        let value_index =
-                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+                    let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-                        self.allocated += self.size_of_value(value_index);
+                    self.allocated += self.size_of_value(&value_index);
 
-                        value_index
-                    }
-                    Value::String(text) if make_constant => {
-                        self.values.push(Value::String(text.clone()));
-
-                        let value_index =
-                            CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
-
-                        self.allocated += self.size_of_value(value_index);
-
-                        value_index
-                    }
-                    _ => value,
+                    value_index
                 }
-            }
-            _ => value,
+                GarbageCollectedValue::ApartString(ApartString { value: text })
+                    if make_constant =>
+                {
+                    self.arena
+                        .push(GarbageCollectedValue::ApartString(ApartString {
+                            value: text.clone(),
+                        }));
+
+                    let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
+
+                    self.allocated += self.size_of_value(&value_index);
+
+                    value_index
+                }
+                _ => *value,
+            },
+            _ => *value,
         }
     }
 
     #[allow(dead_code)]
-    fn option_some(&mut self, value: CopyableValue) -> CopyableValue {
-        self.values.push(Value::TaggedCompound {
-            tag: 1,
-            field_count: 1,
-            fields: vec![value].into_boxed_slice(),
-        });
+    fn option_some(&mut self, value: Value) -> Value {
+        self.arena
+            .push(GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                tag: 1,
+                field_count: 1,
+                fields: vec![value].into_boxed_slice(),
+            }));
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+        let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-        self.allocated += self.size_of_value(value_index);
-
-        value_index
-    }
-
-    #[allow(dead_code)]
-    fn option_none(&mut self) -> CopyableValue {
-        self.values.push(Value::TaggedCompound {
-            tag: 0,
-            field_count: 0,
-            fields: vec![].into_boxed_slice(),
-        });
-
-        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
-
-        self.allocated += self.size_of_value(value_index);
+        self.allocated += self.size_of_value(&value_index);
 
         value_index
     }
 
     #[allow(dead_code)]
-    fn result_ok(&mut self, value: CopyableValue) -> CopyableValue {
-        self.values.push(Value::TaggedCompound {
-            tag: 1,
-            field_count: 1,
-            fields: vec![value].into_boxed_slice(),
-        });
+    fn option_none(&mut self) -> Value {
+        self.arena
+            .push(GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                tag: 0,
+                field_count: 0,
+                fields: vec![].into_boxed_slice(),
+            }));
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+        let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-        self.allocated += self.size_of_value(value_index);
+        self.allocated += self.size_of_value(&value_index);
 
         value_index
     }
 
     #[allow(dead_code)]
-    fn result_err(&mut self, value: CopyableValue) -> CopyableValue {
-        self.values.push(Value::TaggedCompound {
-            tag: 0,
-            field_count: 1,
-            fields: vec![value].into_boxed_slice(),
-        });
+    fn result_ok(&mut self, value: Value) -> Value {
+        self.arena
+            .push(GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                tag: 1,
+                field_count: 1,
+                fields: vec![value].into_boxed_slice(),
+            }));
 
-        let value_index = CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+        let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-        self.allocated += self.size_of_value(value_index);
+        self.allocated += self.size_of_value(&value_index);
+
+        value_index
+    }
+
+    #[allow(dead_code)]
+    fn result_err(&mut self, value: Value) -> Value {
+        self.arena
+            .push(GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                tag: 0,
+                field_count: 1,
+                fields: vec![value].into_boxed_slice(),
+            }));
+
+        let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
+
+        self.allocated += self.size_of_value(&value_index);
 
         value_index
     }
@@ -1651,10 +1664,10 @@ impl Vm {
     #[allow(clippy::too_many_lines)]
     fn native_fn_call<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
@@ -1691,81 +1704,110 @@ impl Vm {
         }
     }
 
-    fn values_eq(&self, lhs: CopyableValue, rhs: CopyableValue) -> bool {
+    #[allow(clippy::too_many_lines)]
+    fn values_eq(&self, lhs: &Value, rhs: &Value) -> bool {
         match (lhs, rhs) {
-            (CopyableValue::U8(lhs), CopyableValue::U8(rhs)) => lhs == rhs,
-            (CopyableValue::I8(lhs), CopyableValue::I8(rhs)) => lhs == rhs,
-            (CopyableValue::U16(lhs), CopyableValue::U16(rhs)) => lhs == rhs,
-            (CopyableValue::I16(lhs), CopyableValue::I16(rhs)) => lhs == rhs,
-            (CopyableValue::U32(lhs), CopyableValue::U32(rhs)) => lhs == rhs,
-            (CopyableValue::I32(lhs), CopyableValue::I32(rhs)) => lhs == rhs,
-            (CopyableValue::U64(lhs), CopyableValue::U64(rhs)) => lhs == rhs,
-            (CopyableValue::I64(lhs), CopyableValue::I64(rhs)) => lhs == rhs,
-            (CopyableValue::F32(lhs), CopyableValue::F32(rhs)) => lhs == rhs,
-            (CopyableValue::F64(lhs), CopyableValue::F64(rhs)) => lhs == rhs,
-            (CopyableValue::Boolean(lhs), CopyableValue::Boolean(rhs)) => lhs == rhs,
-            (CopyableValue::Unit, CopyableValue::Unit) => true,
-            (CopyableValue::Fn { address: lhs, .. }, CopyableValue::Fn { address: rhs, .. }) => {
+            (Value::U8(U8 { value: lhs }), Value::U8(U8 { value: rhs })) => lhs == rhs,
+            (Value::I8(I8 { value: lhs }), Value::I8(I8 { value: rhs })) => lhs == rhs,
+            (Value::U16(U16 { value: lhs }), Value::U16(U16 { value: rhs })) => lhs == rhs,
+            (Value::I16(I16 { value: lhs }), Value::I16(I16 { value: rhs })) => lhs == rhs,
+            (Value::I32(I32 { value: lhs }), Value::I32(I32 { value: rhs })) => lhs == rhs,
+            (Value::U64(U64 { value: lhs }), Value::U64(U64 { value: rhs })) => lhs == rhs,
+            (Value::I64(I64 { value: lhs }), Value::I64(I64 { value: rhs })) => lhs == rhs,
+            (Value::F32(F32 { value: lhs }), Value::F32(F32 { value: rhs })) => lhs == rhs,
+            (Value::F64(F64 { value: lhs }), Value::F64(F64 { value: rhs })) => lhs == rhs,
+            (Value::Boolean(Boolean { value: lhs }), Value::Boolean(Boolean { value: rhs })) => {
                 lhs == rhs
             }
-            (CopyableValue::NativeFn(lhs), CopyableValue::NativeFn(rhs)) => lhs == rhs,
-            (CopyableValue::ValueIndex(lhs), CopyableValue::ValueIndex(rhs)) => {
+            (Value::Unit(_), Value::Unit(_)) => true,
+            (
+                Value::ApartFn(ApartFn { address: lhs, .. }),
+                Value::ApartFn(ApartFn { address: rhs, .. }),
+            )
+            | (Value::U32(U32 { value: lhs }), Value::U32(U32 { value: rhs })) => lhs == rhs,
+            (
+                Value::ApartNativeFn(ApartNativeFn { value: lhs }),
+                Value::ApartNativeFn(ApartNativeFn { value: rhs }),
+            ) => lhs == rhs,
+            (Value::ValueIndex(lhs), Value::ValueIndex(rhs)) => {
                 match (
-                    &self.values[usize::from(lhs)],
-                    &self.values[usize::from(rhs)],
+                    &self.arena[usize::from(*lhs)],
+                    &self.arena[usize::from(*rhs)],
                 ) {
-                    (Value::String(lhs), Value::String(rhs)) => lhs == rhs,
                     (
-                        Value::TaggedCompound { tag: lhs, .. },
-                        Value::TaggedCompound { tag: rhs, .. },
+                        GarbageCollectedValue::ApartString(ApartString { value: lhs }),
+                        GarbageCollectedValue::ApartString(ApartString { value: rhs }),
+                    ) => lhs == rhs,
+                    (
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound { tag: lhs, .. }),
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound { tag: rhs, .. }),
                     ) if lhs != rhs => false,
                     (
-                        Value::Compound {
+                        GarbageCollectedValue::Compound(Compound {
                             field_count: lhs, ..
-                        },
-                        Value::Compound {
+                        }),
+                        GarbageCollectedValue::Compound(Compound {
                             field_count: rhs, ..
-                        },
+                        }),
                     )
                     | (
-                        Value::TaggedCompound {
-                            field_count: lhs, ..
-                        },
-                        Value::TaggedCompound {
-                            field_count: rhs, ..
-                        },
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                            field_count: lhs,
+                            ..
+                        }),
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                            field_count: rhs,
+                            ..
+                        }),
                     ) if lhs != rhs => false,
-                    (Value::Compound { fields: lhs, .. }, Value::Compound { fields: rhs, .. })
+                    (
+                        GarbageCollectedValue::Compound(Compound { fields: lhs, .. }),
+                        GarbageCollectedValue::Compound(Compound { fields: rhs, .. }),
+                    )
                     | (
-                        Value::TaggedCompound { fields: lhs, .. },
-                        Value::TaggedCompound { fields: rhs, .. },
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                            fields: lhs, ..
+                        }),
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                            fields: rhs, ..
+                        }),
+                    ) => {
+                        for (lhs, rhs) in lhs.into_iter().zip(rhs) {
+                            if !self.values_eq(lhs, rhs) {
+                                return false;
+                            }
+                        }
+
+                        true
+                    }
+                    (
+                        GarbageCollectedValue::ApartVec(ApartVec { length: lhs, .. }),
+                        GarbageCollectedValue::ApartVec(ApartVec { length: rhs, .. }),
+                    ) if lhs != rhs => false,
+                    (
+                        GarbageCollectedValue::ApartVec(ApartVec { values: lhs, .. }),
+                        GarbageCollectedValue::ApartVec(ApartVec { values: rhs, .. }),
                     ) => {
                         for (lhs, rhs) in lhs.iter().zip(rhs) {
-                            if !self.values_eq(*lhs, *rhs) {
+                            if !self.values_eq(lhs, rhs) {
                                 return false;
                             }
                         }
 
                         true
                     }
-                    (Value::Vec { length: lhs, .. }, Value::Vec { length: rhs, .. })
-                        if lhs != rhs =>
-                    {
-                        false
-                    }
-                    (Value::Vec { values: lhs, .. }, Value::Vec { values: rhs, .. }) => {
-                        for (lhs, rhs) in lhs.iter().zip(rhs) {
-                            if !self.values_eq(*lhs, *rhs) {
-                                return false;
-                            }
-                        }
-
-                        true
-                    }
-                    (_, _) => panic!("(EQUALITY {lhs:?} {rhs:?})"),
+                    (_, _) => panic!(
+                        "(EQUALITY {} {})",
+                        self.value_to_string(&Value::ValueIndex(*lhs), &mut HashSet::new()),
+                        self.value_to_string(&Value::ValueIndex(*rhs), &mut HashSet::new())
+                    ),
                 }
             }
-            (_, _) => panic!("(EQUALITY {lhs:?} {rhs:?})"),
+            (lhs, rhs) => panic!(
+                "(EQUALITY {} {})",
+                self.value_to_string(lhs, &mut HashSet::new()),
+                self.value_to_string(rhs, &mut HashSet::new())
+            ),
         }
     }
 
@@ -1786,19 +1828,19 @@ impl Vm {
     }
 
     fn mark(&self) -> (Vec<Option<ValueIndex>>, usize) {
-        let mut marked = vec![const { None }; self.values.len()];
+        let mut marked = vec![const { None }; self.arena.len()];
         let mut marked_count = 0;
 
         for value_index in &self.constants {
             self.mark_value(
                 &mut marked,
-                CopyableValue::ValueIndex(*value_index),
+                &Value::ValueIndex(*value_index),
                 &mut marked_count,
             );
         }
 
         for value in &self.registers {
-            self.mark_value(&mut marked, *value, &mut marked_count);
+            self.mark_value(&mut marked, value, &mut marked_count);
         }
 
         (marked, marked_count)
@@ -1807,26 +1849,27 @@ impl Vm {
     fn mark_value(
         &self,
         marked: &mut [Option<ValueIndex>],
-        value: CopyableValue,
+        value: &Value,
         marked_count: &mut usize,
     ) {
-        if let CopyableValue::ValueIndex(index) = value {
-            match &self.values[usize::from(index)] {
-                Value::String(_) => {}
-                Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. } => {
+        if let Value::ValueIndex(index) = value {
+            match &self.arena[usize::from(*index)] {
+                GarbageCollectedValue::Compound(Compound { fields, .. })
+                | GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }) => {
                     for field in fields {
-                        self.mark_value(marked, *field, marked_count);
+                        self.mark_value(marked, field, marked_count);
                     }
                 }
-                Value::Vec { values, .. } => {
+                GarbageCollectedValue::ApartVec(ApartVec { values, .. }) => {
                     for value in values {
-                        self.mark_value(marked, *value, marked_count);
+                        self.mark_value(marked, value, marked_count);
                     }
                 }
+                GarbageCollectedValue::ApartString(_) => {}
             }
 
-            if marked[usize::from(index)].is_none() {
-                marked[usize::from(index)] = Some(ValueIndex::from(*marked_count));
+            if marked[usize::from(*index)].is_none() {
+                marked[usize::from(*index)] = Some(ValueIndex::from(*marked_count));
 
                 *marked_count += 1;
             }
@@ -1837,13 +1880,14 @@ impl Vm {
         let mut values = Vec::with_capacity(marked_count);
 
         for value_index in &self.constants {
-            self.retain_value(&mut values, CopyableValue::ValueIndex(*value_index), marked);
+            self.retain_value(&mut values, Value::ValueIndex(*value_index), marked);
         }
 
         self.registers = self
             .registers
             .iter()
-            .map(|value| self.retain_value(&mut values, *value, marked))
+            .copied()
+            .map(|value| self.retain_value(&mut values, value, marked))
             .collect::<Vec<_>>();
 
         values.sort_by_key(|(index, _)| *index);
@@ -1851,10 +1895,10 @@ impl Vm {
 
         self.allocated = 0;
 
-        self.values = values
+        self.arena = values
             .into_iter()
             .fold(vec![], |mut accum, (value_index, value)| {
-                self.allocated += self.size_of_value(CopyableValue::ValueIndex(value_index));
+                self.allocated += self.size_of_value(&Value::ValueIndex(value_index));
 
                 accum.push(value);
 
@@ -1864,104 +1908,113 @@ impl Vm {
 
     fn retain_value(
         &self,
-        replacement_values: &mut Vec<(ValueIndex, Value)>,
-        value: CopyableValue,
+        replacement_values: &mut Vec<(ValueIndex, GarbageCollectedValue)>,
+        value: Value,
         marked: &[Option<ValueIndex>],
-    ) -> CopyableValue {
-        if let CopyableValue::ValueIndex(index) = value {
+    ) -> Value {
+        if let Value::ValueIndex(index) = value {
             marked
                 .get(usize::from(index))
                 .and_then(|marked| *marked)
-                .map_or(CopyableValue::Unit, |replacement_index| {
-                    match &self.values[usize::from(index)] {
-                        Value::String(text) => replacement_values
-                            .push((replacement_index, Value::String(text.clone()))),
-                        Value::Vec { length, values } => {
+                .map_or(Value::Unit(Unit), |replacement_index| {
+                    match &self.arena[usize::from(index)] {
+                        GarbageCollectedValue::ApartString(ApartString { value: text }) => {
+                            replacement_values.push((
+                                replacement_index,
+                                GarbageCollectedValue::ApartString(ApartString {
+                                    value: text.clone(),
+                                }),
+                            ));
+                        }
+                        GarbageCollectedValue::ApartVec(ApartVec { length, values }) => {
                             let values = values
                                 .iter()
-                                .map(|value| self.retain_value(replacement_values, *value, marked))
+                                .copied()
+                                .map(|value| self.retain_value(replacement_values, value, marked))
                                 .collect::<Vec<_>>();
 
                             replacement_values.push((
                                 replacement_index,
-                                Value::Vec {
+                                GarbageCollectedValue::ApartVec(ApartVec {
                                     length: *length,
                                     values,
-                                },
+                                }),
                             ));
                         }
-                        Value::Compound {
+                        GarbageCollectedValue::Compound(Compound {
                             field_count,
                             fields,
-                        } => {
+                        }) => {
                             let fields = fields
                                 .iter()
-                                .map(|field| self.retain_value(replacement_values, *field, marked))
+                                .copied()
+                                .map(|field| self.retain_value(replacement_values, field, marked))
                                 .collect::<Vec<_>>();
 
                             replacement_values.push((
                                 replacement_index,
-                                Value::Compound {
+                                GarbageCollectedValue::Compound(Compound {
                                     field_count: *field_count,
                                     fields: fields.into_boxed_slice(),
-                                },
+                                }),
                             ));
                         }
-                        Value::TaggedCompound {
+                        GarbageCollectedValue::TaggedCompound(TaggedCompound {
                             tag,
                             field_count,
                             fields,
-                        } => {
+                        }) => {
                             let fields = fields
                                 .iter()
-                                .map(|field| self.retain_value(replacement_values, *field, marked))
+                                .copied()
+                                .map(|field| self.retain_value(replacement_values, field, marked))
                                 .collect::<Vec<_>>();
 
                             replacement_values.push((
                                 replacement_index,
-                                Value::TaggedCompound {
+                                GarbageCollectedValue::TaggedCompound(TaggedCompound {
                                     tag: *tag,
                                     field_count: *field_count,
                                     fields: fields.into_boxed_slice(),
-                                },
+                                }),
                             ));
                         }
                     }
 
-                    CopyableValue::ValueIndex(replacement_index)
+                    Value::ValueIndex(replacement_index)
                 })
         } else {
             value
         }
     }
 
-    fn size_of_value(&self, value: CopyableValue) -> usize {
-        if let CopyableValue::ValueIndex(index) = value {
-            match &self.values[usize::from(index)] {
-                Value::Compound { fields, .. } => {
+    fn size_of_value(&self, value: &Value) -> usize {
+        if let Value::ValueIndex(index) = value {
+            match &self.arena[usize::from(*index)] {
+                GarbageCollectedValue::Compound(Compound { fields, .. }) => {
                     fields
                         .iter()
                         .fold(0, |accum, field| accum + mem::size_of_val(field))
-                        + mem::size_of_val(&self.values[usize::from(index)])
+                        + mem::size_of_val(&self.arena[usize::from(*index)])
                 }
-                Value::TaggedCompound { fields, .. } => {
+                GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }) => {
                     fields
                         .iter()
                         .fold(0, |accum, field| accum + mem::size_of_val(field))
-                        + mem::size_of_val(&self.values[usize::from(index)])
+                        + mem::size_of_val(&self.arena[usize::from(*index)])
                 }
-                Value::String(text) => {
-                    mem::size_of_val(text) + mem::size_of_val(&self.values[usize::from(index)])
+                GarbageCollectedValue::ApartString(ApartString { value: text }) => {
+                    mem::size_of_val(text) + mem::size_of_val(&self.arena[usize::from(*index)])
                 }
-                Value::Vec { values, .. } => {
+                GarbageCollectedValue::ApartVec(ApartVec { values, .. }) => {
                     values
                         .iter()
                         .fold(0, |accum, value| accum + mem::size_of_val(value))
-                        + mem::size_of_val(&self.values[usize::from(index)])
+                        + mem::size_of_val(&self.arena[usize::from(*index)])
                 }
             }
         } else {
-            mem::size_of_val(&value)
+            mem::size_of_val(value)
         }
     }
 }
@@ -1972,17 +2025,20 @@ macro_rules! native_fn_print_debug {
     ) => {
         fn $name<O>(
             &mut self,
-            call_arguments: &[$crate::targets::vm::CopyableValue],
+            call_arguments: &[$crate::targets::vm::Value],
             native_fn: $crate::low_ir::NativeFn,
             out: &mut O,
-        ) -> Result<$crate::targets::vm::CopyableValue, $crate::vm::Interrupt>
+        ) -> Result<$crate::targets::vm::Value, $crate::vm::Interrupt>
         where
             O: Write,
         {
-            if let $crate::targets::vm::CopyableValue::$value_variant(value) = &call_arguments[0] {
+            if let $crate::targets::vm::Value::$value_variant(
+                $crate::targets::vm::$value_variant { value: value },
+            ) = &call_arguments[0]
+            {
                 writeln!(out, "{value:?}").expect("failed to write to output");
 
-                Ok($crate::targets::vm::CopyableValue::Unit)
+                Ok($crate::targets::vm::Value::Unit(Unit))
             } else {
                 self.native_fn_invalid_arguments(call_arguments, native_fn, out)
             }
@@ -1993,10 +2049,10 @@ macro_rules! native_fn_print_debug {
 impl Vm {
     fn native_fn_invalid_arguments<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
@@ -2005,13 +2061,13 @@ impl Vm {
             "invalid arguments: {native_fn:?}({})",
             call_arguments
                 .iter()
-                .map(|argument| { self.value_to_string(*argument, &mut HashSet::new()) })
+                .map(|argument| { self.value_to_string(argument, &mut HashSet::new()) })
                 .collect::<Vec<_>>()
                 .join(", ")
         )
         .expect("failed to write to output");
 
-        self.panic(out, None).map(|()| CopyableValue::Never)
+        self.panic(out, None).map(|()| Value::Never(Never))
     }
 
     native_fn_print_debug!(native_fn_print_f32, F32);
@@ -2019,19 +2075,20 @@ impl Vm {
 
     fn native_fn_print_string<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get(usize::from(*value_index))
+        if let Value::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get(usize::from(*value_index))
         {
             writeln!(out, "{value}").expect("failed to write to output");
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2039,22 +2096,23 @@ impl Vm {
 
     fn native_fn_extend_string<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(target) = &call_arguments[0]
-            && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
-            && let Some(Value::String(extension)) =
-                self.values.get(usize::from(*extension)).cloned()
-            && let Some(Value::String(target)) = self.values.get_mut(usize::from(*target))
+        if let Value::ValueIndex(target) = &call_arguments[0]
+            && let Value::ValueIndex(extension) = &call_arguments[1]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value: extension })) =
+                self.arena.get(usize::from(*extension)).cloned()
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value: target })) =
+                self.arena.get_mut(usize::from(*target))
         {
             target.push_str(extension.as_str());
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2062,27 +2120,30 @@ impl Vm {
 
     fn native_fn_slice_string<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
-            && let CopyableValue::U64(start) = &call_arguments[1]
-            && let CopyableValue::U64(end) = &call_arguments[2]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get(usize::from(*value))
+            && let Value::U64(U64 { value: start }) = &call_arguments[1]
+            && let Value::U64(U64 { value: end }) = &call_arguments[2]
             && let Ok(start) = usize::try_from(*start)
             && let Ok(end) = usize::try_from(*end)
         {
             if let Some(value) = value.get(start..end) {
-                self.values.push(Value::String(value.to_string()));
+                self.arena
+                    .push(GarbageCollectedValue::ApartString(ApartString {
+                        value: value.to_string(),
+                    }));
 
-                let value_index =
-                    CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+                let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-                self.allocated += self.size_of_value(value_index);
+                self.allocated += self.size_of_value(&value_index);
 
                 Ok(self.option_some(value_index))
             } else {
@@ -2095,18 +2156,19 @@ impl Vm {
 
     fn native_fn_length_string<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get(usize::from(*value))
             && let Ok(length) = u64::try_from(value.len())
         {
-            Ok(CopyableValue::U64(length))
+            Ok(Value::U64(U64 { value: length }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2114,21 +2176,22 @@ impl Vm {
 
     fn native_fn_truncate_string<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get_mut(usize::from(*value))
-            && let CopyableValue::U64(end) = &call_arguments[1]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get_mut(usize::from(*value))
+            && let Value::U64(U64 { value: end }) = &call_arguments[1]
             && let Ok(end) = usize::try_from(*end)
         {
             value.truncate(end);
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2136,20 +2199,21 @@ impl Vm {
 
     fn native_fn_floor_char_boundary_string<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
-            && let CopyableValue::U64(boundary) = &call_arguments[1]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get(usize::from(*value))
+            && let Value::U64(U64 { value: boundary }) = &call_arguments[1]
             && let Ok(boundary) = usize::try_from(*boundary)
             && let Ok(boundary) = u64::try_from(value.floor_char_boundary(boundary))
         {
-            Ok(CopyableValue::U64(boundary))
+            Ok(Value::U64(U64 { value: boundary }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2157,58 +2221,54 @@ impl Vm {
 
     fn native_fn_ceil_char_boundary_string<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::String(value)) = self.values.get(usize::from(*value))
-            && let CopyableValue::U64(boundary) = &call_arguments[1]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartString(ApartString { value })) =
+                self.arena.get(usize::from(*value))
+            && let Value::U64(U64 { value: boundary }) = &call_arguments[1]
             && let Ok(boundary) = usize::try_from(*boundary)
             && let Ok(boundary) = u64::try_from(value.ceil_char_boundary(boundary))
         {
-            Ok(CopyableValue::U64(boundary))
+            Ok(Value::U64(U64 { value: boundary }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn native_fn_clock<O>(
-        &self,
-        _: &[CopyableValue],
-        _: NativeFn,
-        _: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    fn native_fn_clock<O>(&self, _: &[Value], _: NativeFn, _: &mut O) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        Ok(CopyableValue::F64(
-            std::time::SystemTime::now()
+        Ok(Value::F64(F64 {
+            value: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time somehow went backwards")
                 .as_secs_f64()
                 * 1000.0,
-        ))
+        }))
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     fn native_fn_sleep<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::U64(millis) = &call_arguments[0] {
+        if let Value::U64(U64 { value: millis }) = &call_arguments[0] {
             std::thread::sleep(std::time::Duration::from_millis(*millis));
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2216,15 +2276,17 @@ impl Vm {
 
     fn native_fn_log_f64<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::F64(value) = &call_arguments[0] {
-            Ok(CopyableValue::F64(f64::log(*value, core::f64::consts::E)))
+        if let Value::F64(F64 { value }) = &call_arguments[0] {
+            Ok(Value::F64(F64 {
+                value: f64::log(*value, core::f64::consts::E),
+            }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2232,15 +2294,17 @@ impl Vm {
 
     fn native_fn_floor_f64<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::F64(value) = &call_arguments[0] {
-            Ok(CopyableValue::F64(f64::floor(*value)))
+        if let Value::F64(F64 { value }) = &call_arguments[0] {
+            Ok(Value::F64(F64 {
+                value: f64::floor(*value),
+            }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2248,18 +2312,18 @@ impl Vm {
 
     fn native_fn_to_u64_f64<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::F64(value) = &call_arguments[0] {
+        if let Value::F64(F64 { value }) = &call_arguments[0] {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let value = *value as u64;
 
-            Ok(CopyableValue::U64(value))
+            Ok(Value::U64(U64 { value }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2267,18 +2331,18 @@ impl Vm {
 
     fn native_fn_from_u64_f64<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::U64(value) = &call_arguments[0] {
+        if let Value::U64(U64 { value }) = &call_arguments[0] {
             #[allow(clippy::cast_precision_loss)]
             let value = *value as f64;
 
-            Ok(CopyableValue::F64(value))
+            Ok(Value::F64(F64 { value }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2287,39 +2351,38 @@ impl Vm {
     #[allow(clippy::unnecessary_wraps)]
     fn native_fn_new_vec<O>(
         &mut self,
-        _: &[CopyableValue],
+        _: &[Value],
         _: NativeFn,
         _: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        self.values.push(Value::Vec {
+        self.arena.push(GarbageCollectedValue::ApartVec(ApartVec {
             length: 0,
             values: vec![],
-        });
+        }));
 
-        Ok(CopyableValue::ValueIndex(ValueIndex::from(
-            self.values.len() - 1,
-        )))
+        Ok(Value::ValueIndex(ValueIndex::from(self.arena.len() - 1)))
     }
 
     fn native_fn_get_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec { values, .. }) = self.values.get(usize::from(*value))
-            && let CopyableValue::U64(index) = &call_arguments[1]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) =
+                self.arena.get(usize::from(*value))
+            && let Value::U64(U64 { value: index }) = &call_arguments[1]
             && let Ok(index) = usize::try_from(*index)
         {
-            if let Some(value) = values.get(index) {
-                Ok(self.option_some(*value))
+            if let Some(value) = values.get(index).copied() {
+                Ok(self.option_some(value))
             } else {
                 Ok(self.option_none())
             }
@@ -2330,23 +2393,23 @@ impl Vm {
 
     fn native_fn_extend_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(target) = &call_arguments[0]
-            && let CopyableValue::ValueIndex(extension) = &call_arguments[1]
-            && let Some(Value::Vec {
+        if let Value::ValueIndex(target) = &call_arguments[0]
+            && let Value::ValueIndex(extension) = &call_arguments[1]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec {
                 length: extension_length,
                 values: extension,
-            }) = self.values.get(usize::from(*extension)).cloned()
-            && let Some(Value::Vec {
+            })) = self.arena.get(usize::from(*extension)).cloned()
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec {
                 length: target_length,
                 values: target,
-            }) = self.values.get_mut(usize::from(*target))
+            })) = self.arena.get_mut(usize::from(*target))
         {
             for value in &extension {
                 self.allocated += mem::size_of_val(value);
@@ -2355,7 +2418,7 @@ impl Vm {
             *target_length += extension_length;
             target.extend(extension);
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2363,32 +2426,32 @@ impl Vm {
 
     fn native_fn_slice_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec { values, .. }) = self.values.get(usize::from(*value))
-            && let CopyableValue::U64(start) = &call_arguments[1]
-            && let CopyableValue::U64(end) = &call_arguments[2]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) =
+                self.arena.get(usize::from(*value))
+            && let Value::U64(U64 { value: start }) = &call_arguments[1]
+            && let Value::U64(U64 { value: end }) = &call_arguments[2]
             && let Ok(start) = usize::try_from(*start)
             && let Ok(end) = usize::try_from(*end)
         {
             if let Some(value) = values.get(start..end) {
-                self.values.push(Value::Vec {
+                self.arena.push(GarbageCollectedValue::ApartVec(ApartVec {
                     length: u64::try_from(end - start).unwrap_or_else(|_| {
                         panic!("since each operand is a valid u64, this should be fine")
                     }),
                     values: value.to_vec(),
-                });
+                }));
 
-                let value_index =
-                    CopyableValue::ValueIndex(ValueIndex::from(self.values.len() - 1));
+                let value_index = Value::ValueIndex(ValueIndex::from(self.arena.len() - 1));
 
-                self.allocated += self.size_of_value(value_index);
+                self.allocated += self.size_of_value(&value_index);
 
                 Ok(self.option_some(value_index))
             } else {
@@ -2401,17 +2464,18 @@ impl Vm {
 
     fn native_fn_length_vec<O>(
         &self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec { length, .. }) = self.values.get(usize::from(*value))
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { length, .. })) =
+                self.arena.get(usize::from(*value))
         {
-            Ok(CopyableValue::U64(*length))
+            Ok(Value::U64(U64 { value: *length }))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2419,16 +2483,17 @@ impl Vm {
 
     fn native_fn_truncate_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value) = &call_arguments[0]
-            && let Some(Value::Vec { length, values }) = self.values.get_mut(usize::from(*value))
-            && let CopyableValue::U64(end) = &call_arguments[1]
+        if let Value::ValueIndex(value) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { length, values })) =
+                self.arena.get_mut(usize::from(*value))
+            && let Value::U64(U64 { value: end }) = &call_arguments[1]
             && let Ok(end) = usize::try_from(*end)
         {
             *length = u64::try_from(end)
@@ -2438,7 +2503,7 @@ impl Vm {
                 self.allocated -= mem::size_of_val(&value);
             }
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2446,16 +2511,16 @@ impl Vm {
 
     fn native_fn_push_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
-            && let Some(Value::Vec { length, values }) =
-                self.values.get_mut(usize::from(*value_index))
+        if let Value::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { length, values })) =
+                self.arena.get_mut(usize::from(*value_index))
         {
             *length += 1;
 
@@ -2463,7 +2528,7 @@ impl Vm {
 
             self.allocated += mem::size_of_val(&call_arguments[1]);
 
-            Ok(CopyableValue::Unit)
+            Ok(Value::Unit(Unit))
         } else {
             self.native_fn_invalid_arguments(call_arguments, native_fn, out)
         }
@@ -2471,16 +2536,16 @@ impl Vm {
 
     fn native_fn_pop_vec<O>(
         &mut self,
-        call_arguments: &[CopyableValue],
+        call_arguments: &[Value],
         native_fn: NativeFn,
         out: &mut O,
-    ) -> Result<CopyableValue, Interrupt>
+    ) -> Result<Value, Interrupt>
     where
         O: Write,
     {
-        if let CopyableValue::ValueIndex(value_index) = &call_arguments[0]
-            && let Some(Value::Vec { length, values }) =
-                self.values.get_mut(usize::from(*value_index))
+        if let Value::ValueIndex(value_index) = &call_arguments[0]
+            && let Some(GarbageCollectedValue::ApartVec(ApartVec { length, values })) =
+                self.arena.get_mut(usize::from(*value_index))
         {
             if let Some(value) = values.pop() {
                 *length -= 1;

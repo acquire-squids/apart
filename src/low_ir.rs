@@ -320,7 +320,7 @@ impl From<Register> for u16 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnLabel {
     file_name: String,
     function_label: String,

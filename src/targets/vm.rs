@@ -1,8 +1,10 @@
+pub mod bytecode_macro;
+
 use crate::{
     ApartOptions, CompileSuccess,
     low_ir::{
-        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Register,
-        Typed, UnaryOp, Value as IrValue, ValueOrLocation,
+        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Typed, UnaryOp,
+        Value as IrValue, ValueOrLocation,
     },
     type_check::TypeIndex,
 };
@@ -12,7 +14,7 @@ use std::collections::HashMap;
 struct Compiler {
     ip: usize,
     constants: Vec<ValueIndex>,
-    values: Vec<Value>,
+    arena: Vec<GarbageCollectedValue>,
 }
 
 impl Instructive for Compiler {
@@ -24,8 +26,8 @@ impl Instructive for Compiler {
         &mut self.constants
     }
 
-    fn values_mut(&mut self) -> &mut Vec<Value> {
-        &mut self.values
+    fn arena_mut(&mut self) -> &mut Vec<GarbageCollectedValue> {
+        &mut self.arena
     }
 }
 
@@ -36,10 +38,10 @@ impl Instructive for Compiler {
 pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8> {
     let ir = compiled.result().ir();
 
-    let mut assembler = Compiler {
+    let mut instructive = Compiler {
         ip: 0,
         constants: vec![],
-        values: vec![],
+        arena: vec![],
     };
 
     let mut bytecode = vec![];
@@ -63,22 +65,19 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
             u32::try_from(b).expect("block index was not a valid u32"),
         );
 
-        bytecode.extend(Instruction::Label.assemble(compiled, &mut assembler));
+        bytecode.extend(Instruction::Label(Label).encode(&mut instructive));
 
         for instruction in block.instructions() {
             if !options.strip_debug_info || !matches!(instruction, IrInstruction::FnLabel(_)) {
-                bytecode.append(&mut instruction.assemble(compiled, &mut assembler));
+                let mut instruction = (compiled, instruction).encode(&mut instructive);
+
+                bytecode.append(&mut instruction);
             }
         }
     }
 
     loop {
-        if !backpatch(
-            compiled,
-            &mut bytecode,
-            block_addresses.as_slice(),
-            &address_to_label,
-        ) {
+        if !backpatch(&mut bytecode, block_addresses.as_slice(), &address_to_label) {
             break;
         }
 
@@ -104,11 +103,11 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
 /// - panics if `bytecode.len()` > `u32::MAX`
 /// - panics if the number of instructions in the output exceeds `u32::MAX`
 #[must_use]
-pub fn decompile<T>(bytecode: &[u8], decompiler: &mut T) -> Vec<Instruction>
+pub fn decompile<T>(bytecode: &[u8], instructive: &mut T) -> Vec<Instruction>
 where
     T: Instructive,
 {
-    *decompiler.ip_mut() = 2;
+    *instructive.ip_mut() = 2;
 
     let mut instructions = vec![];
 
@@ -116,9 +115,9 @@ where
 
     let mut block_addresses = vec![];
 
-    while *decompiler.ip_mut() < bytecode.len() {
+    while *instructive.ip_mut() < bytecode.len() {
         address_to_label.insert(
-            u32::try_from(*decompiler.ip_mut()).expect("instruction pointer was not a valid u32"),
+            u32::try_from(*instructive.ip_mut()).expect("instruction pointer was not a valid u32"),
             u32::try_from(instructions.len()).expect("instruction count was not a valid u32"),
         );
 
@@ -126,49 +125,62 @@ where
             u32::try_from(instructions.len()).expect("instruction count was not a valid u32"),
         );
 
-        instructions.push(Instruction::disassemble(bytecode, decompiler));
+        let Some((instruction, instruction_size)) =
+            Instruction::decode(&bytecode[(*instructive.ip_mut())..], instructive)
+        else {
+            panic!("failed to decode an instruction before reaching the bytecode's end");
+        };
+
+        *instructive.ip_mut() += instruction_size;
+
+        instructions.push(instruction);
     }
 
     for instruction in &mut instructions {
         backpatch_instruction(
             block_addresses.as_slice(),
             &address_to_label,
-            decompiler,
+            instructive,
             instruction,
         );
     }
 
-    *decompiler.ip_mut() = 0;
+    *instructive.ip_mut() = 0;
 
     instructions
 }
 
 fn backpatch(
-    compiled: &CompileSuccess<'_>,
     bytecode: &mut Vec<u8>,
     block_addresses: &[u32],
     address_to_label: &HashMap<u32, u32>,
 ) -> bool {
     let mut changed = false;
 
-    let mut disassembler = Compiler {
+    let mut instructive = Compiler {
         ip: 2,
         constants: vec![],
-        values: vec![],
+        arena: vec![],
     };
 
-    while disassembler.ip < bytecode.len() {
-        let at = disassembler.ip;
+    while instructive.ip < bytecode.len() {
+        let at = instructive.ip;
 
-        let mut instruction = Instruction::disassemble(bytecode, &mut disassembler);
+        let Some((mut instruction, instruction_size)) =
+            Instruction::decode(&bytecode[(instructive.ip)..], &mut instructive)
+        else {
+            panic!("failed to decode an instruction before reaching the bytecode's end");
+        };
+
+        *instructive.ip_mut() += instruction_size;
 
         if backpatch_instruction(
             block_addresses,
             address_to_label,
-            &mut disassembler,
+            &mut instructive,
             &mut instruction,
         ) {
-            replace_instruction(compiled, bytecode, &mut disassembler, &instruction, at);
+            replace_instruction(bytecode, &mut instructive, &instruction, at);
 
             changed |= true;
         }
@@ -178,30 +190,29 @@ fn backpatch(
 }
 
 fn replace_instruction<T>(
-    compiled: &CompileSuccess<'_>,
     bytecode: &mut Vec<u8>,
-    disassembler: &mut T,
+    instructive: &mut T,
     instruction: &Instruction,
     at: usize,
 ) where
     T: Instructive,
 {
-    let ip = *disassembler.ip_mut();
+    let ip = *instructive.ip_mut();
 
-    let assembled = instruction.assemble(compiled, disassembler);
+    let assembled = instruction.encode(instructive);
 
     let changed_instruction_byte_count = assembled.len();
 
     bytecode.splice(at..ip, assembled);
 
-    *disassembler.ip_mut() = at + changed_instruction_byte_count;
+    *instructive.ip_mut() = at + changed_instruction_byte_count;
 }
 
 #[allow(clippy::too_many_lines)]
 fn backpatch_instruction<T>(
     block_addresses: &[u32],
     address_to_label: &HashMap<u32, u32>,
-    disassembler: &mut T,
+    instructive: &mut T,
     instruction: &mut Instruction,
 ) -> bool
 where
@@ -210,116 +221,102 @@ where
     let mut instruction_changed = false;
 
     match instruction {
-        Instruction::NoOp
-        | Instruction::Panic
-        | Instruction::Label
-        | Instruction::FnLabel { .. }
-        | Instruction::NotRegister { .. }
-        | Instruction::NegateRegister { .. }
-        | Instruction::MultiplyRegisterRegister { .. }
-        | Instruction::DivideRegisterRegister { .. }
-        | Instruction::RemainderRegisterRegister { .. }
-        | Instruction::AddRegisterRegister { .. }
-        | Instruction::SubtractRegisterRegister { .. }
-        | Instruction::LessRegisterRegister { .. }
-        | Instruction::GreaterRegisterRegister { .. }
-        | Instruction::LessOrEqualRegisterRegister { .. }
-        | Instruction::GreaterOrEqualRegisterRegister { .. }
-        | Instruction::EqualRegisterRegister { .. }
-        | Instruction::NotEqualRegisterRegister { .. }
-        | Instruction::AndRegisterRegister { .. }
-        | Instruction::OrRegisterRegister { .. }
-        | Instruction::AssignRegister { .. }
-        | Instruction::PushRegister { .. }
-        | Instruction::AccessRegister { .. }
-        | Instruction::AccessAssignRegisterRegister { .. }
-        | Instruction::CallRegister { .. }
-        | Instruction::GetTagRegister { .. }
-        | Instruction::ReturnRegister { .. }
-        | Instruction::I64
-        | Instruction::F64
-        | Instruction::Boolean
-        | Instruction::Unit
-        | Instruction::Fn
-        | Instruction::NativeFn
-        | Instruction::Compound
-        | Instruction::TaggedCompound
-        | Instruction::U8
-        | Instruction::I8
-        | Instruction::U16
-        | Instruction::I16
-        | Instruction::U32
-        | Instruction::I32
-        | Instruction::U64
-        | Instruction::String
-        | Instruction::F32
-        | Instruction::Never
-        | Instruction::Vec
-        | Instruction::Register => {}
-        Instruction::NotValue { operand: value, .. }
-        | Instruction::NegateValue { operand: value, .. }
-        | Instruction::MultiplyRegisterValue { rhs: value, .. }
-        | Instruction::MultiplyValueRegister { lhs: value, .. }
-        | Instruction::DivideRegisterValue { rhs: value, .. }
-        | Instruction::DivideValueRegister { lhs: value, .. }
-        | Instruction::RemainderRegisterValue { rhs: value, .. }
-        | Instruction::RemainderValueRegister { lhs: value, .. }
-        | Instruction::AddRegisterValue { rhs: value, .. }
-        | Instruction::AddValueRegister { lhs: value, .. }
-        | Instruction::SubtractRegisterValue { rhs: value, .. }
-        | Instruction::SubtractValueRegister { lhs: value, .. }
-        | Instruction::LessRegisterValue { rhs: value, .. }
-        | Instruction::LessValueRegister { lhs: value, .. }
-        | Instruction::GreaterRegisterValue { rhs: value, .. }
-        | Instruction::GreaterValueRegister { lhs: value, .. }
-        | Instruction::LessOrEqualRegisterValue { rhs: value, .. }
-        | Instruction::LessOrEqualValueRegister { lhs: value, .. }
-        | Instruction::GreaterOrEqualRegisterValue { rhs: value, .. }
-        | Instruction::GreaterOrEqualValueRegister { lhs: value, .. }
-        | Instruction::EqualRegisterValue { rhs: value, .. }
-        | Instruction::EqualValueRegister { lhs: value, .. }
-        | Instruction::NotEqualRegisterValue { rhs: value, .. }
-        | Instruction::NotEqualValueRegister { lhs: value, .. }
-        | Instruction::AndRegisterValue { rhs: value, .. }
-        | Instruction::AndValueRegister { lhs: value, .. }
-        | Instruction::OrRegisterValue { rhs: value, .. }
-        | Instruction::OrValueRegister { lhs: value, .. }
-        | Instruction::AssignValue { operand: value, .. }
-        | Instruction::PushValue { operand: value }
-        | Instruction::AccessValue { of: value, .. }
-        | Instruction::AccessAssignRegisterValue { value, .. }
-        | Instruction::AccessAssignValueRegister { to: value, .. }
-        | Instruction::CallValue { callee: value, .. }
-        | Instruction::GetTagValue { of: value, .. }
-        | Instruction::ReturnValue { value } => {
+        Instruction::NoOp(_)
+        | Instruction::Panic(_)
+        | Instruction::Label(_)
+        | Instruction::ApartFnLabel(_)
+        | Instruction::NotRegister(_)
+        | Instruction::NegateRegister(_)
+        | Instruction::MultiplyRegisterRegister(_)
+        | Instruction::DivideRegisterRegister(_)
+        | Instruction::RemainderRegisterRegister(_)
+        | Instruction::AddRegisterRegister(_)
+        | Instruction::SubtractRegisterRegister(_)
+        | Instruction::LessRegisterRegister(_)
+        | Instruction::GreaterRegisterRegister(_)
+        | Instruction::LessOrEqualRegisterRegister(_)
+        | Instruction::GreaterOrEqualRegisterRegister(_)
+        | Instruction::EqualRegisterRegister(_)
+        | Instruction::NotEqualRegisterRegister(_)
+        | Instruction::AndRegisterRegister(_)
+        | Instruction::OrRegisterRegister(_)
+        | Instruction::AssignRegister(_)
+        | Instruction::PushRegister(_)
+        | Instruction::AccessRegister(_)
+        | Instruction::AccessAssignRegisterRegister(_)
+        | Instruction::CallRegister(_)
+        | Instruction::GetTagRegister(_)
+        | Instruction::ReturnRegister(_) => {}
+        Instruction::NotValue(NotValue { operand: value, .. })
+        | Instruction::NegateValue(NegateValue { operand: value, .. })
+        | Instruction::MultiplyRegisterValue(MultiplyRegisterValue { rhs: value, .. })
+        | Instruction::MultiplyValueRegister(MultiplyValueRegister { lhs: value, .. })
+        | Instruction::DivideRegisterValue(DivideRegisterValue { rhs: value, .. })
+        | Instruction::DivideValueRegister(DivideValueRegister { lhs: value, .. })
+        | Instruction::RemainderRegisterValue(RemainderRegisterValue { rhs: value, .. })
+        | Instruction::RemainderValueRegister(RemainderValueRegister { lhs: value, .. })
+        | Instruction::AddRegisterValue(AddRegisterValue { rhs: value, .. })
+        | Instruction::AddValueRegister(AddValueRegister { lhs: value, .. })
+        | Instruction::SubtractRegisterValue(SubtractRegisterValue { rhs: value, .. })
+        | Instruction::SubtractValueRegister(SubtractValueRegister { lhs: value, .. })
+        | Instruction::LessRegisterValue(LessRegisterValue { rhs: value, .. })
+        | Instruction::LessValueRegister(LessValueRegister { lhs: value, .. })
+        | Instruction::GreaterRegisterValue(GreaterRegisterValue { rhs: value, .. })
+        | Instruction::GreaterValueRegister(GreaterValueRegister { lhs: value, .. })
+        | Instruction::LessOrEqualRegisterValue(LessOrEqualRegisterValue { rhs: value, .. })
+        | Instruction::LessOrEqualValueRegister(LessOrEqualValueRegister { lhs: value, .. })
+        | Instruction::GreaterOrEqualRegisterValue(GreaterOrEqualRegisterValue {
+            rhs: value,
+            ..
+        })
+        | Instruction::GreaterOrEqualValueRegister(GreaterOrEqualValueRegister {
+            lhs: value,
+            ..
+        })
+        | Instruction::EqualRegisterValue(EqualRegisterValue { rhs: value, .. })
+        | Instruction::EqualValueRegister(EqualValueRegister { lhs: value, .. })
+        | Instruction::NotEqualRegisterValue(NotEqualRegisterValue { rhs: value, .. })
+        | Instruction::NotEqualValueRegister(NotEqualValueRegister { lhs: value, .. })
+        | Instruction::AndRegisterValue(AndRegisterValue { rhs: value, .. })
+        | Instruction::AndValueRegister(AndValueRegister { lhs: value, .. })
+        | Instruction::OrRegisterValue(OrRegisterValue { rhs: value, .. })
+        | Instruction::OrValueRegister(OrValueRegister { lhs: value, .. })
+        | Instruction::AssignValue(AssignValue { operand: value, .. })
+        | Instruction::PushValue(PushValue { operand: value })
+        | Instruction::AccessValue(AccessValue { of: value, .. })
+        | Instruction::AccessAssignRegisterValue(AccessAssignRegisterValue { value, .. })
+        | Instruction::AccessAssignValueRegister(AccessAssignValueRegister { to: value, .. })
+        | Instruction::CallValue(CallValue { callee: value, .. })
+        | Instruction::GetTagValue(GetTagValue { of: value, .. })
+        | Instruction::ReturnValue(ReturnValue { value }) => {
             instruction_changed |=
-                backpatch_value(value, block_addresses, address_to_label, disassembler);
+                backpatch_value(value, block_addresses, address_to_label, instructive);
         }
-        Instruction::MultiplyValueValue { lhs, rhs, .. }
-        | Instruction::DivideValueValue { lhs, rhs, .. }
-        | Instruction::RemainderValueValue { lhs, rhs, .. }
-        | Instruction::AddValueValue { lhs, rhs, .. }
-        | Instruction::SubtractValueValue { lhs, rhs, .. }
-        | Instruction::LessValueValue { lhs, rhs, .. }
-        | Instruction::GreaterValueValue { lhs, rhs, .. }
-        | Instruction::LessOrEqualValueValue { lhs, rhs, .. }
-        | Instruction::GreaterOrEqualValueValue { lhs, rhs, .. }
-        | Instruction::EqualValueValue { lhs, rhs, .. }
-        | Instruction::NotEqualValueValue { lhs, rhs, .. }
-        | Instruction::AndValueValue { lhs, rhs, .. }
-        | Instruction::OrValueValue { lhs, rhs, .. }
-        | Instruction::AccessAssignValueValue {
+        Instruction::MultiplyValueValue(MultiplyValueValue { lhs, rhs, .. })
+        | Instruction::DivideValueValue(DivideValueValue { lhs, rhs, .. })
+        | Instruction::RemainderValueValue(RemainderValueValue { lhs, rhs, .. })
+        | Instruction::AddValueValue(AddValueValue { lhs, rhs, .. })
+        | Instruction::SubtractValueValue(SubtractValueValue { lhs, rhs, .. })
+        | Instruction::LessValueValue(LessValueValue { lhs, rhs, .. })
+        | Instruction::GreaterValueValue(GreaterValueValue { lhs, rhs, .. })
+        | Instruction::LessOrEqualValueValue(LessOrEqualValueValue { lhs, rhs, .. })
+        | Instruction::GreaterOrEqualValueValue(GreaterOrEqualValueValue { lhs, rhs, .. })
+        | Instruction::EqualValueValue(EqualValueValue { lhs, rhs, .. })
+        | Instruction::NotEqualValueValue(NotEqualValueValue { lhs, rhs, .. })
+        | Instruction::AndValueValue(AndValueValue { lhs, rhs, .. })
+        | Instruction::OrValueValue(OrValueValue { lhs, rhs, .. })
+        | Instruction::AccessAssignValueValue(AccessAssignValueValue {
             to: lhs,
             value: rhs,
             ..
-        } => {
+        }) => {
             instruction_changed |=
-                backpatch_value(lhs, block_addresses, address_to_label, disassembler);
+                backpatch_value(lhs, block_addresses, address_to_label, instructive);
 
             instruction_changed |=
-                backpatch_value(rhs, block_addresses, address_to_label, disassembler);
+                backpatch_value(rhs, block_addresses, address_to_label, instructive);
         }
-        Instruction::Jump { destination } => {
+        Instruction::Jump(Jump { destination }) => {
             let label_index = address_to_label
                 .get(destination)
                 .copied()
@@ -341,11 +338,11 @@ where
                 instruction_changed |= true;
             }
         }
-        Instruction::BranchRegister {
+        Instruction::BranchRegister(BranchRegister {
             when_true,
             otherwise,
             ..
-        } => {
+        }) => {
             let label_index = address_to_label.get(when_true).copied().unwrap_or_else(|| {
                 println!("{address_to_label:?}");
                 panic!("destination was not a label {when_true}");
@@ -382,13 +379,13 @@ where
                 instruction_changed |= true;
             }
         }
-        Instruction::BranchValue {
+        Instruction::BranchValue(BranchValue {
             condition,
             when_true,
             otherwise,
-        } => {
+        }) => {
             instruction_changed |=
-                backpatch_value(condition, block_addresses, address_to_label, disassembler);
+                backpatch_value(condition, block_addresses, address_to_label, instructive);
 
             let label_index = address_to_label.get(when_true).copied().unwrap_or_else(|| {
                 println!("{address_to_label:?}");
@@ -431,17 +428,18 @@ where
     instruction_changed
 }
 
+#[allow(clippy::too_many_lines)]
 fn backpatch_value<T>(
-    value: &mut CopyableValue,
+    value: &mut Value,
     block_addresses: &[u32],
     address_to_label: &HashMap<u32, u32>,
-    disassembler: &mut T,
+    instructive: &mut T,
 ) -> bool
 where
     T: Instructive,
 {
     match value {
-        CopyableValue::Fn { address, .. } => {
+        Value::ApartFn(ApartFn { address, .. }) => {
             let label_index = address_to_label.get(address).copied().unwrap_or_else(|| {
                 println!("{address_to_label:?}");
                 panic!("destination was not a label {address}");
@@ -462,23 +460,27 @@ where
                 true
             }
         }
-        CopyableValue::ValueIndex(value_index) => {
-            let value_index = *value_index;
-
-            match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                Some(Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. }) => {
+        Value::ValueIndex(value_index) => {
+            match instructive.arena_mut().get_mut(usize::from(*value_index)) {
+                Some(
+                    GarbageCollectedValue::Compound(Compound { fields, .. })
+                    | GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }),
+                ) => {
                     let mut taken_fields = std::mem::take(fields);
 
                     let mut changed = false;
 
                     for field in &mut taken_fields {
                         changed |=
-                            backpatch_value(field, block_addresses, address_to_label, disassembler);
+                            backpatch_value(field, block_addresses, address_to_label, instructive);
                     }
 
-                    match disassembler.values_mut().get_mut(usize::from(value_index)) {
+                    match instructive.arena_mut().get_mut(usize::from(*value_index)) {
                         Some(
-                            Value::Compound { fields, .. } | Value::TaggedCompound { fields, .. },
+                            GarbageCollectedValue::Compound(Compound { fields, .. })
+                            | GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                                fields, ..
+                            }),
                         ) => {
                             *fields = taken_fields;
                         }
@@ -489,18 +491,18 @@ where
 
                     changed
                 }
-                Some(Value::Vec { values, .. }) => {
+                Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) => {
                     let mut taken_values = std::mem::take(values);
 
                     let mut changed = false;
 
                     for value in &mut taken_values {
                         changed |=
-                            backpatch_value(value, block_addresses, address_to_label, disassembler);
+                            backpatch_value(value, block_addresses, address_to_label, instructive);
                     }
 
-                    match disassembler.values_mut().get_mut(usize::from(value_index)) {
-                        Some(Value::Vec { values, .. }) => {
+                    match instructive.arena_mut().get_mut(usize::from(*value_index)) {
+                        Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) => {
                             *values = taken_values;
                         }
                         _ => unreachable!(
@@ -510,10 +512,24 @@ where
 
                     changed
                 }
-                _ => false,
+                Some(GarbageCollectedValue::ApartString(_)) | None => false,
             }
         }
-        _ => false,
+        Value::Never(_)
+        | Value::U8(_)
+        | Value::I8(_)
+        | Value::U16(_)
+        | Value::I16(_)
+        | Value::U32(_)
+        | Value::I32(_)
+        | Value::U64(_)
+        | Value::I64(_)
+        | Value::F32(_)
+        | Value::F64(_)
+        | Value::Boolean(_)
+        | Value::Unit(_)
+        | Value::ApartNativeFn(_)
+        | Value::ApartRegister(_) => false,
     }
 }
 
@@ -525,22 +541,27 @@ fn find_labels(
 ) {
     address_to_label.clear();
 
-    let mut disassembler = Compiler {
+    let mut instructive = Compiler {
         ip: 2,
         constants: vec![],
-        values: vec![],
+        arena: vec![],
     };
 
     let mut label_index = 0u32;
 
-    while disassembler.ip < bytecode.len() {
-        if matches!(
-            Instruction::disassemble(bytecode, &mut disassembler),
-            Instruction::Label
-        ) {
+    while instructive.ip < bytecode.len() {
+        let Some((instruction, instruction_size)) =
+            Instruction::decode(&bytecode[(instructive.ip)..], &mut instructive)
+        else {
+            panic!("failed to decode an instruction before reaching the bytecode's end");
+        };
+
+        instructive.ip += instruction_size;
+
+        if matches!(instruction, Instruction::Label(_)) {
             if remove_labels {
-                disassembler.ip -= 1;
-                bytecode.splice((disassembler.ip)..=(disassembler.ip), []);
+                instructive.ip -= instruction_size;
+                bytecode.splice((instructive.ip)..(instructive.ip + instruction_size), []);
             } else {
                 address_to_label.insert(
                     block_addresses
@@ -550,7 +571,7 @@ fn find_labels(
 
                 block_addresses
                     [usize::try_from(label_index).expect("label index was not a valid usize")] =
-                    u32::try_from(disassembler.ip).expect("ip was not a valid u32")
+                    u32::try_from(instructive.ip).expect("ip was not a valid u32")
                         - label_index
                         - 1;
 
@@ -560,104 +581,25 @@ fn find_labels(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum CopyableValue {
-    Never,
-    U8(u8),
-    I8(i8),
-    U16(u16),
-    I16(i16),
-    U32(u32),
-    I32(i32),
-    U64(u64),
-    I64(i64),
-    F32(f32),
-    F64(f64),
-    Boolean(bool),
-    Unit,
-    Fn {
-        address: u32,
-        max_register_count: u16,
-    },
-    NativeFn(NativeFn),
-    ValueIndex(ValueIndex),
-    Register(u16),
-}
-
-#[derive(Debug, Clone)]
-pub enum Value {
-    Compound {
-        field_count: u8,
-        fields: Box<[CopyableValue]>,
-    },
-    TaggedCompound {
-        tag: u16,
-        field_count: u8,
-        fields: Box<[CopyableValue]>,
-    },
-    String(String),
-    Vec {
-        length: u64,
-        values: Vec<CopyableValue>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueIndex(pub u64);
-
-impl From<ValueIndex> for u64 {
-    fn from(value: ValueIndex) -> Self {
-        value.0
-    }
-}
-
-impl From<ValueIndex> for usize {
-    fn from(value: ValueIndex) -> Self {
-        Self::try_from(value.0).unwrap_or_else(|_| panic!("number of values was not a valid usize"))
-    }
-}
-
-impl From<u64> for ValueIndex {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<usize> for ValueIndex {
-    fn from(value: usize) -> Self {
-        Self(
-            u64::try_from(value)
-                .unwrap_or_else(|_| panic!("number of values may not exceed {}", u64::MAX)),
-        )
-    }
-}
-
-pub trait Assemble<T>
+impl<T> Encode<T> for (&CompileSuccess<'_>, &IrInstruction<IrValue>)
 where
     T: Instructive,
 {
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8>;
-}
+    type Output = Vec<u8>;
 
-impl<T> Assemble<T> for IrInstruction<IrValue>
-where
-    T: Instructive,
-{
     #[allow(clippy::too_many_lines)]
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        match self {
-            Self::NoOp => vec![],
-            Self::Panic => Instruction::Panic.assemble(compiled, assembler),
-            Self::FnLabel(fn_label) => Instruction::FnLabel {
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        match self.1 {
+            IrInstruction::NoOp => vec![],
+            IrInstruction::Panic => Instruction::Panic(Panic).encode(instructive),
+            IrInstruction::FnLabel(fn_label) => Instruction::ApartFnLabel(ApartFnLabel {
                 fn_label: Box::new(FnLabel::new(
                     fn_label.file_name().to_string(),
                     fn_label.function_label().to_string(),
                 )),
-            }
-            .assemble(compiled, assembler),
-            Self::Unary {
+            })
+            .encode(instructive),
+            IrInstruction::Unary {
                 op,
                 operand: ir_operand,
                 to,
@@ -666,1798 +608,1736 @@ where
                     Location::Register(to),
                     UnaryOp::Not,
                     ValueOrLocation::At(Location::Register(operand)),
-                ) => Instruction::NotRegister {
-                    to: *to,
-                    operand: *operand,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NotRegister(NotRegister {
+                    to: u16::from(*to),
+                    operand: u16::from(*operand),
+                })
+                .encode(instructive),
                 (Location::Register(to), UnaryOp::Not, ValueOrLocation::Value(_)) => {
-                    Instruction::NotValue {
-                        to: *to,
-                        operand: CopyableValue::disassemble(
-                            ir_operand.assemble(compiled, assembler).as_slice(),
-                            assembler,
+                    Instruction::NotValue(NotValue {
+                        to: u16::from(*to),
+                        operand: Value::decode(
+                            (self.0, ir_operand).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
                         ),
-                    }
-                    .assemble(compiled, assembler)
+                    })
+                    .encode(instructive)
                 }
                 (
                     Location::Register(to),
                     UnaryOp::Negate,
                     ValueOrLocation::At(Location::Register(operand)),
-                ) => Instruction::NegateRegister {
-                    to: *to,
-                    operand: *operand,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NegateRegister(NegateRegister {
+                    to: u16::from(*to),
+                    operand: u16::from(*operand),
+                })
+                .encode(instructive),
                 (Location::Register(to), UnaryOp::Negate, ValueOrLocation::Value(_)) => {
-                    Instruction::NegateValue {
-                        to: *to,
-                        operand: CopyableValue::disassemble(
-                            ir_operand.assemble(compiled, assembler).as_slice(),
-                            assembler,
+                    Instruction::NegateValue(NegateValue {
+                        to: u16::from(*to),
+                        operand: Value::decode(
+                            (self.0, ir_operand).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
                         ),
-                    }
-                    .assemble(compiled, assembler)
+                    })
+                    .encode(instructive)
                 }
             },
-            Self::Binary { op, lhs, rhs, to } => match (to, op, lhs.kind(), rhs.kind()) {
+            IrInstruction::Binary { op, lhs, rhs, to } => match (to, op, lhs.kind(), rhs.kind()) {
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::MultiplyRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::MultiplyRegisterRegister(MultiplyRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::MultiplyRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::MultiplyRegisterValue(MultiplyRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::MultiplyValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::MultiplyValueRegister(MultiplyValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::MultiplyValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::MultiplyValueValue(MultiplyValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::DivideRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::DivideRegisterRegister(DivideRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::DivideRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::DivideRegisterValue(DivideRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::DivideValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::DivideValueRegister(DivideValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::DivideValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::DivideValueValue(DivideValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::RemainderRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::RemainderRegisterRegister(RemainderRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::RemainderRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::RemainderRegisterValue(RemainderRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::RemainderValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::RemainderValueRegister(RemainderValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::RemainderValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::RemainderValueValue(RemainderValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AddRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AddRegisterRegister(AddRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AddRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AddRegisterValue(AddRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AddValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AddValueRegister(AddValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AddValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AddValueValue(AddValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::SubtractRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::SubtractRegisterRegister(SubtractRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::SubtractRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::SubtractRegisterValue(SubtractRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::SubtractValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::SubtractValueRegister(SubtractValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::SubtractValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::SubtractValueValue(SubtractValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessRegisterRegister(LessRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessRegisterValue(LessRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessValueRegister(LessValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessValueValue(LessValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterRegisterRegister(GreaterRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterRegisterValue(GreaterRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterValueRegister(GreaterValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterValueValue(GreaterValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessOrEqualRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessOrEqualRegisterRegister(LessOrEqualRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessOrEqualRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessOrEqualRegisterValue(LessOrEqualRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessOrEqualValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessOrEqualValueRegister(LessOrEqualValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessOrEqualValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::LessOrEqualValueValue(LessOrEqualValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterOrEqualRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterOrEqualRegisterRegister(GreaterOrEqualRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterOrEqualRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterOrEqualRegisterValue(GreaterOrEqualRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterOrEqualValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterOrEqualValueRegister(GreaterOrEqualValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterOrEqualValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::GreaterOrEqualValueValue(GreaterOrEqualValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::EqualRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::EqualRegisterRegister(EqualRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::EqualRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::EqualRegisterValue(EqualRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::EqualValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::EqualValueRegister(EqualValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::EqualValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::EqualValueValue(EqualValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::NotEqualRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NotEqualRegisterRegister(NotEqualRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::NotEqualRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NotEqualRegisterValue(NotEqualRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::NotEqualValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NotEqualValueRegister(NotEqualValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::NotEqualValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::NotEqualValueValue(NotEqualValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AndRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AndRegisterRegister(AndRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AndRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AndRegisterValue(AndRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AndValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AndValueRegister(AndValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AndValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::AndValueValue(AndValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::OrRegisterRegister {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::OrRegisterRegister(OrRegisterRegister {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::OrRegisterValue {
-                    to: *to,
-                    lhs: *lhs,
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::OrRegisterValue(OrRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::OrValueRegister {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: *rhs,
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::OrValueRegister(OrValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                })
+                .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Or,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::OrValueValue {
-                    to: *to,
-                    lhs: CopyableValue::disassemble(
-                        lhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    rhs: CopyableValue::disassemble(
-                        rhs.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
+                ) => Instruction::OrValueValue(OrValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                })
+                .encode(instructive),
             },
-            Self::Assign { value, to } => match (to, value.kind()) {
+            IrInstruction::Assign { value, to } => match (to, value.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
-                    Instruction::AssignRegister {
-                        to: *to,
-                        operand: *operand,
-                    }
-                    .assemble(compiled, assembler)
+                    Instruction::AssignRegister(AssignRegister {
+                        to: u16::from(*to),
+                        operand: u16::from(*operand),
+                    })
+                    .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AssignValue {
-                    to: *to,
-                    operand: CopyableValue::disassemble(
-                        value.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
+                (Location::Register(to), ValueOrLocation::Value(_)) => {
+                    Instruction::AssignValue(AssignValue {
+                        to: u16::from(*to),
+                        operand: Value::decode(
+                            (self.0, value).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    })
+                    .encode(instructive)
                 }
-                .assemble(compiled, assembler),
             },
-            Self::Push(value) => match value.kind() {
+            IrInstruction::Push(value) => match value.kind() {
                 ValueOrLocation::At(Location::Register(operand)) => {
-                    Instruction::PushRegister { operand: *operand }.assemble(compiled, assembler)
+                    Instruction::PushRegister(PushRegister {
+                        operand: u16::from(*operand),
+                    })
+                    .encode(instructive)
                 }
-                ValueOrLocation::Value(_) => Instruction::PushValue {
-                    operand: CopyableValue::disassemble(
-                        value.assemble(compiled, assembler).as_slice(),
-                        assembler,
+                ValueOrLocation::Value(_) => Instruction::PushValue(PushValue {
+                    operand: Value::decode(
+                        (self.0, value).encode(instructive).as_slice(),
+                        instructive,
+                    )
+                    .map_or_else(
+                        || panic!("all IR values are valid values"),
+                        |(value, _)| value,
                     ),
-                }
-                .assemble(compiled, assembler),
+                })
+                .encode(instructive),
             },
-            Self::Call { callee, arity, to } => match (to, callee.kind()) {
+            IrInstruction::Call { callee, arity, to } => match (to, callee.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(callee))) => {
-                    Instruction::CallRegister {
-                        to: *to,
+                    Instruction::CallRegister(CallRegister {
+                        to: u16::from(*to),
                         arity: *arity,
-                        callee: *callee,
-                    }
-                    .assemble(compiled, assembler)
+                        callee: u16::from(*callee),
+                    })
+                    .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::CallValue {
-                    to: *to,
-                    arity: *arity,
-                    callee: CopyableValue::disassemble(
-                        callee.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
+                (Location::Register(to), ValueOrLocation::Value(_)) => {
+                    Instruction::CallValue(CallValue {
+                        to: u16::from(*to),
+                        arity: *arity,
+                        callee: Value::decode(
+                            (self.0, callee).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    })
+                    .encode(instructive)
                 }
-                .assemble(compiled, assembler),
             },
-            Self::Access { index, of, to } => match (to, of.kind()) {
+            IrInstruction::Access { index, of, to } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(of))) => {
-                    Instruction::AccessRegister {
-                        to: *to,
+                    Instruction::AccessRegister(AccessRegister {
+                        to: u16::from(*to),
                         index: *index,
-                        of: *of,
-                    }
-                    .assemble(compiled, assembler)
+                        of: u16::from(*of),
+                    })
+                    .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AccessValue {
-                    to: *to,
-                    index: *index,
-                    of: CopyableValue::disassemble(
-                        of.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
+                (Location::Register(to), ValueOrLocation::Value(_)) => {
+                    Instruction::AccessValue(AccessValue {
+                        to: u16::from(*to),
+                        index: *index,
+                        of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                            .map_or_else(
+                                || panic!("all IR values are valid values"),
+                                |(value, _)| value,
+                            ),
+                    })
+                    .encode(instructive)
                 }
-                .assemble(compiled, assembler),
             },
-            Self::AccessAssign { index, of, value } => match (of.kind(), value.kind()) {
+            IrInstruction::AccessAssign { index, of, value } => match (of.kind(), value.kind()) {
                 (
                     ValueOrLocation::At(Location::Register(to)),
                     ValueOrLocation::At(Location::Register(value)),
-                ) => Instruction::AccessAssignRegisterRegister {
+                ) => Instruction::AccessAssignRegisterRegister(AccessAssignRegisterRegister {
                     index: *index,
-                    to: *to,
-                    value: *value,
-                }
-                .assemble(compiled, assembler),
+                    to: u16::from(*to),
+                    value: u16::from(*value),
+                })
+                .encode(instructive),
                 (ValueOrLocation::At(Location::Register(to)), ValueOrLocation::Value(_)) => {
-                    Instruction::AccessAssignRegisterValue {
+                    Instruction::AccessAssignRegisterValue(AccessAssignRegisterValue {
                         index: *index,
-                        to: *to,
-                        value: CopyableValue::disassemble(
-                            value.assemble(compiled, assembler).as_slice(),
-                            assembler,
+                        to: u16::from(*to),
+                        value: Value::decode(
+                            (self.0, value).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
                         ),
-                    }
-                    .assemble(compiled, assembler)
+                    })
+                    .encode(instructive)
                 }
                 (ValueOrLocation::Value(_), ValueOrLocation::At(Location::Register(value))) => {
-                    Instruction::AccessAssignValueRegister {
+                    Instruction::AccessAssignValueRegister(AccessAssignValueRegister {
                         index: *index,
-                        to: CopyableValue::disassemble(
-                            of.assemble(compiled, assembler).as_slice(),
-                            assembler,
-                        ),
-                        value: *value,
-                    }
-                    .assemble(compiled, assembler)
+                        to: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                            .map_or_else(
+                                || panic!("all IR values are valid values"),
+                                |(value, _)| value,
+                            ),
+                        value: u16::from(*value),
+                    })
+                    .encode(instructive)
                 }
                 (ValueOrLocation::Value(_), ValueOrLocation::Value(_)) => {
-                    Instruction::AccessAssignValueValue {
+                    Instruction::AccessAssignValueValue(AccessAssignValueValue {
                         index: *index,
-                        to: CopyableValue::disassemble(
-                            of.assemble(compiled, assembler).as_slice(),
-                            assembler,
+                        to: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                            .map_or_else(
+                                || panic!("all IR values are valid values"),
+                                |(value, _)| value,
+                            ),
+                        value: Value::decode(
+                            (self.0, value).encode(instructive).as_slice(),
+                            instructive,
+                        )
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
                         ),
-                        value: CopyableValue::disassemble(
-                            value.assemble(compiled, assembler).as_slice(),
-                            assembler,
-                        ),
-                    }
-                    .assemble(compiled, assembler)
+                    })
+                    .encode(instructive)
                 }
             },
-            Self::GetTag { of, to } => match (to, of.kind()) {
+            IrInstruction::GetTag { of, to } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
-                    Instruction::GetTagRegister {
-                        to: *to,
-                        of: *operand,
-                    }
-                    .assemble(compiled, assembler)
+                    Instruction::GetTagRegister(GetTagRegister {
+                        to: u16::from(*to),
+                        of: u16::from(*operand),
+                    })
+                    .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::GetTagValue {
-                    to: *to,
-                    of: CopyableValue::disassemble(
-                        of.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
+                (Location::Register(to), ValueOrLocation::Value(_)) => {
+                    Instruction::GetTagValue(GetTagValue {
+                        to: u16::from(*to),
+                        of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                            .map_or_else(
+                                || panic!("all IR values are valid values"),
+                                |(value, _)| value,
+                            ),
+                    })
+                    .encode(instructive)
                 }
-                .assemble(compiled, assembler),
             },
-            Self::Jump(destination) => Instruction::Jump {
+            IrInstruction::Jump(destination) => Instruction::Jump(Jump {
                 destination: u32::from(*destination),
-            }
-            .assemble(compiled, assembler),
-            Self::Branch {
+            })
+            .encode(instructive),
+            IrInstruction::Branch {
                 condition,
                 when_true,
                 otherwise,
             } => match condition.kind() {
-                ValueOrLocation::At(Location::Register(condition)) => Instruction::BranchRegister {
-                    condition: *condition,
-                    when_true: u32::from(*when_true),
-                    otherwise: u32::from(*otherwise),
-                }
-                .assemble(compiled, assembler),
-                ValueOrLocation::Value(_) => Instruction::BranchValue {
-                    condition: CopyableValue::disassemble(
-                        condition.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                    when_true: u32::from(*when_true),
-                    otherwise: u32::from(*otherwise),
-                }
-                .assemble(compiled, assembler),
-            },
-            Self::Return(value) => match value.kind() {
-                ValueOrLocation::At(Location::Register(value)) => {
-                    Instruction::ReturnRegister { value: *value }.assemble(compiled, assembler)
-                }
-                ValueOrLocation::Value(_) => Instruction::ReturnValue {
-                    value: CopyableValue::disassemble(
-                        value.assemble(compiled, assembler).as_slice(),
-                        assembler,
-                    ),
-                }
-                .assemble(compiled, assembler),
-            },
-        }
-    }
-}
-
-impl<T> Assemble<T> for Typed<ValueOrLocation<IrValue>>
-where
-    T: Instructive,
-{
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        match self.kind() {
-            ValueOrLocation::Value(value) => {
-                (value, self.type_index()).assemble(compiled, assembler)
-            }
-            ValueOrLocation::At(location) => {
-                (*location, self.type_index()).assemble(compiled, assembler)
-            }
-        }
-    }
-}
-
-impl<T> Assemble<T> for (Location, TypeIndex)
-where
-    T: Instructive,
-{
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        match self.0 {
-            Location::Register(index) => index.assemble(compiled, assembler),
-        }
-    }
-}
-
-impl<T> Assemble<T> for (&IrValue, TypeIndex)
-where
-    T: Instructive,
-{
-    #[allow(clippy::too_many_lines)]
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        match self.0 {
-            IrValue::Never => {
-                vec![u8::from(Instruction::Never)]
-            }
-            IrValue::U8(value) => {
-                let mut bytes = vec![u8::from(Instruction::U8)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::I8(value) => {
-                let mut bytes = vec![u8::from(Instruction::I8)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::U16(value) => {
-                let mut bytes = vec![u8::from(Instruction::U16)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::I16(value) => {
-                let mut bytes = vec![u8::from(Instruction::I16)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::U32(value) => {
-                let mut bytes = vec![u8::from(Instruction::U32)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::I32(value) => {
-                let mut bytes = vec![u8::from(Instruction::I32)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::U64(value) => {
-                let mut bytes = vec![u8::from(Instruction::U64)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::I64(value) => {
-                let mut bytes = vec![u8::from(Instruction::I64)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::F32(value) => {
-                let mut bytes = vec![u8::from(Instruction::F32)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::F64(value) => {
-                let mut bytes = vec![u8::from(Instruction::F64)];
-
-                bytes.extend(value.to_le_bytes());
-
-                bytes
-            }
-            IrValue::Boolean(value) => {
-                vec![u8::from(Instruction::Boolean), u8::from(*value)]
-            }
-            IrValue::Unit => {
-                vec![u8::from(Instruction::Unit)]
-            }
-            IrValue::String(text) => {
-                let mut bytes = vec![u8::from(Instruction::String)];
-
-                bytes.extend(
-                    u64::try_from(text.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes(),
-                );
-
-                bytes.extend(text.as_bytes());
-
-                bytes
-            }
-            IrValue::Fn {
-                block_index,
-                max_register_count,
-            } => {
-                let mut bytes = vec![u8::from(Instruction::Fn)];
-
-                bytes.extend(u32::from(*block_index).to_le_bytes());
-
-                bytes.extend(max_register_count.to_le_bytes());
-
-                bytes
-            }
-            IrValue::NativeFn(native_fn) => {
-                let mut bytes = vec![u8::from(Instruction::NativeFn)];
-
-                bytes.extend(u32::from(*native_fn).to_le_bytes());
-
-                bytes
-            }
-            IrValue::Compound(values) => {
-                let mut bytes = vec![u8::from(Instruction::Compound)];
-
-                bytes.extend(
-                    u8::try_from(values.len())
-                        .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes(),
-                );
-
-                for value in values {
-                    bytes.extend(value.assemble(compiled, assembler));
-                }
-
-                bytes
-            }
-            IrValue::TaggedCompound { tag, fields } => {
-                let mut bytes = vec![u8::from(Instruction::TaggedCompound)];
-
-                bytes.extend(tag.to_le_bytes());
-
-                bytes.extend(
-                    u8::try_from(fields.len())
-                        .expect("type checking guarantees the number of fields fits within a u16")
-                        .to_le_bytes(),
-                );
-
-                for value in fields {
-                    bytes.extend(value.assemble(compiled, assembler));
-                }
-
-                bytes
-            }
-        }
-    }
-}
-
-pub trait Disassemble<T>
-where
-    T: Instructive,
-{
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self;
-}
-
-pub trait Instructive: Sized {
-    fn ip_mut(&mut self) -> &mut usize;
-
-    fn constants_mut(&mut self) -> &mut Vec<ValueIndex>;
-
-    fn values_mut(&mut self) -> &mut Vec<Value>;
-}
-
-macro_rules! we_make_numbers_here {
-    (
-        $number_ty:ty, $number_type_id:ident $(,)?
-    ) => {
-        impl<T> $crate::targets::vm::Assemble<T> for $number_ty
-        where
-            T: $crate::targets::vm::Instructive,
-        {
-            fn assemble(&self, _: &$crate::CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-                *assembler.ip_mut() = 0;
-
-                self.to_le_bytes().to_vec()
-            }
-        }
-
-        impl<T> $crate::targets::vm::Disassemble<T> for $number_ty
-        where
-            T: $crate::targets::vm::Instructive,
-        {
-            fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-                const SIZE: usize = std::mem::size_of::<$number_ty>();
-
-                bytecode
-                    .get(
-                        (*disassembler.ip_mut())..{
-                            *disassembler.ip_mut() += SIZE;
-                            *disassembler.ip_mut()
-                        },
-                    )
-                    .and_then(|bytes| bytes.as_array::<SIZE>())
-                    .map(|bytes| Self::from_le_bytes(*bytes))
-                    .unwrap_or_else(|| {
-                        panic!("{} was expected", std::any::type_name::<Self>());
+                ValueOrLocation::At(Location::Register(condition)) => {
+                    Instruction::BranchRegister(BranchRegister {
+                        condition: u16::from(*condition),
+                        when_true: u32::from(*when_true),
+                        otherwise: u32::from(*otherwise),
                     })
-            }
-        }
-    };
-}
-
-we_make_numbers_here!(u8, U8);
-we_make_numbers_here!(i8, I8);
-
-we_make_numbers_here!(u16, U16);
-we_make_numbers_here!(i16, I16);
-
-we_make_numbers_here!(u32, U32);
-we_make_numbers_here!(i32, I32);
-
-we_make_numbers_here!(u64, U64);
-we_make_numbers_here!(i64, I64);
-
-we_make_numbers_here!(f32, F32);
-we_make_numbers_here!(f64, F64);
-
-impl<T> Assemble<T> for bool
-where
-    T: Instructive,
-{
-    fn assemble(&self, _: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        u8::from(*self).to_le_bytes().to_vec()
-    }
-}
-
-impl<T> Disassemble<T> for bool
-where
-    T: Instructive,
-{
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-        const SIZE: usize = std::mem::size_of::<u8>();
-
-        bytecode
-            .get(
-                (*disassembler.ip_mut())..{
-                    *disassembler.ip_mut() += SIZE;
-                    *disassembler.ip_mut()
-                },
-            )
-            .and_then(|bytes| bytes.as_array::<SIZE>())
-            .map(|bytes| u8::from_le_bytes(*bytes))
-            .and_then(|byte| Self::try_from(byte).ok())
-            .unwrap_or_else(|| {
-                panic!("{} was expected", std::any::type_name::<Self>());
-            })
-    }
-}
-
-impl<T> Assemble<T> for String
-where
-    T: Instructive,
-{
-    fn assemble(&self, _: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        let mut bytes = u64::try_from(self.len())
-            .expect("128-bit usize not allowed!  sorry!")
-            .to_le_bytes()
-            .to_vec();
-
-        bytes.extend(self.as_bytes());
-
-        bytes
-    }
-}
-
-impl<T> Disassemble<T> for String
-where
-    T: Instructive,
-{
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-        let length = u64::disassemble(bytecode, disassembler);
-
-        usize::try_from(length).ok().map_or_else(
-            || {
-                panic!("{} was expected", std::any::type_name::<Self>());
-            },
-            |length| {
-                bytecode
-                    .get(
-                        (*disassembler.ip_mut())..{
-                            *disassembler.ip_mut() += length;
-                            *disassembler.ip_mut()
-                        },
+                    .encode(instructive)
+                }
+                ValueOrLocation::Value(_) => Instruction::BranchValue(BranchValue {
+                    condition: Value::decode(
+                        (self.0, condition).encode(instructive).as_slice(),
+                        instructive,
                     )
-                    .and_then(|bytes| Self::from_utf8(bytes.to_vec()).ok())
-                    .expect("out of instructions!")
+                    .map_or_else(
+                        || panic!("all IR values are valid values"),
+                        |(value, _)| value,
+                    ),
+                    when_true: u32::from(*when_true),
+                    otherwise: u32::from(*otherwise),
+                })
+                .encode(instructive),
             },
-        )
-    }
-}
-
-impl<T> Assemble<T> for Register
-where
-    T: Instructive,
-{
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
-
-        let register = u16::from(*self);
-
-        let register = register.to_le_bytes();
-
-        [
-            Instruction::Register.assemble(compiled, assembler),
-            register.to_vec(),
-        ]
-        .concat()
-    }
-}
-
-impl<T> Disassemble<T> for Register
-where
-    T: Instructive,
-{
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-        match Instruction::disassemble(bytecode, disassembler) {
-            Instruction::Register => Self(u16::disassemble(bytecode, disassembler)),
-            instruction => panic!("expected a register, got {instruction:?}"),
+            IrInstruction::Return(value) => match value.kind() {
+                ValueOrLocation::At(Location::Register(value)) => {
+                    Instruction::ReturnRegister(ReturnRegister {
+                        value: u16::from(*value),
+                    })
+                    .encode(instructive)
+                }
+                ValueOrLocation::Value(_) => Instruction::ReturnValue(ReturnValue {
+                    value: Value::decode(
+                        (self.0, value).encode(instructive).as_slice(),
+                        instructive,
+                    )
+                    .map_or_else(
+                        || panic!("all IR values are valid values"),
+                        |(value, _)| value,
+                    ),
+                })
+                .encode(instructive),
+            },
         }
     }
 }
 
-impl<T> Assemble<T> for Box<FnLabel>
+impl<T> Encode<T> for (&CompileSuccess<'_>, &Typed<ValueOrLocation<IrValue>>)
 where
     T: Instructive,
 {
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
+    type Output = Vec<u8>;
+
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        match self.1.kind() {
+            ValueOrLocation::Value(value) => {
+                (self.0, (value, self.1.type_index())).encode(instructive)
+            }
+            ValueOrLocation::At(location) => [
+                value_constants::ApartRegister.encode(instructive),
+                (self.0, (*location, self.1.type_index())).encode(instructive),
+            ]
+            .concat(),
+        }
+    }
+}
+
+impl<T> Encode<T> for (&CompileSuccess<'_>, (Location, TypeIndex))
+where
+    T: Instructive,
+{
+    type Output = Vec<u8>;
+
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        match self.1.0 {
+            Location::Register(index) => u16::from(index).encode(instructive),
+        }
+    }
+}
+
+impl<T> Encode<T> for Box<[Value]>
+where
+    T: Instructive,
+{
+    type Output = Vec<u8>;
+
+    fn encode(&self, instructive: &mut T) -> Self::Output {
         [
-            self.file_name().to_string().assemble(compiled, assembler),
-            self.function_label()
-                .to_string()
-                .assemble(compiled, assembler),
+            u8::try_from(self.len()).unwrap_or_else(|_| panic!("length of Box<[Value]> was not a valid u8; this should only be used with compound fields")).encode(instructive),
+            self.iter().fold(vec![], |mut accum, value| {
+                accum.push(value.encode(instructive));
+
+                accum
+            }).concat(),
+        ].concat()
+    }
+}
+
+impl<T> Decode<T> for Box<[Value]>
+where
+    T: Instructive,
+{
+    type Output = Self;
+
+    fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+        let Some((length, length_size)) = u8::decode(bytecode, instructive) else {
+            panic!(
+                "length of Box<[value]> was not a valid u8; this should only be used with compound fields"
+            );
+        };
+
+        let mut total_size = length_size;
+
+        let values = (0..length)
+            .map(|i| {
+                let Some((value, value_size)) = Value::decode(&bytecode[total_size..], instructive)
+                else {
+                    panic!("value {i} in Box<[Value]> was not valid");
+                };
+
+                total_size += value_size;
+
+                value
+            })
+            .collect::<Vec<_>>();
+
+        Some((values.into_boxed_slice(), total_size))
+    }
+}
+
+impl<T> Encode<T> for Box<FnLabel>
+where
+    T: Instructive,
+{
+    type Output = Vec<u8>;
+
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        [
+            self.file_name().encode(instructive),
+            self.function_label().encode(instructive),
         ]
         .concat()
     }
 }
 
-impl<T> Disassemble<T> for Box<FnLabel>
+impl<T> Decode<T> for Box<FnLabel>
 where
     T: Instructive,
 {
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-        Self::new(FnLabel::new(
-            String::disassemble(bytecode, disassembler),
-            String::disassemble(bytecode, disassembler),
+    type Output = Self;
+
+    fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+        let Some((file_name, file_name_size)) = String::decode(bytecode, instructive) else {
+            panic!("function label was not valid");
+        };
+
+        let bytecode = &bytecode[file_name_size..];
+
+        let Some((function_label, function_label_size)) = String::decode(bytecode, instructive)
+        else {
+            panic!("function label was not valid");
+        };
+
+        Some((
+            Self::new(FnLabel::new(file_name, function_label)),
+            file_name_size + function_label_size,
         ))
     }
 }
 
-impl<T> Assemble<T> for CopyableValue
+impl<T> Encode<T> for NativeFn
 where
     T: Instructive,
 {
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
+    type Output = Vec<u8>;
 
-        match self {
-            Self::Never => Instruction::Never.assemble(compiled, assembler),
-            Self::U8(value) => [
-                Instruction::U8.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::I8(value) => [
-                Instruction::I8.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::U16(value) => [
-                Instruction::U16.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::I16(value) => [
-                Instruction::I16.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::U32(value) => [
-                Instruction::U32.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::I32(value) => [
-                Instruction::I32.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::U64(value) => [
-                Instruction::U64.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::I64(value) => [
-                Instruction::I64.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::F32(value) => [
-                Instruction::F32.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::F64(value) => [
-                Instruction::F64.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::Boolean(value) => [
-                Instruction::Boolean.assemble(compiled, assembler),
-                value.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::Unit => Instruction::Unit.assemble(compiled, assembler),
-            Self::Fn {
-                address,
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        u32::from(*self).encode(instructive)
+    }
+}
+
+impl<T> Decode<T> for NativeFn
+where
+    T: Instructive,
+{
+    type Output = Self;
+
+    fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+        let Some((native_fn, native_fn_size)) = bytecode
+            .get(..std::mem::size_of::<u32>())
+            .and_then(|bytes| bytes.as_array::<{ std::mem::size_of::<u32>() }>())
+            .and_then(|bytes| u32::decode(bytes, instructive))
+        else {
+            panic!("native function was not a valid u32");
+        };
+
+        Some((
+            Self::try_from(native_fn)
+                .unwrap_or_else(|_| panic!("native function {native_fn:#010X} did not exist")),
+            native_fn_size,
+        ))
+    }
+}
+
+impl<T> Encode<T> for (&CompileSuccess<'_>, (&IrValue, TypeIndex))
+where
+    T: Instructive,
+{
+    type Output = Vec<u8>;
+
+    #[allow(clippy::too_many_lines)]
+    fn encode(&self, instructive: &mut T) -> Self::Output {
+        match self.1.0 {
+            IrValue::Never => Value::Never(Never).encode(instructive),
+            IrValue::U8(value) => Value::U8(U8 { value: *value }).encode(instructive),
+            IrValue::I8(value) => Value::I8(I8 { value: *value }).encode(instructive),
+            IrValue::U16(value) => Value::U16(U16 { value: *value }).encode(instructive),
+            IrValue::I16(value) => Value::I16(I16 { value: *value }).encode(instructive),
+            IrValue::U32(value) => Value::U32(U32 { value: *value }).encode(instructive),
+            IrValue::I32(value) => Value::I32(I32 { value: *value }).encode(instructive),
+            IrValue::U64(value) => Value::U64(U64 { value: *value }).encode(instructive),
+            IrValue::I64(value) => Value::I64(I64 { value: *value }).encode(instructive),
+            IrValue::F32(value) => Value::F32(F32 { value: *value }).encode(instructive),
+            IrValue::F64(value) => Value::F64(F64 { value: *value }).encode(instructive),
+            IrValue::Boolean(value) => {
+                Value::Boolean(Boolean { value: *value }).encode(instructive)
+            }
+            IrValue::Unit => Value::Unit(Unit).encode(instructive),
+            IrValue::String(text) => GarbageCollectedValue::ApartString(ApartString {
+                value: text.clone(),
+            })
+            .encode(instructive),
+            IrValue::Fn {
+                block_index,
                 max_register_count,
-            } => [
-                Instruction::Fn.assemble(compiled, assembler),
-                address.assemble(compiled, assembler),
-                max_register_count.assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::NativeFn(native_fn) => [
-                Instruction::NativeFn.assemble(compiled, assembler),
-                u32::from(*native_fn).assemble(compiled, assembler),
-            ]
-            .concat(),
-            Self::ValueIndex(value_index) => assembler
-                .values_mut()
-                .get(usize::from(*value_index))
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!("tried to assemble a value that doesn't exist {value_index:?}")
+            } => Value::ApartFn(ApartFn {
+                address: u32::from(*block_index),
+                max_register_count: *max_register_count,
+            })
+            .encode(instructive),
+            IrValue::NativeFn(native_fn) => {
+                Value::ApartNativeFn(ApartNativeFn { value: *native_fn }).encode(instructive)
+            }
+            IrValue::Compound(fields) => GarbageCollectedValue::Compound(Compound {
+                field_count: u8::try_from(fields.len()).unwrap_or_else(|_| {
+                    panic!("type checking guarantees the number of fields is valid")
+                }),
+                fields: fields
+                    .iter()
+                    .map(|field| {
+                        Value::decode((self.0, field).encode(instructive).as_slice(), instructive)
+                            .unwrap_or_else(|| panic!("all IR values are valid"))
+                            .0
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            })
+            .encode(instructive),
+            IrValue::TaggedCompound { tag, fields } => {
+                GarbageCollectedValue::TaggedCompound(TaggedCompound {
+                    tag: *tag,
+                    field_count: u8::try_from(fields.len()).unwrap_or_else(|_| {
+                        panic!("type checking guarantees the number of fields is valid")
+                    }),
+                    fields: fields
+                        .iter()
+                        .map(|field| {
+                            Value::decode(
+                                (self.0, field).encode(instructive).as_slice(),
+                                instructive,
+                            )
+                            .unwrap_or_else(|| panic!("all IR values are valid"))
+                            .0
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
                 })
-                .assemble(compiled, assembler),
-            Self::Register(index) => [
-                Instruction::Register.assemble(compiled, assembler),
-                index.assemble(compiled, assembler),
-            ]
-            .concat(),
-        }
-    }
-}
-
-impl<T> Disassemble<T> for CopyableValue
-where
-    T: Instructive,
-{
-    fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-        match Instruction::disassemble(bytecode, disassembler) {
-            Instruction::U8 => Self::U8(u8::disassemble(bytecode, disassembler)),
-            Instruction::I8 => Self::I8(i8::disassemble(bytecode, disassembler)),
-            Instruction::U16 => Self::U16(u16::disassemble(bytecode, disassembler)),
-            Instruction::I16 => Self::I16(i16::disassemble(bytecode, disassembler)),
-            Instruction::U32 => Self::U32(u32::disassemble(bytecode, disassembler)),
-            Instruction::I32 => Self::I32(i32::disassemble(bytecode, disassembler)),
-            Instruction::U64 => Self::U64(u64::disassemble(bytecode, disassembler)),
-            Instruction::I64 => Self::I64(i64::disassemble(bytecode, disassembler)),
-            Instruction::F32 => Self::F32(f32::disassemble(bytecode, disassembler)),
-            Instruction::F64 => Self::F64(f64::disassemble(bytecode, disassembler)),
-            Instruction::Boolean => Self::Boolean(bool::disassemble(bytecode, disassembler)),
-            Instruction::Unit => Self::Unit,
-            Instruction::Fn => {
-                let address = u32::disassemble(bytecode, disassembler);
-
-                let max_register_count = u16::disassemble(bytecode, disassembler);
-
-                Self::Fn {
-                    address,
-                    max_register_count,
-                }
-            }
-            Instruction::NativeFn => {
-                let native_fn = NativeFn::try_from(u32::disassemble(bytecode, disassembler))
-                    .unwrap_or_else(|error| {
-                        panic!("{error} is not a valid native function");
-                    });
-
-                Self::NativeFn(native_fn)
-            }
-            Instruction::Compound => {
-                let field_count = u8::disassemble(bytecode, disassembler);
-
-                let mut fields = vec![];
-
-                for _ in 0..field_count {
-                    fields.push(Self::disassemble(bytecode, disassembler));
-                }
-
-                disassembler.values_mut().push(Value::Compound {
-                    field_count,
-                    fields: fields.into_boxed_slice(),
-                });
-
-                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
-
-                disassembler.constants_mut().push(value_index);
-
-                Self::ValueIndex(value_index)
-            }
-            Instruction::TaggedCompound => {
-                let tag = u16::disassemble(bytecode, disassembler);
-
-                let field_count = u8::disassemble(bytecode, disassembler);
-
-                let mut fields = vec![];
-
-                for _ in 0..field_count {
-                    fields.push(Self::disassemble(bytecode, disassembler));
-                }
-
-                disassembler.values_mut().push(Value::TaggedCompound {
-                    tag,
-                    field_count,
-                    fields: fields.into_boxed_slice(),
-                });
-
-                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
-
-                disassembler.constants_mut().push(value_index);
-
-                Self::ValueIndex(value_index)
-            }
-            Instruction::String => {
-                let value = String::disassemble(bytecode, disassembler);
-
-                disassembler.values_mut().push(Value::String(value));
-
-                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
-
-                disassembler.constants_mut().push(value_index);
-
-                Self::ValueIndex(value_index)
-            }
-            Instruction::Never => Self::Never,
-            Instruction::Vec => {
-                let length = u64::disassemble(bytecode, disassembler);
-
-                let mut values = vec![];
-
-                for _ in 0..length {
-                    values.push(Self::disassemble(bytecode, disassembler));
-                }
-
-                disassembler
-                    .values_mut()
-                    .push(Value::Vec { length, values });
-
-                let value_index = ValueIndex::from(disassembler.values_mut().len() - 1);
-
-                disassembler.constants_mut().push(value_index);
-
-                Self::ValueIndex(value_index)
-            }
-            Instruction::Register => Self::Register(u16::disassemble(bytecode, disassembler)),
-            instruction => {
-                panic!("expected a value, but got {instruction:?}");
+                .encode(instructive)
             }
         }
     }
 }
 
-impl<T> Assemble<T> for Value
-where
-    T: Instructive,
-{
-    fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-        *assembler.ip_mut() = 0;
+bytecode_macro::bytecode! (
+    pub Instruction as u8 ;
 
-        match self {
-            Self::Compound {
-                field_count,
-                fields,
-            } => {
-                let mut bytes = Instruction::Compound.assemble(compiled, assembler);
+    opcode constants in opcode_constants ;
 
-                bytes.extend(field_count.to_le_bytes());
+    prelude = prelude;
 
-                for field in fields {
-                    bytes.extend(field.assemble(compiled, assembler));
-                }
+    instructive = Instructive;
+    encode = Encode;
+    decode = Decode;
 
-                bytes
-            }
-            Self::TaggedCompound {
-                tag,
-                field_count,
-                fields,
-            } => {
-                let mut bytes = Instruction::TaggedCompound.assemble(compiled, assembler);
-
-                bytes.extend(tag.to_le_bytes());
-
-                bytes.extend(field_count.to_le_bytes());
-
-                for field in fields {
-                    bytes.extend(field.assemble(compiled, assembler));
-                }
-
-                bytes
-            }
-            Self::String(value) => {
-                let mut bytes = Instruction::String.assemble(compiled, assembler);
-
-                bytes.extend(
-                    u64::try_from(value.len())
-                        .expect("128-bit usize not allowed!  sorry!")
-                        .to_le_bytes(),
-                );
-
-                bytes.extend(value.as_bytes());
-
-                bytes
-            }
-            Self::Vec { length, values } => {
-                let mut bytes = Instruction::Vec.assemble(compiled, assembler);
-
-                bytes.extend(length.to_le_bytes());
-
-                for value in values {
-                    bytes.extend(value.assemble(compiled, assembler));
-                }
-
-                bytes
-            }
-        }
+    opcodes {
+        NoOp,
+        Label,
+        ApartFnLabel {
+            fn_label: Box<FnLabel>,
+        },
+        NotRegister {
+            to: u16,
+            operand: u16,
+        },
+        NotValue {
+            to: u16,
+            operand: Value,
+        },
+        NegateRegister {
+            to: u16,
+            operand: u16,
+        },
+        NegateValue {
+            to: u16,
+            operand: Value,
+        },
+        MultiplyRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        MultiplyRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        MultiplyValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        MultiplyValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        DivideRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        DivideRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        DivideValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        DivideValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        RemainderRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        RemainderRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        RemainderValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        RemainderValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        AddRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        AddRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        AddValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        AddValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        SubtractRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        SubtractRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        SubtractValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        SubtractValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        LessRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        LessRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        LessValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        LessValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        GreaterRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        GreaterRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        GreaterValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        GreaterValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        LessOrEqualRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        LessOrEqualRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        LessOrEqualValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        LessOrEqualValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        GreaterOrEqualRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        GreaterOrEqualRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        GreaterOrEqualValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        GreaterOrEqualValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        EqualRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        EqualRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        EqualValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        EqualValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        NotEqualRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        NotEqualRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        NotEqualValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        NotEqualValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        AndRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        AndRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        AndValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        AndValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        OrRegisterRegister {
+            to: u16,
+            lhs: u16,
+            rhs: u16,
+        },
+        OrRegisterValue {
+            to: u16,
+            lhs: u16,
+            rhs: Value,
+        },
+        OrValueRegister {
+            to: u16,
+            lhs: Value,
+            rhs: u16,
+        },
+        OrValueValue {
+            to: u16,
+            lhs: Value,
+            rhs: Value,
+        },
+        AssignRegister {
+            to: u16,
+            operand: u16,
+        },
+        AssignValue {
+            to: u16,
+            operand: Value,
+        },
+        PushRegister {
+            operand: u16,
+        },
+        PushValue {
+             operand: Value,
+         },
+        AccessRegister {
+            to: u16,
+            index: u8,
+            of: u16,
+        },
+        AccessValue {
+            to: u16,
+            index: u8,
+            of: Value,
+        },
+        AccessAssignRegisterRegister {
+            to: u16,
+            index: u8,
+            value: u16,
+        },
+        AccessAssignRegisterValue {
+            to: u16,
+            index: u8,
+            value: Value,
+        },
+        AccessAssignValueRegister {
+            to: Value,
+            index: u8,
+            value: u16,
+        },
+        AccessAssignValueValue {
+            to: Value,
+            index: u8,
+            value: Value,
+        },
+        CallRegister {
+            to: u16,
+            arity: u8,
+            callee: u16,
+        },
+        CallValue {
+            to: u16,
+            arity: u8,
+            callee: Value,
+        },
+        GetTagRegister {
+            to: u16,
+            of: u16,
+        },
+        GetTagValue {
+            to: u16,
+            of: Value,
+        },
+        Jump {
+            destination: u32,
+        },
+        BranchRegister {
+            condition: u16,
+            when_true: u32,
+            otherwise: u32,
+        },
+        BranchValue {
+            condition: Value,
+            when_true: u32,
+            otherwise: u32,
+        },
+        ReturnRegister {
+            value: u16,
+        },
+        ReturnValue {
+            value: Value,
+        },
+        Panic,
     }
-}
 
-macro_rules! instruction {
-    (
-        $v:vis $instructions:ident ;
-        $($lit:literal $name:ident $(=> { $operand:ident : $operand_ty:ty $(, $operands:ident: $operands_ty:ty)* $(,)? })?,)+
-    ) => {
-        #[derive(Debug)]
-        $v enum $instructions {
-            $($name $({ $operand: $operand_ty $(, $operands: $operands_ty)* , })?,)+
-        }
+    value = Value as u8;
 
-        impl<T> $crate::targets::vm::Assemble<T> for $instructions
-        where
-            T: $crate::targets::vm::Instructive,
-        {
-            fn assemble(&self, compiled: &CompileSuccess<'_>, assembler: &mut T) -> Vec<u8> {
-                *assembler.ip_mut() = 0;
+    value constants in value_constants ;
 
-                match self {
-                    $(
-                        Self::$name $({ $operand $(, $operands)* })? => {
-                            $(
-                                let $operand = <$operand_ty as $crate::targets::vm::Assemble<T>>::assemble($operand, compiled, assembler);
+    values {
+        Never,
+        U8 {
+            value: u8,
+        },
+        I8 {
+            value: i8,
+        },
+        U16 {
+            value: u16,
+        },
+        I16 {
+            value: i16,
+        },
+        U32 {
+            value: u32,
+        },
+        I32 {
+            value: i32,
+        },
+        U64 {
+            value: u64,
+        },
+        I64 {
+            value: i64,
+        },
+        F32 {
+            value: f32,
+        },
+        F64 {
+            value: f64,
+        },
+        Boolean {
+            value: bool,
+        },
+        Unit,
+        ApartFn {
+            address: u32,
+            max_register_count: u16,
+        },
+        ApartNativeFn {
+            value: NativeFn,
+        },
+        ApartRegister {
+            index: u16,
+        },
+    }
 
-                                $(
-                                    let $operands = <$operands_ty as $crate::targets::vm::Assemble<T>>::assemble($operands, compiled, assembler);
-                                )*
-                            )?
+    garbage collected = GarbageCollectedValue;
 
-                            [vec![$lit] $(, $operand $(, $operands)*)?].concat()
-                        }
-                    )+
-                }
-            }
-        }
+    arena index = ValueIndex as u64;
 
-        impl<T> $crate::targets::vm::Disassemble<T> for $instructions
-        where
-            T: $crate::targets::vm::Instructive,
-        {
-            fn disassemble(bytecode: &[u8], disassembler: &mut T) -> Self {
-                match bytecode.get({
-                    let previous_ip = *disassembler.ip_mut();
-                    *disassembler.ip_mut() += 1;
-                    previous_ip
-                }) {
-                    None => panic!("out of instructions!"),
-                    $(
-                        Some($lit) => {
-                            $(
-                                let $operand = <$operand_ty as $crate::targets::vm::Disassemble<T>>::disassemble(bytecode, disassembler);
-
-                                $(
-                                    let $operands = <$operands_ty as $crate::targets::vm::Disassemble<T>>::disassemble(bytecode, disassembler);
-                                )*
-                            )?
-
-                            Self::$name $({
-                                $operand,
-                                $(
-                                    $operands,
-                                )*
-                            })?
-                        }
-                    )+
-                    Some(op_code) => {
-                        panic!("unknown op code {op_code:#X}");
-                    }
-                }
-            }
-        }
-
-        impl From<$instructions> for u8 {
-            fn from(value: $instructions) -> Self {
-                match value {
-                    $(
-                        $instructions::$name $({ $operand: _ $(, $operands: _)* })? => $lit,
-                    )+
-                }
-            }
-        }
-    };
-}
-
-instruction! {
-    pub Instruction ;
-    0x00 NoOp,
-    0x01 Label,
-    0x02 FnLabel => { fn_label: Box<FnLabel>, },
-    0x10 NotRegister => { to: Register, operand: Register },
-    0x11 NotValue => { to: Register, operand: CopyableValue },
-    0x12 NegateRegister => { to: Register, operand: Register },
-    0x13 NegateValue => { to: Register, operand: CopyableValue },
-    0x20 MultiplyRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x21 MultiplyRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x22 MultiplyValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x23 MultiplyValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x24 DivideRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x25 DivideRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x26 DivideValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x27 DivideValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x28 RemainderRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x29 RemainderRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x2A RemainderValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x2B RemainderValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x2C AddRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x2D AddRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x2E AddValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x2F AddValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x30 SubtractRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x31 SubtractRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x32 SubtractValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x33 SubtractValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x34 LessRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x35 LessRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x36 LessValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x37 LessValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x38 GreaterRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x39 GreaterRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x3A GreaterValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x3B GreaterValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x3C LessOrEqualRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x3D LessOrEqualRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x3E LessOrEqualValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x3F LessOrEqualValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x40 GreaterOrEqualRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x41 GreaterOrEqualRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x42 GreaterOrEqualValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x43 GreaterOrEqualValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x44 EqualRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x45 EqualRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x46 EqualValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x47 EqualValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x48 NotEqualRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x49 NotEqualRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x4A NotEqualValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x4B NotEqualValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x4C AndRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x4D AndRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x4E AndValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x4F AndValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x50 OrRegisterRegister => { to: Register, lhs: Register, rhs: Register },
-    0x51 OrRegisterValue => { to: Register, lhs: Register, rhs: CopyableValue },
-    0x52 OrValueRegister => { to: Register, lhs: CopyableValue, rhs: Register },
-    0x53 OrValueValue => { to: Register, lhs: CopyableValue, rhs: CopyableValue },
-    0x54 AssignRegister => { to: Register, operand: Register },
-    0x55 AssignValue => { to: Register, operand: CopyableValue },
-    0x56 PushRegister => { operand: Register },
-    0x57 PushValue => {  operand: CopyableValue },
-    0x58 AccessRegister => { to: Register, index: u8, of: Register },
-    0x59 AccessValue => { to: Register, index: u8, of: CopyableValue },
-    0x5A AccessAssignRegisterRegister => { to: Register, index: u8, value: Register },
-    0x5B AccessAssignRegisterValue => { to: Register, index: u8, value: CopyableValue },
-    0x5C AccessAssignValueRegister => { to: CopyableValue, index: u8, value: Register },
-    0x5D AccessAssignValueValue => { to: CopyableValue, index: u8, value: CopyableValue },
-    0x5E CallRegister => { to: Register, arity: u8, callee: Register },
-    0x5F CallValue => { to: Register, arity: u8, callee: CopyableValue },
-    0x60 GetTagRegister => { to: Register, of: Register },
-    0x61 GetTagValue => { to: Register, of: CopyableValue },
-    0x63 Jump => { destination: u32 },
-    0x64 BranchRegister => { condition: Register, when_true: u32, otherwise: u32 },
-    0x65 BranchValue => { condition: CopyableValue, when_true: u32, otherwise: u32 },
-    0x66 ReturnRegister => { value: Register },
-    0x67 ReturnValue => { value: CopyableValue },
-    0x68 Panic,
-    0xA0 I64,
-    0xA1 F64,
-    0xA2 Boolean,
-    0xA3 Unit,
-    0xA6 Fn,
-    0xA8 NativeFn,
-    0xA9 Compound,
-    0xAA TaggedCompound,
-    0xAB U8,
-    0xAC I8,
-    0xAD U16,
-    0xAE I16,
-    0xAF U32,
-    0xB0 I32,
-    0xB1 U64,
-    0xB2 String,
-    0xB3 F32,
-    0xB4 Never,
-    0xB5 Vec,
-    0xE0 Register,
-}
+    garbage collected {
+        Compound {
+            field_count: u8,
+            fields: Box<[Value]>,
+        },
+        TaggedCompound {
+            tag: u16,
+            field_count: u8,
+            fields: Box<[Value]>,
+        },
+        ApartString {
+            value: String,
+        },
+        ApartVec {
+            length: u64,
+            values: Vec<Value>,
+        },
+    }
+);
