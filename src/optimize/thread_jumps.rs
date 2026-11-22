@@ -129,12 +129,17 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
             if let Some(block) = ssa.get_block_mut(b) {
                 *block.call_argument_count_mut() = call_argument_count;
 
-                if let Some(fn_label) = fn_label {
+                if let Some(fn_label) = fn_label
+                    && !matches!(
+                        block.instructions().first(),
+                        Some(Instruction::FnLabel { .. })
+                    )
+                {
                     block.instructions_mut().insert(0, fn_label);
 
-                    ssa.for_value(destination, |value| {
+                    ssa.for_value(b, |value| {
                         if let Value::Address(address) = value
-                            && address.block_index == b
+                            && address.block_index == destination
                         {
                             address.offset += 1;
                         }

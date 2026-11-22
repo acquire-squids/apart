@@ -686,6 +686,14 @@ impl<'a> Translator<'a> {
                 }
             })
         {
+            let label = self
+                .get_block(block_index)
+                .and_then(|block| block.instructions().first())
+                .cloned()
+                .unwrap_or_else(|| {
+                    panic!("the first instruction in a function is always the label")
+                });
+
             self.switch_to_block(block_index);
 
             let mut parameter_count = 0u8;
@@ -717,6 +725,8 @@ impl<'a> Translator<'a> {
             let block_index = after_arguments;
 
             self.switch_to_block(block_index);
+
+            self.push_instruction(label);
 
             let last_in_fn = self.last_in_fn;
 
