@@ -20,6 +20,31 @@ pub fn lower(_: &ApartOptions, _: &TypeChecker, compiled: &Compiled<'_, Ssa>) ->
             let mut instructions = block
                 .instructions()
                 .iter()
+                .enumerate()
+                .filter_map(|(i, instruction)| {
+                    if let IrInstruction::Assign {
+                        to: IrValue::Register(current_assign),
+                        value,
+                    } = instruction
+                    {
+                        if let Some(IrInstruction::Assign {
+                            to: IrValue::Register(next_assign),
+                            ..
+                        }) = block.instructions().get(i + 1)
+                            && current_assign == next_assign
+                        {
+                            None
+                        } else if let IrValue::Register(current_value) = value.value()
+                            && current_assign == current_value
+                        {
+                            None
+                        } else {
+                            Some(instruction)
+                        }
+                    } else {
+                        Some(instruction)
+                    }
+                })
                 .map(|instruction| lower_instruction(compiled, instruction))
                 .collect::<Vec<_>>();
 
