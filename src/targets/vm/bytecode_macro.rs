@@ -444,7 +444,7 @@ macro_rules! __bytecode {
 
                 let values = (0..length)
                     .map(|i| {
-                        let Some((value, value_size)) = Value::decode(&bytecode[total_size..], instructive)
+                        let Some((value, value_size)) = $value_name::decode(&bytecode[total_size..], instructive)
                         else {
                             panic!("value {i} in vec was not valid");
                         };
@@ -454,6 +454,55 @@ macro_rules! __bytecode {
                         value
                     })
                     .collect::<Self>();
+
+                Some((values, total_size))
+            }
+        }
+
+        impl<T, U, const N: usize> $encode<T> for [U; N]
+        where
+            T: $instructive,
+            U: $encode<T, Output = Vec<u8>>,
+        {
+            type Output = Vec<u8>;
+
+            fn encode(&self, instructive: &mut T) -> Self::Output {
+                [
+                    self.iter()
+                        .fold(vec![], |mut accum, value| {
+                            accum.push(value.encode(instructive));
+
+                            accum
+                        })
+                        .concat(),
+                ]
+                .concat()
+            }
+        }
+
+        impl<T, U, const N: usize> $decode<T> for [U; N]
+        where
+            T: $instructive,
+            U: $decode<T, Output = U>,
+        {
+            type Output = Self;
+
+            fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+                let mut total_size = 0;
+
+                let values = *<Box<[U; N]>>::try_from((0..N)
+                    .map(|i| {
+                        let Some((value, value_size)) = U::decode(&bytecode[total_size..], instructive)
+                        else {
+                            panic!("value {i} in array was not valid");
+                        };
+
+                        total_size += value_size;
+
+                        value
+                    })
+                    .collect::<Vec<_>>())
+                    .unwrap_or_else(|_| panic!("array of size {N} did not have the correct amount of values"));
 
                 Some((values, total_size))
             }
