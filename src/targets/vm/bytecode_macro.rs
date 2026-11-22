@@ -33,11 +33,11 @@ macro_rules! __bytecode {
             })?,)+
         }
 
-        garbage collected = $garbage_collected_name:ident;
+        garbage_collected = $garbage_collected_name:ident;
 
         arena index = $arena_index_name:ident as $arena_index_type:ty;
 
-        garbage collected {
+        garbage_collected {
             $($garbage_collected:ident $({
                 $(
                     // $(#[address] $($garbage_collected_field_is_address:lifetime)?)?
@@ -75,11 +75,11 @@ macro_rules! __bytecode {
                 })?,)+
             }
 
-            garbage collected = $garbage_collected_name;
+            garbage_collected = $garbage_collected_name;
 
             arena index = $arena_index_name as $arena_index_type;
 
-            garbage collected {
+            garbage_collected {
                 $($garbage_collected $({
                     $($garbage_collected_field_name : $garbage_collected_field_type,)+
                 })?,)*
@@ -124,11 +124,11 @@ macro_rules! __bytecode {
             })?,)+
         }
 
-        garbage collected = $garbage_collected_name:ident;
+        garbage_collected = $garbage_collected_name:ident;
 
         arena index = $arena_index_name:ident as $arena_index_type:ty;
 
-        garbage collected {
+        garbage_collected {
             $($garbage_collected:ident $({
                 $(
                     // $(#[address] $($garbage_collected_field_is_address:lifetime)?)?
@@ -596,28 +596,28 @@ macro_rules! __bytecode {
                 }
             };
 
-            (
-                @CONSTANTS $dollar constants:ident
-                $dollar (#[$dollar attribute:meta])*
-                $dollar opcode:ident {
-                    #[address]
-                    $dollar field_name:ident : u32,
-                    $dollar ($dollar rest_of_fields:tt)*
-                } -> { $dollar ($dollar result_fields:tt)* }
-                [$dollar ($dollar original_field_name:ident : $dollar original_field_type:ty,)+]
-                @BACKPATCH [$dollar ($dollar address_field_name:ident,)*]
-            ) => {
-                opcode! {
-                    @CONSTANTS $dollar constants
-                    $dollar (#[$dollar attribute])*
-                    $dollar opcode { $dollar ($dollar rest_of_fields)* } -> {
-                        $dollar ($dollar result_fields)*
-                        pub $dollar field_name : u32,
-                    }
-                    [$dollar ($dollar original_field_name : $dollar original_field_type,)+]
-                    @BACKPATCH [$dollar ($dollar address_field_name,)* $dollar field_name,]
-                }
-            };
+            // (
+            //     @CONSTANTS $dollar constants:ident
+            //     $dollar (#[$dollar attribute:meta])*
+            //     $dollar opcode:ident {
+            //         #[address]
+            //         $dollar field_name:ident : u32,
+            //         $dollar ($dollar rest_of_fields:tt)*
+            //     } -> { $dollar ($dollar result_fields:tt)* }
+            //     [$dollar ($dollar original_field_name:ident : $dollar original_field_type:ty,)+]
+            //     @BACKPATCH [$dollar ($dollar address_field_name:ident,)*]
+            // ) => {
+            //     opcode! {
+            //         @CONSTANTS $dollar constants
+            //         $dollar (#[$dollar attribute])*
+            //         $dollar opcode { $dollar ($dollar rest_of_fields)* } -> {
+            //             $dollar ($dollar result_fields)*
+            //             pub $dollar field_name : u32,
+            //         }
+            //         [$dollar ($dollar original_field_name : $dollar original_field_type,)+]
+            //         @BACKPATCH [$dollar ($dollar address_field_name,)* $dollar field_name,]
+            //     }
+            // };
 
             (
                 @CONSTANTS $dollar constants:ident

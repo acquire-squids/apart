@@ -34,6 +34,7 @@ impl Instructive for Compiler {
 /// # Panics
 /// - panics if `bytecode.len()` > `u32::MAX`
 /// - panics if the number of instructions in the output exceeds `u32::MAX`
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8> {
     let ir = compiled.result().ir();
@@ -44,6 +45,36 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
         arena: vec![],
     };
 
+    let mut block_addresses = vec![0u32; ir.blocks().len()];
+    let mut address_to_label = HashMap::new();
+
+    let mut instructions = vec![];
+
+    for (b, block) in ir.blocks().iter().enumerate() {
+        block_addresses[b] =
+            u32::try_from(instructions.len()).expect("block index was not a valid u32");
+
+        address_to_label.insert(
+            u32::try_from(b).expect("block index was not a valid u32"),
+            u32::try_from(b).expect("block index was not a valid u32"),
+        );
+
+        instructions.push(Instruction::Label(Label));
+
+        for instruction in block.instructions() {
+            let instruction = Instruction::decode(
+                (compiled, instruction).encode(&mut instructive).as_slice(),
+                &mut instructive,
+            )
+            .map_or_else(
+                || panic!("all IR instructions are valid instructions"),
+                |(instruction, _)| instruction,
+            );
+
+            instructions.push(instruction);
+        }
+    }
+
     let mut bytecode = vec![];
 
     bytecode.extend(
@@ -53,26 +84,13 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
             .to_le_bytes(),
     );
 
-    let mut block_addresses = vec![0u32; ir.blocks().len()];
-    let mut address_to_label = HashMap::new();
-
-    for (b, block) in ir.blocks().iter().enumerate() {
-        block_addresses[b] =
-            u32::try_from(bytecode.len()).expect("block index was not a valid u32");
-
-        address_to_label.insert(
-            u32::try_from(b).expect("block index was not a valid u32"),
-            u32::try_from(b).expect("block index was not a valid u32"),
-        );
-
-        bytecode.extend(Instruction::Label(Label).encode(&mut instructive));
-
-        for instruction in block.instructions() {
-            if !options.strip_debug_info || !matches!(instruction, IrInstruction::FnLabel(_)) {
-                let mut instruction = (compiled, instruction).encode(&mut instructive);
-
-                bytecode.append(&mut instruction);
+    for instruction in instructions {
+        if let Instruction::ApartFnLabel(_) = instruction {
+            if !options.strip_debug_info {
+                bytecode.extend(instruction.encode(&mut instructive));
             }
+        } else {
+            bytecode.extend(instruction.encode(&mut instructive));
         }
     }
 
@@ -2318,11 +2336,11 @@ bytecode_macro::bytecode! (
         },
     }
 
-    garbage collected = GarbageCollectedValue;
+    garbage_collected = GarbageCollectedValue;
 
     arena index = ValueIndex as u64;
 
-    garbage collected {
+    garbage_collected {
         Compound {
             field_count: u8,
             fields: Box<[Value]>,
