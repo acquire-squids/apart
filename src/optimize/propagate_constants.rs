@@ -4,30 +4,9 @@ use crate::{
     type_check::TypeChecker,
 };
 
-use std::collections::HashMap;
-
 #[allow(clippy::too_many_lines)]
 pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
     let mut changed = false;
-
-    let mut address_to_ip = HashMap::new();
-
-    ssa.for_live_blocks(|ssa, block_index| {
-        if let Some(block) = ssa.get_block(block_index) {
-            for (i, instruction) in block.instructions().iter().enumerate() {
-                if let Instruction::Assign { to, .. } = instruction
-                    && let Value::Address(address) = to
-                {
-                    address_to_ip
-                        .entry(*address)
-                        .and_modify(|ip| {
-                            *ip = None;
-                        })
-                        .or_insert_with(|| Some((block_index, i)));
-                }
-            }
-        }
-    });
 
     ssa.for_live_blocks(|ssa, block_index| {
         if let Some(block) = ssa.get_block(block_index) {

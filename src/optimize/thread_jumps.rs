@@ -136,14 +136,6 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
                     )
                 {
                     block.instructions_mut().insert(0, fn_label);
-
-                    ssa.for_value(b, |value| {
-                        if let Value::Address(address) = value
-                            && address.block_index == destination
-                        {
-                            address.offset += 1;
-                        }
-                    });
                 }
             }
         }
