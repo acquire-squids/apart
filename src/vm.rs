@@ -42,6 +42,18 @@ impl Instructive for Vm {
     fn arena_mut(&mut self) -> &mut Vec<GarbageCollectedValue> {
         &mut self.arena
     }
+
+    fn ip(&self) -> usize {
+        self.ip
+    }
+
+    fn constants(&self) -> &[ValueIndex] {
+        self.constants.as_slice()
+    }
+
+    fn arena(&self) -> &[GarbageCollectedValue] {
+        self.arena.as_slice()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

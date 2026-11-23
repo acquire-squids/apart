@@ -150,6 +150,12 @@ macro_rules! __bytecode {
             fn constants_mut(&mut self) -> &mut Vec<$arena_index_name>;
 
             fn arena_mut(&mut self) -> &mut Vec<$garbage_collected_name>;
+
+            fn ip(&self) -> usize;
+
+            fn constants(&self) -> &[$arena_index_name];
+
+            fn arena(&self) -> &[$garbage_collected_name];
         }
 
         #[allow(unused)]
@@ -405,16 +411,17 @@ macro_rules! __bytecode {
         encode_decode_number!(f32);
         encode_decode_number!(f64);
 
-        impl<T> $encode<T> for Vec<$value_name>
+        impl<T, U> $encode<T> for Vec<U>
         where
             T: $instructive,
+            U: $encode<T, Output = Vec<u8>>,
         {
             type Output = Vec<u8>;
 
             fn encode(&self, instructive: &mut T) -> Self::Output {
                 [
                     u64::try_from(self.len())
-                        .unwrap_or_else(|_| panic!("length of value vec was not a valid u64"))
+                        .unwrap_or_else(|_| panic!("length of vec was not a valid u64"))
                         .to_le_bytes()
                         .to_vec(),
                     self.iter()
@@ -429,22 +436,23 @@ macro_rules! __bytecode {
             }
         }
 
-        impl<T> $decode<T> for Vec<$value_name>
+        impl<T, U> $decode<T> for Vec<U>
         where
             T: $instructive,
+            U: $decode<T, Output = U>,
         {
             type Output = Self;
 
             fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
-                let Some((length, length_size)) = u8::decode(bytecode, instructive) else {
-                    panic!("length of value vec was not a valid u64");
+                let Some((length, length_size)) = u64::decode(bytecode, instructive) else {
+                    panic!("length of vec was not a valid u64");
                 };
 
                 let mut total_size = length_size;
 
                 let values = (0..length)
                     .map(|i| {
-                        let Some((value, value_size)) = $value_name::decode(&bytecode[total_size..], instructive)
+                        let Some((value, value_size)) = U::decode(&bytecode[total_size..], instructive)
                         else {
                             panic!("value {i} in vec was not valid");
                         };
@@ -453,7 +461,64 @@ macro_rules! __bytecode {
 
                         value
                     })
-                    .collect::<Self>();
+                    .collect::<Vec<_>>();
+
+                Some((values, total_size))
+            }
+        }
+
+        impl<T, U> $encode<T> for Box<[U]>
+        where
+            T: $instructive,
+            U: $encode<T, Output = Vec<u8>>,
+        {
+            type Output = Vec<u8>;
+
+            fn encode(&self, instructive: &mut T) -> Self::Output {
+                [
+                    u64::try_from(self.len())
+                        .unwrap_or_else(|_| panic!("length of boxed slice was not a valid u64"))
+                        .to_le_bytes()
+                        .to_vec(),
+                    self.iter()
+                        .fold(vec![], |mut accum, value| {
+                            accum.push(value.encode(instructive));
+
+                            accum
+                        })
+                        .concat(),
+                ]
+                .concat()
+            }
+        }
+
+        impl<T, U> $decode<T> for Box<[U]>
+        where
+            T: $instructive,
+            U: $decode<T, Output = U>,
+        {
+            type Output = Self;
+
+            fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+                let Some((length, length_size)) = u64::decode(bytecode, instructive) else {
+                    panic!("length of boxed slice was not a valid u64");
+                };
+
+                let mut total_size = length_size;
+
+                let values = (0..length)
+                    .map(|i| {
+                        let Some((value, value_size)) = U::decode(&bytecode[total_size..], instructive)
+                        else {
+                            panic!("value {i} in vec was not valid");
+                        };
+
+                        total_size += value_size;
+
+                        value
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
 
                 Some((values, total_size))
             }

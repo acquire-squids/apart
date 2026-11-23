@@ -29,6 +29,18 @@ impl Instructive for Compiler {
     fn arena_mut(&mut self) -> &mut Vec<GarbageCollectedValue> {
         &mut self.arena
     }
+
+    fn ip(&self) -> usize {
+        self.ip
+    }
+
+    fn constants(&self) -> &[ValueIndex] {
+        self.constants.as_slice()
+    }
+
+    fn arena(&self) -> &[GarbageCollectedValue] {
+        self.arena.as_slice()
+    }
 }
 
 /// # Panics
@@ -1705,56 +1717,6 @@ where
         match self.1.0 {
             Location::Register(index) => u16::from(index).encode(instructive),
         }
-    }
-}
-
-impl<T> Encode<T> for Box<[Value]>
-where
-    T: Instructive,
-{
-    type Output = Vec<u8>;
-
-    fn encode(&self, instructive: &mut T) -> Self::Output {
-        [
-            u8::try_from(self.len()).unwrap_or_else(|_| panic!("length of Box<[Value]> was not a valid u8; this should only be used with compound fields")).encode(instructive),
-            self.iter().fold(vec![], |mut accum, value| {
-                accum.push(value.encode(instructive));
-
-                accum
-            }).concat(),
-        ].concat()
-    }
-}
-
-impl<T> Decode<T> for Box<[Value]>
-where
-    T: Instructive,
-{
-    type Output = Self;
-
-    fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
-        let Some((length, length_size)) = u8::decode(bytecode, instructive) else {
-            panic!(
-                "length of Box<[value]> was not a valid u8; this should only be used with compound fields"
-            );
-        };
-
-        let mut total_size = length_size;
-
-        let values = (0..length)
-            .map(|i| {
-                let Some((value, value_size)) = Value::decode(&bytecode[total_size..], instructive)
-                else {
-                    panic!("value {i} in Box<[Value]> was not valid");
-                };
-
-                total_size += value_size;
-
-                value
-            })
-            .collect::<Vec<_>>();
-
-        Some((values.into_boxed_slice(), total_size))
     }
 }
 
