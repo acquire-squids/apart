@@ -103,6 +103,16 @@ macro_rules! output_tests {
             );
 
             apart::$test_macro!(
+                mandelbrot,
+                "mandelbrot.txt",
+                Ok(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/lang/tests/",
+                    "saved_outputs/mandelbrot_output.txt"
+                )))
+            );
+
+            apart::$test_macro!(
                 method_specialization,
                 "method_specialization.txt",
                 Ok("1\n0\n2\n3\n4\n"),
