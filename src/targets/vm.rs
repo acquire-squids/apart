@@ -1518,7 +1518,8 @@ where
                     .encode(instructive)
                 }
             },
-            IrInstruction::Access { index, of, to } => match (to, of.kind()) {
+            IrInstruction::Access { index, of, to }
+            | IrInstruction::TaggedAccess { index, of, to, .. } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(of))) => {
                     Instruction::AccessRegister(AccessRegister {
                         to: u16::from(*to),
@@ -1540,7 +1541,10 @@ where
                     .encode(instructive)
                 }
             },
-            IrInstruction::AccessAssign { index, of, value } => match (of.kind(), value.kind()) {
+            IrInstruction::AccessAssign { index, of, value }
+            | IrInstruction::TaggedAccessAssign {
+                index, of, value, ..
+            } => match (of.kind(), value.kind()) {
                 (
                     ValueOrLocation::At(Location::Register(to)),
                     ValueOrLocation::At(Location::Register(value)),

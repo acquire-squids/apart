@@ -35,6 +35,7 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<(Pa
                 | IrInstruction::Assign { value, .. }
                 | IrInstruction::Push(value)
                 | IrInstruction::Access { of: value, .. }
+                | IrInstruction::TaggedAccess { of: value, .. }
                 | IrInstruction::Call { callee: value, .. }
                 | IrInstruction::GetTag { of: value, .. }
                 | IrInstruction::Branch {
@@ -45,6 +46,11 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<(Pa
                 }
                 IrInstruction::Binary { lhs, rhs, .. }
                 | IrInstruction::AccessAssign {
+                    of: lhs,
+                    value: rhs,
+                    ..
+                }
+                | IrInstruction::TaggedAccessAssign {
                     of: lhs,
                     value: rhs,
                     ..
@@ -559,7 +565,8 @@ fn compile_block(
                         seen_native_functions,
                     ));
                 }
-                IrInstruction::Access { to, index, of } => {
+                IrInstruction::Access { to, index, of }
+                | IrInstruction::TaggedAccess { to, index, of, .. } => {
                     buffer.push_str(
                         format!(
                             " {} = ({}).a{};",
@@ -576,7 +583,10 @@ fn compile_block(
                         .as_str(),
                     );
                 }
-                IrInstruction::AccessAssign { of, index, value } => {
+                IrInstruction::AccessAssign { of, index, value }
+                | IrInstruction::TaggedAccessAssign {
+                    of, index, value, ..
+                } => {
                     buffer.push_str(
                         format!(
                             "({}).a{} = {};",

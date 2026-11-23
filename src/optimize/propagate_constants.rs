@@ -22,8 +22,10 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
                         | Instruction::Push(value)
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
+                        | Instruction::TaggedAccess { of: value, .. }
                         | Instruction::Binary { lhs: value, .. }
                         | Instruction::AccessAssign { of: value, .. }
+                        | Instruction::TaggedAccessAssign { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
                             if let Some(propagated_value) = clone_constant(value.value())
                                 && let Some(
@@ -67,6 +69,20 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
                     .and_then(|block| block.instructions().get(i))
                     && let Some(propagated_value) = clone_constant(value.value())
                     && let Some(Instruction::AccessAssign { value, .. }) = ssa
+                        .get_block_mut(block_index)
+                        .and_then(|block| block.instructions_mut().get_mut(i))
+                    && &propagated_value != value.value()
+                {
+                    *value.value_mut() = propagated_value;
+
+                    changed = true;
+                }
+
+                if let Some(Instruction::TaggedAccessAssign { value, .. }) = ssa
+                    .get_block(block_index)
+                    .and_then(|block| block.instructions().get(i))
+                    && let Some(propagated_value) = clone_constant(value.value())
+                    && let Some(Instruction::TaggedAccessAssign { value, .. }) = ssa
                         .get_block_mut(block_index)
                         .and_then(|block| block.instructions_mut().get_mut(i))
                     && &propagated_value != value.value()

@@ -365,6 +365,12 @@ enum Addresslike {
         of: Address,
         of_type_index: TypeIndex,
     },
+    TaggedCompoundField {
+        tag: u16,
+        index: u8,
+        of: Address,
+        of_type_index: TypeIndex,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,6 +459,18 @@ pub enum Instruction {
         temporary: Value,
     },
     AccessAssign {
+        index: u8,
+        of: TypedValue,
+        value: TypedValue,
+    },
+    TaggedAccess {
+        tag: u16,
+        index: u8,
+        of: TypedValue,
+        temporary: Value,
+    },
+    TaggedAccessAssign {
+        tag: u16,
         index: u8,
         of: TypedValue,
         value: TypedValue,
@@ -1343,6 +1361,31 @@ impl Translator<'_> {
                     type_index: types[ir[expr].resolved()],
                 });
             }
+            Addresslike::TaggedCompoundField {
+                tag,
+                index,
+                of,
+                of_type_index,
+            } => {
+                let (tag, index, of) = (tag, index, of);
+
+                let address = self.next_address();
+
+                self.push_instruction(Instruction::TaggedAccess {
+                    tag,
+                    index,
+                    of: TypedValue {
+                        value: Value::Address(of),
+                        type_index: of_type_index,
+                    },
+                    temporary: Value::Address(address),
+                });
+
+                self.push_value(TypedValue {
+                    value: Value::Address(address),
+                    type_index: types[ir[expr].resolved()],
+                });
+            }
         }
 
         if self.last_in_fn {
@@ -1533,6 +1576,21 @@ impl Translator<'_> {
                 let of = *of;
 
                 self.push_instruction(Instruction::AccessAssign {
+                    index,
+                    of: TypedValue {
+                        value: Value::Address(of),
+                        type_index,
+                    },
+                    value,
+                });
+            }
+            Some((Addresslike::TaggedCompoundField { tag, index, of, .. }, type_index)) => {
+                let tag = *tag;
+                let index = *index;
+                let of = *of;
+
+                self.push_instruction(Instruction::TaggedAccessAssign {
+                    tag,
                     index,
                     of: TypedValue {
                         value: Value::Address(of),
@@ -2237,7 +2295,8 @@ impl Translator<'_> {
                         },
                         Addresslike::CallArgument(_)
                         | Addresslike::Address(_)
-                        | Addresslike::CompoundField { .. } => {
+                        | Addresslike::CompoundField { .. }
+                        | Addresslike::TaggedCompoundField { .. } => {
                             unreachable!("methods are only ever functions or native functions");
                         }
                     };
@@ -2358,7 +2417,8 @@ impl Translator<'_> {
             },
             Addresslike::CallArgument(_)
             | Addresslike::Address(_)
-            | Addresslike::CompoundField { .. } => {
+            | Addresslike::CompoundField { .. }
+            | Addresslike::TaggedCompoundField { .. } => {
                 unreachable!("methods are only ever functions or native functions");
             }
         };
@@ -2740,7 +2800,7 @@ impl Translator<'_> {
                         unreachable!("name resolution guarantees paths in patterns end in a name");
                     };
 
-                    let Some(variant_index) = type_variants
+                    let Some(tag) = type_variants
                         .iter()
                         .position(|variant| {
                             matches!(
@@ -2757,13 +2817,13 @@ impl Translator<'_> {
                     let Type::Product {
                         fields: field_types,
                         ..
-                    } = &types[type_variants[usize::from(variant_index)]]
+                    } = &types[type_variants[usize::from(tag)]]
                     else {
                         unreachable!("only products are variants of sums");
                     };
 
                     self.push_value(TypedValue {
-                        value: Value::U16(variant_index),
+                        value: Value::U16(tag),
                         type_index: types.type_u16(),
                     });
 
@@ -2818,7 +2878,8 @@ impl Translator<'_> {
                             .and_then(|index| u8::try_from(index).ok())
                             .expect("all fields in the pattern exist in the type since type checking succeeded");
 
-                        self.push_instruction(Instruction::Access {
+                        self.push_instruction(Instruction::TaggedAccess {
+                            tag,
                             index: field_index,
                             of: TypedValue {
                                 value: Value::Address(match_against),
@@ -2838,7 +2899,8 @@ impl Translator<'_> {
                             self.addresses.insert(
                                 field_name.span(),
                                 TypedAddresslike {
-                                    addresslike: Addresslike::CompoundField {
+                                    addresslike: Addresslike::TaggedCompoundField {
+                                        tag,
                                         index: field_index,
                                         of: match_against,
                                         of_type_index: types[pattern.resolved()],

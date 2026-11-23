@@ -184,6 +184,8 @@ where
                             | Instruction::Push(_)
                             | Instruction::Access { .. }
                             | Instruction::AccessAssign { .. }
+                            | Instruction::TaggedAccess { .. }
+                            | Instruction::TaggedAccessAssign { .. }
                             | Instruction::Call { .. }
                             | Instruction::GetTag { .. }
                             | Instruction::Return(_),
@@ -399,6 +401,18 @@ pub enum Instruction<T> {
         of: Typed<ValueOrLocation<T>>,
         value: Typed<ValueOrLocation<T>>,
     },
+    TaggedAccess {
+        tag: u16,
+        index: u8,
+        of: Typed<ValueOrLocation<T>>,
+        to: Location,
+    },
+    TaggedAccessAssign {
+        tag: u16,
+        index: u8,
+        of: Typed<ValueOrLocation<T>>,
+        value: Typed<ValueOrLocation<T>>,
+    },
     Call {
         callee: Typed<ValueOrLocation<T>>,
         arity: u8,
@@ -437,6 +451,7 @@ fn lower_block_terminator(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[must_use]
 fn lower_instruction(
     compiled: &Compiled<'_, Ssa>,
@@ -516,6 +531,28 @@ fn lower_instruction(
             to: lower_value_to_location(temporary),
         },
         IrInstruction::AccessAssign { index, of, value } => Instruction::AccessAssign {
+            index: *index,
+            of: lower_value(compiled, of),
+            value: lower_value(compiled, value),
+        },
+        IrInstruction::TaggedAccess {
+            tag,
+            index,
+            of,
+            temporary,
+        } => Instruction::TaggedAccess {
+            tag: *tag,
+            index: *index,
+            of: lower_value(compiled, of),
+            to: lower_value_to_location(temporary),
+        },
+        IrInstruction::TaggedAccessAssign {
+            tag,
+            index,
+            of,
+            value,
+        } => Instruction::TaggedAccessAssign {
+            tag: *tag,
             index: *index,
             of: lower_value(compiled, of),
             value: lower_value(compiled, value),

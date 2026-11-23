@@ -68,11 +68,16 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa) -> bool {
                         | Instruction::Push(value)
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
+                        | Instruction::TaggedAccess { of: value, .. }
                         | Instruction::GetTag { of: value, .. } => {
                             changed |= propagate_copy(i, value.value_mut());
                         }
                         Instruction::Binary { lhs, rhs, .. }
                         | Instruction::AccessAssign {
+                            of: lhs,
+                            value: rhs,
+                            ..
+                        } | Instruction::TaggedAccessAssign {
                             of: lhs,
                             value: rhs,
                             ..

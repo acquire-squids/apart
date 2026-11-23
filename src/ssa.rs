@@ -427,6 +427,11 @@ impl Ssa {
                         temporary: to,
                         ..
                     }
+                    | Instruction::TaggedAccess {
+                        of: value,
+                        temporary: to,
+                        ..
+                    }
                     | Instruction::GetTag {
                         of: value,
                         temporary: to,
@@ -463,7 +468,8 @@ impl Ssa {
                             Self::use_addresses(def_use.as_mut_slice(), (b, i), value);
                         }
                     }
-                    Instruction::AccessAssign { of, value, .. } => {
+                    Instruction::AccessAssign { of, value, .. }
+                    | Instruction::TaggedAccessAssign { of, value, .. } => {
                         for value in [of, value] {
                             Self::use_addresses(def_use.as_mut_slice(), (b, i), value);
                         }
@@ -700,6 +706,11 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             }
+                            | Instruction::TaggedAccess {
+                                of: value,
+                                temporary: to,
+                                ..
+                            }
                             | Instruction::GetTag {
                                 of: value,
                                 temporary: to,
@@ -720,7 +731,8 @@ impl Ssa {
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
-                            Instruction::AccessAssign { of, value, .. } => {
+                            Instruction::AccessAssign { of, value, .. }
+                            | Instruction::TaggedAccessAssign { of, value, .. } => {
                                 Self::value_uses_block(of.value(), &mut frontier);
                                 Self::value_uses_block(value.value(), &mut frontier);
                             }
@@ -793,6 +805,11 @@ impl Ssa {
                                 temporary: to,
                                 ..
                             }
+                            | Instruction::TaggedAccess {
+                                of: value,
+                                temporary: to,
+                                ..
+                            }
                             | Instruction::GetTag {
                                 of: value,
                                 temporary: to,
@@ -813,7 +830,8 @@ impl Ssa {
 
                                 Self::value_uses_block(to, &mut frontier);
                             }
-                            Instruction::AccessAssign { of, value, .. } => {
+                            Instruction::AccessAssign { of, value, .. }
+                            | Instruction::TaggedAccessAssign { of, value, .. } => {
                                 Self::value_uses_block(of.value(), &mut frontier);
                                 Self::value_uses_block(value.value(), &mut frontier);
                             }
@@ -896,6 +914,11 @@ impl Ssa {
                         temporary: to,
                         ..
                     }
+                    | Instruction::TaggedAccess {
+                        of: value,
+                        temporary: to,
+                        ..
+                    }
                     | Instruction::GetTag {
                         of: value,
                         temporary: to,
@@ -916,7 +939,8 @@ impl Ssa {
 
                         Self::nested_values(to, &mut f);
                     }
-                    Instruction::AccessAssign { of, value, .. } => {
+                    Instruction::AccessAssign { of, value, .. }
+                    | Instruction::TaggedAccessAssign { of, value, .. } => {
                         Self::nested_values(of.value_mut(), &mut f);
                         Self::nested_values(value.value_mut(), &mut f);
                     }
@@ -952,10 +976,12 @@ impl Ssa {
                         | Instruction::Panic
                         | Instruction::NoOp
                         | Instruction::Push(_)
-                        | Instruction::AccessAssign { .. } => {}
+                        | Instruction::AccessAssign { .. }
+                        | Instruction::TaggedAccessAssign { .. } => {}
                         Instruction::Unary { temporary: to, .. }
                         | Instruction::Call { temporary: to, .. }
                         | Instruction::Access { temporary: to, .. }
+                        | Instruction::TaggedAccess { temporary: to, .. }
                         | Instruction::GetTag { temporary: to, .. }
                         | Instruction::Binary { temporary: to, .. }
                         | Instruction::Assign { to, .. } => {
@@ -997,6 +1023,7 @@ impl Ssa {
                         | Instruction::Unary { operand: value, .. }
                         | Instruction::Call { callee: value, .. }
                         | Instruction::Access { of: value, .. }
+                        | Instruction::TaggedAccess { of: value, .. }
                         | Instruction::GetTag { of: value, .. }
                         | Instruction::Assign { value, .. } => {
                             Self::map_address(value.value_mut(), addresses);
@@ -1005,7 +1032,8 @@ impl Ssa {
                             Self::map_address(lhs.value_mut(), addresses);
                             Self::map_address(rhs.value_mut(), addresses);
                         }
-                        Instruction::AccessAssign { of, value, .. } => {
+                        Instruction::AccessAssign { of, value, .. }
+                        | Instruction::TaggedAccessAssign { of, value, .. } => {
                             Self::map_address(of.value_mut(), addresses);
                             Self::map_address(value.value_mut(), addresses);
                         }

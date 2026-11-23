@@ -18,7 +18,8 @@ pub fn optimize(types: &TypeChecker, ssa: &mut Ssa) -> bool {
                     | Instruction::Assign { .. }
                     | Instruction::Push(_)
                     | Instruction::Call { .. }
-                    | Instruction::AccessAssign { .. } => {}
+                    | Instruction::AccessAssign { .. }
+                    | Instruction::TaggedAccessAssign { .. } => {}
                     Instruction::Unary { .. } => {
                         fold_unary(types, instruction, &mut changed);
                     }
@@ -46,14 +47,22 @@ pub fn optimize(types: &TypeChecker, ssa: &mut Ssa) -> bool {
                         index,
                         temporary: to,
                     } => {
-                        if let Value::TaggedCompound { fields, .. } = value.value() {
+                        if let Value::Compound(fields) = value.value() {
                             *instruction = Instruction::Assign {
                                 value: fields[usize::from(*index)].clone(),
                                 to: to.clone(),
                             };
 
                             changed = true;
-                        } else if let Value::Compound(fields) = value.value() {
+                        }
+                    }
+                    Instruction::TaggedAccess {
+                        of: value,
+                        index,
+                        temporary: to,
+                        ..
+                    } => {
+                        if let Value::TaggedCompound { fields, .. } = value.value() {
                             *instruction = Instruction::Assign {
                                 value: fields[usize::from(*index)].clone(),
                                 to: to.clone(),

@@ -318,7 +318,8 @@ impl RegisterAllocator {
 
                         self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
                     }
-                    Instruction::AccessAssign { value, of, .. } => {
+                    Instruction::AccessAssign { value, of, .. }
+                    | Instruction::TaggedAccessAssign { value, of, .. } => {
                         self.value_to_allocation(value.value_mut(), (block_index, i), addresses);
 
                         self.value_to_allocation(of.value_mut(), (block_index, i), addresses);
@@ -342,6 +343,11 @@ impl RegisterAllocator {
                     }
                     | Instruction::Assign { value, to }
                     | Instruction::Access {
+                        of: value,
+                        temporary: to,
+                        ..
+                    }
+                    | Instruction::TaggedAccess {
                         of: value,
                         temporary: to,
                         ..

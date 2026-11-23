@@ -37,10 +37,12 @@ pub fn optimize(_: &TypeChecker, ssa: &mut Ssa, eliminate_instructions: bool) ->
                     | Instruction::NoOp
                     | Instruction::Push(_)
                     | Instruction::AccessAssign { .. }
+                    | Instruction::TaggedAccessAssign { .. }
                     | Instruction::Call { .. } => {}
                     Instruction::Unary { temporary: to, .. }
                     | Instruction::Assign { to, .. }
                     | Instruction::Access { temporary: to, .. }
+                    | Instruction::TaggedAccess { temporary: to, .. }
                     | Instruction::GetTag { temporary: to, .. }
                     | Instruction::Binary { temporary: to, .. } => {
                         if let Value::Address(to_address) = to
@@ -156,6 +158,7 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<Address> {
                 | Instruction::Assign { value, .. }
                 | Instruction::Call { callee: value, .. }
                 | Instruction::Access { of: value, .. }
+                | Instruction::TaggedAccess { of: value, .. }
                 | Instruction::GetTag { of: value, .. } => {
                     value_uses_address(&mut addresses_used, value);
                 }
@@ -163,7 +166,8 @@ fn collect_used_addresses(ssa: &Ssa) -> HashSet<Address> {
                     value_uses_address(&mut addresses_used, lhs);
                     value_uses_address(&mut addresses_used, rhs);
                 }
-                Instruction::AccessAssign { of, value, .. } => {
+                Instruction::AccessAssign { of, value, .. }
+                | Instruction::TaggedAccessAssign { of, value, .. } => {
                     value_uses_address(&mut addresses_used, of);
                     value_uses_address(&mut addresses_used, value);
                 }
