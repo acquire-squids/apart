@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 struct Compiler {
     ip: usize,
-    constants: Vec<ValueIndex>,
+    literals: Vec<ValueIndex>,
     arena: Vec<GarbageCollectedValue>,
 }
 
@@ -22,8 +22,8 @@ impl Instructive for Compiler {
         &mut self.ip
     }
 
-    fn constants_mut(&mut self) -> &mut Vec<ValueIndex> {
-        &mut self.constants
+    fn literals_mut(&mut self) -> &mut Vec<ValueIndex> {
+        &mut self.literals
     }
 
     fn arena_mut(&mut self) -> &mut Vec<GarbageCollectedValue> {
@@ -34,8 +34,8 @@ impl Instructive for Compiler {
         self.ip
     }
 
-    fn constants(&self) -> &[ValueIndex] {
-        self.constants.as_slice()
+    fn literals(&self) -> &[ValueIndex] {
+        self.literals.as_slice()
     }
 
     fn arena(&self) -> &[GarbageCollectedValue] {
@@ -53,7 +53,7 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
 
     let mut instructive = Compiler {
         ip: 0,
-        constants: vec![],
+        literals: vec![],
         arena: vec![],
     };
 
@@ -71,19 +71,20 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
             u32::try_from(b).expect("block index was not a valid u32"),
         );
 
-        instructions.push(Instruction::Label(Label));
+        instructions.push(Instruction::Label);
 
         for instruction in block.instructions() {
-            let instruction = Instruction::decode(
-                (compiled, instruction).encode(&mut instructive).as_slice(),
-                &mut instructive,
-            )
-            .map_or_else(
-                || panic!("all IR instructions are valid instructions"),
-                |(instruction, _)| instruction,
-            );
+            let bytecode = (compiled, instruction).encode(&mut instructive);
 
-            instructions.push(instruction);
+            let mut total_size = 0;
+
+            while let Some((instruction, instruction_size)) =
+                Instruction::decode(&bytecode[total_size..], &mut instructive)
+            {
+                instructions.push(instruction);
+
+                total_size += instruction_size;
+            }
         }
     }
 
@@ -97,7 +98,7 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
     );
 
     for instruction in instructions {
-        if let Instruction::ApartFnLabel(_) = instruction {
+        if let Instruction::ApartFnLabel { .. } = instruction {
             if !options.strip_debug_info {
                 bytecode.extend(instruction.encode(&mut instructive));
             }
@@ -107,7 +108,12 @@ pub fn compile(options: &ApartOptions, compiled: &CompileSuccess<'_>) -> Vec<u8>
     }
 
     loop {
-        if !backpatch(&mut bytecode, block_addresses.as_slice(), &address_to_label) {
+        if !backpatch(
+            &mut bytecode,
+            &mut instructive,
+            block_addresses.as_slice(),
+            &address_to_label,
+        ) {
             break;
         }
 
@@ -145,9 +151,9 @@ where
 
     let mut block_addresses = vec![];
 
-    while *instructive.ip_mut() < bytecode.len() {
+    while instructive.ip() < bytecode.len() {
         address_to_label.insert(
-            u32::try_from(*instructive.ip_mut()).expect("instruction pointer was not a valid u32"),
+            u32::try_from(instructive.ip()).expect("instruction pointer was not a valid u32"),
             u32::try_from(instructions.len()).expect("instruction count was not a valid u32"),
         );
 
@@ -156,7 +162,7 @@ where
         );
 
         let Some((instruction, instruction_size)) =
-            Instruction::decode(&bytecode[(*instructive.ip_mut())..], instructive)
+            Instruction::decode(&bytecode[(instructive.ip())..], instructive)
         else {
             panic!("failed to decode an instruction before reaching the bytecode's end");
         };
@@ -180,24 +186,24 @@ where
     instructions
 }
 
-fn backpatch(
+fn backpatch<T>(
     bytecode: &mut Vec<u8>,
+    instructive: &mut T,
     block_addresses: &[u32],
     address_to_label: &HashMap<u32, u32>,
-) -> bool {
+) -> bool
+where
+    T: Instructive,
+{
+    *instructive.ip_mut() = 2;
+
     let mut changed = false;
 
-    let mut instructive = Compiler {
-        ip: 2,
-        constants: vec![],
-        arena: vec![],
-    };
-
-    while instructive.ip < bytecode.len() {
-        let at = instructive.ip;
+    while instructive.ip() < bytecode.len() {
+        let at = instructive.ip();
 
         let Some((mut instruction, instruction_size)) =
-            Instruction::decode(&bytecode[(instructive.ip)..], &mut instructive)
+            Instruction::decode(&bytecode[(instructive.ip())..], instructive)
         else {
             panic!("failed to decode an instruction before reaching the bytecode's end");
         };
@@ -207,10 +213,10 @@ fn backpatch(
         if backpatch_instruction(
             block_addresses,
             address_to_label,
-            &mut instructive,
+            instructive,
             &mut instruction,
         ) {
-            replace_instruction(bytecode, &mut instructive, &instruction, at);
+            replace_instruction(bytecode, instructive, &instruction, at);
 
             changed |= true;
         }
@@ -251,102 +257,96 @@ where
     let mut instruction_changed = false;
 
     match instruction {
-        Instruction::NoOp(_)
-        | Instruction::Panic(_)
-        | Instruction::Label(_)
-        | Instruction::ApartFnLabel(_)
-        | Instruction::NotRegister(_)
-        | Instruction::NegateRegister(_)
-        | Instruction::MultiplyRegisterRegister(_)
-        | Instruction::DivideRegisterRegister(_)
-        | Instruction::RemainderRegisterRegister(_)
-        | Instruction::AddRegisterRegister(_)
-        | Instruction::SubtractRegisterRegister(_)
-        | Instruction::LessRegisterRegister(_)
-        | Instruction::GreaterRegisterRegister(_)
-        | Instruction::LessOrEqualRegisterRegister(_)
-        | Instruction::GreaterOrEqualRegisterRegister(_)
-        | Instruction::EqualRegisterRegister(_)
-        | Instruction::NotEqualRegisterRegister(_)
-        | Instruction::AndRegisterRegister(_)
-        | Instruction::OrRegisterRegister(_)
-        | Instruction::AssignRegister(_)
-        | Instruction::PushRegister(_)
-        | Instruction::AccessRegister(_)
-        | Instruction::AccessAssignRegisterRegister(_)
-        | Instruction::CallRegister(_)
-        | Instruction::GetTagRegister(_)
-        | Instruction::ReturnRegister(_) => {}
-        Instruction::NotValue(NotValue { operand: value, .. })
-        | Instruction::NegateValue(NegateValue { operand: value, .. })
-        | Instruction::MultiplyRegisterValue(MultiplyRegisterValue { rhs: value, .. })
-        | Instruction::MultiplyValueRegister(MultiplyValueRegister { lhs: value, .. })
-        | Instruction::DivideRegisterValue(DivideRegisterValue { rhs: value, .. })
-        | Instruction::DivideValueRegister(DivideValueRegister { lhs: value, .. })
-        | Instruction::RemainderRegisterValue(RemainderRegisterValue { rhs: value, .. })
-        | Instruction::RemainderValueRegister(RemainderValueRegister { lhs: value, .. })
-        | Instruction::AddRegisterValue(AddRegisterValue { rhs: value, .. })
-        | Instruction::AddValueRegister(AddValueRegister { lhs: value, .. })
-        | Instruction::SubtractRegisterValue(SubtractRegisterValue { rhs: value, .. })
-        | Instruction::SubtractValueRegister(SubtractValueRegister { lhs: value, .. })
-        | Instruction::LessRegisterValue(LessRegisterValue { rhs: value, .. })
-        | Instruction::LessValueRegister(LessValueRegister { lhs: value, .. })
-        | Instruction::GreaterRegisterValue(GreaterRegisterValue { rhs: value, .. })
-        | Instruction::GreaterValueRegister(GreaterValueRegister { lhs: value, .. })
-        | Instruction::LessOrEqualRegisterValue(LessOrEqualRegisterValue { rhs: value, .. })
-        | Instruction::LessOrEqualValueRegister(LessOrEqualValueRegister { lhs: value, .. })
-        | Instruction::GreaterOrEqualRegisterValue(GreaterOrEqualRegisterValue {
-            rhs: value,
-            ..
-        })
-        | Instruction::GreaterOrEqualValueRegister(GreaterOrEqualValueRegister {
-            lhs: value,
-            ..
-        })
-        | Instruction::EqualRegisterValue(EqualRegisterValue { rhs: value, .. })
-        | Instruction::EqualValueRegister(EqualValueRegister { lhs: value, .. })
-        | Instruction::NotEqualRegisterValue(NotEqualRegisterValue { rhs: value, .. })
-        | Instruction::NotEqualValueRegister(NotEqualValueRegister { lhs: value, .. })
-        | Instruction::AndRegisterValue(AndRegisterValue { rhs: value, .. })
-        | Instruction::AndValueRegister(AndValueRegister { lhs: value, .. })
-        | Instruction::OrRegisterValue(OrRegisterValue { rhs: value, .. })
-        | Instruction::OrValueRegister(OrValueRegister { lhs: value, .. })
-        | Instruction::AssignValue(AssignValue { operand: value, .. })
-        | Instruction::PushValue(PushValue { operand: value })
-        | Instruction::AccessValue(AccessValue { of: value, .. })
-        | Instruction::AccessAssignRegisterValue(AccessAssignRegisterValue { value, .. })
-        | Instruction::AccessAssignValueRegister(AccessAssignValueRegister { to: value, .. })
-        | Instruction::CallValue(CallValue { callee: value, .. })
-        | Instruction::GetTagValue(GetTagValue { of: value, .. })
-        | Instruction::ReturnValue(ReturnValue { value }) => {
+        Instruction::NoOp
+        | Instruction::Panic
+        | Instruction::Label
+        | Instruction::ApartFnLabel { .. }
+        | Instruction::Not { .. }
+        | Instruction::Negate { .. }
+        | Instruction::Multiply { .. }
+        | Instruction::Divide { .. }
+        | Instruction::Remainder { .. }
+        | Instruction::Add { .. }
+        | Instruction::Subtract { .. }
+        | Instruction::Less { .. }
+        | Instruction::Greater { .. }
+        | Instruction::LessOrEqual { .. }
+        | Instruction::GreaterOrEqual { .. }
+        | Instruction::Equal { .. }
+        | Instruction::NotEqual { .. }
+        | Instruction::And { .. }
+        | Instruction::Or { .. }
+        | Instruction::Assign { .. }
+        | Instruction::Push { .. }
+        | Instruction::Access { .. }
+        | Instruction::AccessAssign { .. }
+        | Instruction::Call { .. }
+        | Instruction::GetTag { .. }
+        | Instruction::Return { .. } => {}
+        Instruction::NotValue { operand: value, .. }
+        | Instruction::NegateValue { operand: value, .. }
+        | Instruction::MultiplyRegisterValue { rhs: value, .. }
+        | Instruction::MultiplyValueRegister { lhs: value, .. }
+        | Instruction::DivideRegisterValue { rhs: value, .. }
+        | Instruction::DivideValueRegister { lhs: value, .. }
+        | Instruction::RemainderRegisterValue { rhs: value, .. }
+        | Instruction::RemainderValueRegister { lhs: value, .. }
+        | Instruction::AddRegisterValue { rhs: value, .. }
+        | Instruction::AddValueRegister { lhs: value, .. }
+        | Instruction::SubtractRegisterValue { rhs: value, .. }
+        | Instruction::SubtractValueRegister { lhs: value, .. }
+        | Instruction::LessRegisterValue { rhs: value, .. }
+        | Instruction::LessValueRegister { lhs: value, .. }
+        | Instruction::GreaterRegisterValue { rhs: value, .. }
+        | Instruction::GreaterValueRegister { lhs: value, .. }
+        | Instruction::LessOrEqualRegisterValue { rhs: value, .. }
+        | Instruction::LessOrEqualValueRegister { lhs: value, .. }
+        | Instruction::GreaterOrEqualRegisterValue { rhs: value, .. }
+        | Instruction::GreaterOrEqualValueRegister { lhs: value, .. }
+        | Instruction::EqualRegisterValue { rhs: value, .. }
+        | Instruction::EqualValueRegister { lhs: value, .. }
+        | Instruction::NotEqualRegisterValue { rhs: value, .. }
+        | Instruction::NotEqualValueRegister { lhs: value, .. }
+        | Instruction::AndRegisterValue { rhs: value, .. }
+        | Instruction::AndValueRegister { lhs: value, .. }
+        | Instruction::OrRegisterValue { rhs: value, .. }
+        | Instruction::OrValueRegister { lhs: value, .. }
+        | Instruction::AssignValue { operand: value, .. }
+        | Instruction::PushValue { operand: value }
+        | Instruction::AccessValue { of: value, .. }
+        | Instruction::AccessAssignRegisterValue { value, .. }
+        | Instruction::AccessAssignValueRegister { to: value, .. }
+        | Instruction::CallValue { callee: value, .. }
+        | Instruction::GetTagValue { of: value, .. }
+        | Instruction::ReturnValue { value } => {
             instruction_changed |=
                 backpatch_value(value, block_addresses, address_to_label, instructive);
         }
-        Instruction::MultiplyValueValue(MultiplyValueValue { lhs, rhs, .. })
-        | Instruction::DivideValueValue(DivideValueValue { lhs, rhs, .. })
-        | Instruction::RemainderValueValue(RemainderValueValue { lhs, rhs, .. })
-        | Instruction::AddValueValue(AddValueValue { lhs, rhs, .. })
-        | Instruction::SubtractValueValue(SubtractValueValue { lhs, rhs, .. })
-        | Instruction::LessValueValue(LessValueValue { lhs, rhs, .. })
-        | Instruction::GreaterValueValue(GreaterValueValue { lhs, rhs, .. })
-        | Instruction::LessOrEqualValueValue(LessOrEqualValueValue { lhs, rhs, .. })
-        | Instruction::GreaterOrEqualValueValue(GreaterOrEqualValueValue { lhs, rhs, .. })
-        | Instruction::EqualValueValue(EqualValueValue { lhs, rhs, .. })
-        | Instruction::NotEqualValueValue(NotEqualValueValue { lhs, rhs, .. })
-        | Instruction::AndValueValue(AndValueValue { lhs, rhs, .. })
-        | Instruction::OrValueValue(OrValueValue { lhs, rhs, .. })
-        | Instruction::AccessAssignValueValue(AccessAssignValueValue {
+        Instruction::MultiplyValueValue { lhs, rhs, .. }
+        | Instruction::DivideValueValue { lhs, rhs, .. }
+        | Instruction::RemainderValueValue { lhs, rhs, .. }
+        | Instruction::AddValueValue { lhs, rhs, .. }
+        | Instruction::SubtractValueValue { lhs, rhs, .. }
+        | Instruction::LessValueValue { lhs, rhs, .. }
+        | Instruction::GreaterValueValue { lhs, rhs, .. }
+        | Instruction::LessOrEqualValueValue { lhs, rhs, .. }
+        | Instruction::GreaterOrEqualValueValue { lhs, rhs, .. }
+        | Instruction::EqualValueValue { lhs, rhs, .. }
+        | Instruction::NotEqualValueValue { lhs, rhs, .. }
+        | Instruction::AndValueValue { lhs, rhs, .. }
+        | Instruction::OrValueValue { lhs, rhs, .. }
+        | Instruction::AccessAssignValueValue {
             to: lhs,
             value: rhs,
             ..
-        }) => {
+        } => {
             instruction_changed |=
                 backpatch_value(lhs, block_addresses, address_to_label, instructive);
 
             instruction_changed |=
                 backpatch_value(rhs, block_addresses, address_to_label, instructive);
         }
-        Instruction::Jump(Jump { destination }) => {
+        Instruction::Jump { destination } => {
             let label_index = address_to_label
                 .get(destination)
                 .copied()
@@ -368,25 +368,25 @@ where
                 instruction_changed |= true;
             }
         }
-        Instruction::BranchRegister(BranchRegister {
+        Instruction::Branch {
             when_true,
             otherwise,
             ..
-        }) => {
+        } => {
             let label_index = address_to_label.get(when_true).copied().unwrap_or_else(|| {
                 println!("{address_to_label:?}");
                 panic!("destination was not a label {when_true}");
             });
 
-            let new_when_true = block_addresses
-                .get(usize::try_from(label_index).expect("destination was not a valid usize"))
+            let new_destination = block_addresses
+                .get(usize::try_from(label_index).expect("label index was not a valid usize"))
                 .copied()
                 .unwrap_or_else(|| {
                     panic!("block address not found for block {when_true}");
                 });
 
-            if new_when_true != *when_true {
-                *when_true = new_when_true;
+            if new_destination != *when_true {
+                *when_true = new_destination;
 
                 instruction_changed |= true;
             }
@@ -396,24 +396,24 @@ where
                 panic!("destination was not a label {otherwise}");
             });
 
-            let new_otherwise = block_addresses
-                .get(usize::try_from(label_index).expect("destination was not a valid usize"))
+            let new_destination = block_addresses
+                .get(usize::try_from(label_index).expect("label index was not a valid usize"))
                 .copied()
                 .unwrap_or_else(|| {
                     panic!("block address not found for block {otherwise}");
                 });
 
-            if new_otherwise != *otherwise {
-                *otherwise = new_otherwise;
+            if new_destination != *otherwise {
+                *otherwise = new_destination;
 
                 instruction_changed |= true;
             }
         }
-        Instruction::BranchValue(BranchValue {
+        Instruction::BranchValue {
             condition,
             when_true,
             otherwise,
-        }) => {
+        } => {
             instruction_changed |=
                 backpatch_value(condition, block_addresses, address_to_label, instructive);
 
@@ -422,15 +422,15 @@ where
                 panic!("destination was not a label {when_true}");
             });
 
-            let new_when_true = block_addresses
-                .get(usize::try_from(label_index).expect("destination was not a valid usize"))
+            let new_destination = block_addresses
+                .get(usize::try_from(label_index).expect("label index was not a valid usize"))
                 .copied()
                 .unwrap_or_else(|| {
                     panic!("block address not found for block {when_true}");
                 });
 
-            if new_when_true != *when_true {
-                *when_true = new_when_true;
+            if new_destination != *when_true {
+                *when_true = new_destination;
 
                 instruction_changed |= true;
             }
@@ -440,15 +440,15 @@ where
                 panic!("destination was not a label {otherwise}");
             });
 
-            let new_otherwise = block_addresses
-                .get(usize::try_from(label_index).expect("destination was not a valid usize"))
+            let new_destination = block_addresses
+                .get(usize::try_from(label_index).expect("label index was not a valid usize"))
                 .copied()
                 .unwrap_or_else(|| {
                     panic!("block address not found for block {otherwise}");
                 });
 
-            if new_otherwise != *otherwise {
-                *otherwise = new_otherwise;
+            if new_destination != *otherwise {
+                *otherwise = new_destination;
 
                 instruction_changed |= true;
             }
@@ -469,7 +469,7 @@ where
     T: Instructive,
 {
     match value {
-        Value::ApartFn(ApartFn { address, .. }) => {
+        Value::ApartFn { address, .. } => {
             let label_index = address_to_label.get(address).copied().unwrap_or_else(|| {
                 println!("{address_to_label:?}");
                 panic!("destination was not a label {address}");
@@ -490,11 +490,11 @@ where
                 true
             }
         }
-        Value::ValueIndex(value_index) => {
+        Value::ValueIndex { index: value_index } => {
             match instructive.arena_mut().get_mut(usize::from(*value_index)) {
                 Some(
-                    GarbageCollectedValue::Compound(Compound { fields, .. })
-                    | GarbageCollectedValue::TaggedCompound(TaggedCompound { fields, .. }),
+                    GarbageCollectedValue::Compound { fields, .. }
+                    | GarbageCollectedValue::TaggedCompound { fields, .. },
                 ) => {
                     let mut taken_fields = std::mem::take(fields);
 
@@ -507,10 +507,8 @@ where
 
                     match instructive.arena_mut().get_mut(usize::from(*value_index)) {
                         Some(
-                            GarbageCollectedValue::Compound(Compound { fields, .. })
-                            | GarbageCollectedValue::TaggedCompound(TaggedCompound {
-                                fields, ..
-                            }),
+                            GarbageCollectedValue::Compound { fields, .. }
+                            | GarbageCollectedValue::TaggedCompound { fields, .. },
                         ) => {
                             *fields = taken_fields;
                         }
@@ -521,7 +519,7 @@ where
 
                     changed
                 }
-                Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) => {
+                Some(GarbageCollectedValue::ApartVec { values, .. }) => {
                     let mut taken_values = std::mem::take(values);
 
                     let mut changed = false;
@@ -532,7 +530,7 @@ where
                     }
 
                     match instructive.arena_mut().get_mut(usize::from(*value_index)) {
-                        Some(GarbageCollectedValue::ApartVec(ApartVec { values, .. })) => {
+                        Some(GarbageCollectedValue::ApartVec { values, .. }) => {
                             *values = taken_values;
                         }
                         _ => unreachable!(
@@ -542,24 +540,24 @@ where
 
                     changed
                 }
-                Some(GarbageCollectedValue::ApartString(_)) | None => false,
+                Some(GarbageCollectedValue::ApartString { .. }) | None => false,
             }
         }
-        Value::Never(_)
-        | Value::U8(_)
-        | Value::I8(_)
-        | Value::U16(_)
-        | Value::I16(_)
-        | Value::U32(_)
-        | Value::I32(_)
-        | Value::U64(_)
-        | Value::I64(_)
-        | Value::F32(_)
-        | Value::F64(_)
-        | Value::Boolean(_)
-        | Value::Unit(_)
-        | Value::ApartNativeFn(_)
-        | Value::ApartRegister(_) => false,
+        Value::Never
+        | Value::U8 { .. }
+        | Value::I8 { .. }
+        | Value::U16 { .. }
+        | Value::I16 { .. }
+        | Value::U32 { .. }
+        | Value::I32 { .. }
+        | Value::U64 { .. }
+        | Value::I64 { .. }
+        | Value::F32 { .. }
+        | Value::F64 { .. }
+        | Value::Boolean { .. }
+        | Value::Unit
+        | Value::ApartNativeFn { .. }
+        | Value::ApartRegister { .. } => false,
     }
 }
 
@@ -573,7 +571,7 @@ fn find_labels(
 
     let mut instructive = Compiler {
         ip: 2,
-        constants: vec![],
+        literals: vec![],
         arena: vec![],
     };
 
@@ -588,7 +586,7 @@ fn find_labels(
 
         instructive.ip += instruction_size;
 
-        if matches!(instruction, Instruction::Label(_)) {
+        if matches!(instruction, Instruction::Label) {
             if remove_labels {
                 instructive.ip -= instruction_size;
                 bytecode.splice((instructive.ip)..(instructive.ip + instruction_size), []);
@@ -621,13 +619,13 @@ where
     fn encode(&self, instructive: &mut T) -> Self::Output {
         match self.1 {
             IrInstruction::NoOp => vec![],
-            IrInstruction::Panic => Instruction::Panic(Panic).encode(instructive),
-            IrInstruction::FnLabel(fn_label) => Instruction::ApartFnLabel(ApartFnLabel {
+            IrInstruction::Panic => Instruction::Panic.encode(instructive),
+            IrInstruction::FnLabel(fn_label) => Instruction::ApartFnLabel {
                 fn_label: Box::new(FnLabel::new(
                     fn_label.file_name().to_string(),
                     fn_label.function_label().to_string(),
                 )),
-            })
+            }
             .encode(instructive),
             IrInstruction::Unary {
                 op,
@@ -638,13 +636,13 @@ where
                     Location::Register(to),
                     UnaryOp::Not,
                     ValueOrLocation::At(Location::Register(operand)),
-                ) => Instruction::NotRegister(NotRegister {
+                ) => Instruction::Not {
                     to: u16::from(*to),
                     operand: u16::from(*operand),
-                })
+                }
                 .encode(instructive),
                 (Location::Register(to), UnaryOp::Not, ValueOrLocation::Value(_)) => {
-                    Instruction::NotValue(NotValue {
+                    Instruction::NotValue {
                         to: u16::from(*to),
                         operand: Value::decode(
                             (self.0, ir_operand).encode(instructive).as_slice(),
@@ -654,20 +652,20 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                    })
+                    }
                     .encode(instructive)
                 }
                 (
                     Location::Register(to),
                     UnaryOp::Negate,
                     ValueOrLocation::At(Location::Register(operand)),
-                ) => Instruction::NegateRegister(NegateRegister {
+                ) => Instruction::Negate {
                     to: u16::from(*to),
                     operand: u16::from(*operand),
-                })
+                }
                 .encode(instructive),
                 (Location::Register(to), UnaryOp::Negate, ValueOrLocation::Value(_)) => {
-                    Instruction::NegateValue(NegateValue {
+                    Instruction::NegateValue {
                         to: u16::from(*to),
                         operand: Value::decode(
                             (self.0, ir_operand).encode(instructive).as_slice(),
@@ -677,7 +675,7 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                    })
+                    }
                     .encode(instructive)
                 }
             },
@@ -687,18 +685,18 @@ where
                     BinaryOp::Multiply,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::MultiplyRegisterRegister(MultiplyRegisterRegister {
+                ) => Instruction::Multiply {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::MultiplyRegisterValue(MultiplyRegisterValue {
+                ) => Instruction::MultiplyRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -706,14 +704,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::MultiplyValueRegister(MultiplyValueRegister {
+                ) => Instruction::MultiplyValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -721,14 +719,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Multiply,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::MultiplyValueValue(MultiplyValueValue {
+                ) => Instruction::MultiplyValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -740,25 +738,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::DivideRegisterRegister(DivideRegisterRegister {
+                ) => Instruction::Divide {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::DivideRegisterValue(DivideRegisterValue {
+                ) => Instruction::DivideRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -766,14 +764,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::DivideValueRegister(DivideValueRegister {
+                ) => Instruction::DivideValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -781,14 +779,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Divide,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::DivideValueValue(DivideValueValue {
+                ) => Instruction::DivideValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -800,25 +798,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::RemainderRegisterRegister(RemainderRegisterRegister {
+                ) => Instruction::Remainder {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::RemainderRegisterValue(RemainderRegisterValue {
+                ) => Instruction::RemainderRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -826,14 +824,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::RemainderValueRegister(RemainderValueRegister {
+                ) => Instruction::RemainderValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -841,14 +839,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Remainder,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::RemainderValueValue(RemainderValueValue {
+                ) => Instruction::RemainderValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -860,25 +858,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AddRegisterRegister(AddRegisterRegister {
+                ) => Instruction::Add {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AddRegisterValue(AddRegisterValue {
+                ) => Instruction::AddRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -886,14 +884,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AddValueRegister(AddValueRegister {
+                ) => Instruction::AddValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -901,14 +899,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Add,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AddValueValue(AddValueValue {
+                ) => Instruction::AddValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -920,25 +918,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::SubtractRegisterRegister(SubtractRegisterRegister {
+                ) => Instruction::Subtract {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::SubtractRegisterValue(SubtractRegisterValue {
+                ) => Instruction::SubtractRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -946,14 +944,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::SubtractValueRegister(SubtractValueRegister {
+                ) => Instruction::SubtractValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -961,14 +959,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Subtract,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::SubtractValueValue(SubtractValueValue {
+                ) => Instruction::SubtractValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -980,25 +978,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessRegisterRegister(LessRegisterRegister {
+                ) => Instruction::Less {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessRegisterValue(LessRegisterValue {
+                ) => Instruction::LessRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1006,14 +1004,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessValueRegister(LessValueRegister {
+                ) => Instruction::LessValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1021,14 +1019,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Less,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessValueValue(LessValueValue {
+                ) => Instruction::LessValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1040,25 +1038,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterRegisterRegister(GreaterRegisterRegister {
+                ) => Instruction::Greater {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterRegisterValue(GreaterRegisterValue {
+                ) => Instruction::GreaterRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1066,14 +1064,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterValueRegister(GreaterValueRegister {
+                ) => Instruction::GreaterValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1081,14 +1079,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Greater,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterValueValue(GreaterValueValue {
+                ) => Instruction::GreaterValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1100,25 +1098,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessOrEqualRegisterRegister(LessOrEqualRegisterRegister {
+                ) => Instruction::LessOrEqual {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessOrEqualRegisterValue(LessOrEqualRegisterValue {
+                ) => Instruction::LessOrEqualRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1126,14 +1124,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::LessOrEqualValueRegister(LessOrEqualValueRegister {
+                ) => Instruction::LessOrEqualValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1141,14 +1139,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::LessOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::LessOrEqualValueValue(LessOrEqualValueValue {
+                ) => Instruction::LessOrEqualValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1160,25 +1158,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterOrEqualRegisterRegister(GreaterOrEqualRegisterRegister {
+                ) => Instruction::GreaterOrEqual {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterOrEqualRegisterValue(GreaterOrEqualRegisterValue {
+                ) => Instruction::GreaterOrEqualRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1186,14 +1184,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::GreaterOrEqualValueRegister(GreaterOrEqualValueRegister {
+                ) => Instruction::GreaterOrEqualValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1201,14 +1199,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::GreaterOrEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::GreaterOrEqualValueValue(GreaterOrEqualValueValue {
+                ) => Instruction::GreaterOrEqualValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1220,25 +1218,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::EqualRegisterRegister(EqualRegisterRegister {
+                ) => Instruction::Equal {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::EqualRegisterValue(EqualRegisterValue {
+                ) => Instruction::EqualRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1246,14 +1244,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::EqualValueRegister(EqualValueRegister {
+                ) => Instruction::EqualValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1261,14 +1259,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::Equal,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::EqualValueValue(EqualValueValue {
+                ) => Instruction::EqualValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1280,25 +1278,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::NotEqualRegisterRegister(NotEqualRegisterRegister {
+                ) => Instruction::NotEqual {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::NotEqualRegisterValue(NotEqualRegisterValue {
+                ) => Instruction::NotEqualRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1306,14 +1304,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::NotEqualValueRegister(NotEqualValueRegister {
+                ) => Instruction::NotEqualValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1321,14 +1319,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::NotEqual,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::NotEqualValueValue(NotEqualValueValue {
+                ) => Instruction::NotEqualValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1340,85 +1338,25 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AndRegisterRegister(AndRegisterRegister {
+                ) => Instruction::And {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
                     BinaryOp::And,
                     ValueOrLocation::At(Location::Register(lhs)),
                     ValueOrLocation::Value(_),
-                ) => Instruction::AndRegisterValue(AndRegisterValue {
-                    to: u16::from(*to),
-                    lhs: u16::from(*lhs),
-                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                })
-                .encode(instructive),
-                (
-                    Location::Register(to),
-                    BinaryOp::And,
-                    ValueOrLocation::Value(_),
-                    ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::AndValueRegister(AndValueRegister {
-                    to: u16::from(*to),
-                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                    rhs: u16::from(*rhs),
-                })
-                .encode(instructive),
-                (
-                    Location::Register(to),
-                    BinaryOp::And,
-                    ValueOrLocation::Value(_),
-                    ValueOrLocation::Value(_),
-                ) => Instruction::AndValueValue(AndValueValue {
-                    to: u16::from(*to),
-                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                })
-                .encode(instructive),
-                (
-                    Location::Register(to),
-                    BinaryOp::Or,
-                    ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::OrRegisterRegister(OrRegisterRegister {
-                    to: u16::from(*to),
-                    lhs: u16::from(*lhs),
-                    rhs: u16::from(*rhs),
-                })
-                .encode(instructive),
-                (
-                    Location::Register(to),
-                    BinaryOp::Or,
-                    ValueOrLocation::At(Location::Register(lhs)),
-                    ValueOrLocation::Value(_),
-                ) => Instruction::OrRegisterValue(OrRegisterValue {
+                ) => Instruction::AndRegisterValue {
                     to: u16::from(*to),
                     lhs: u16::from(*lhs),
                     rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
@@ -1426,14 +1364,14 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
-                    BinaryOp::Or,
+                    BinaryOp::And,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::At(Location::Register(rhs)),
-                ) => Instruction::OrValueRegister(OrValueRegister {
+                ) => Instruction::AndValueRegister {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1441,14 +1379,14 @@ where
                             |(value, _)| value,
                         ),
                     rhs: u16::from(*rhs),
-                })
+                }
                 .encode(instructive),
                 (
                     Location::Register(to),
-                    BinaryOp::Or,
+                    BinaryOp::And,
                     ValueOrLocation::Value(_),
                     ValueOrLocation::Value(_),
-                ) => Instruction::OrValueValue(OrValueValue {
+                ) => Instruction::AndValueValue {
                     to: u16::from(*to),
                     lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
                         .map_or_else(
@@ -1460,40 +1398,95 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                })
+                }
+                .encode(instructive),
+                (
+                    Location::Register(to),
+                    BinaryOp::Or,
+                    ValueOrLocation::At(Location::Register(lhs)),
+                    ValueOrLocation::At(Location::Register(rhs)),
+                ) => Instruction::Or {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: u16::from(*rhs),
+                }
+                .encode(instructive),
+                (
+                    Location::Register(to),
+                    BinaryOp::Or,
+                    ValueOrLocation::At(Location::Register(lhs)),
+                    ValueOrLocation::Value(_),
+                ) => Instruction::OrRegisterValue {
+                    to: u16::from(*to),
+                    lhs: u16::from(*lhs),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                }
+                .encode(instructive),
+                (
+                    Location::Register(to),
+                    BinaryOp::Or,
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::At(Location::Register(rhs)),
+                ) => Instruction::OrValueRegister {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: u16::from(*rhs),
+                }
+                .encode(instructive),
+                (
+                    Location::Register(to),
+                    BinaryOp::Or,
+                    ValueOrLocation::Value(_),
+                    ValueOrLocation::Value(_),
+                ) => Instruction::OrValueValue {
+                    to: u16::from(*to),
+                    lhs: Value::decode((self.0, lhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                    rhs: Value::decode((self.0, rhs).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
+                }
                 .encode(instructive),
             },
             IrInstruction::Assign { value, to } => match (to, value.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
-                    Instruction::AssignRegister(AssignRegister {
+                    Instruction::Assign {
                         to: u16::from(*to),
                         operand: u16::from(*operand),
-                    })
+                    }
                     .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => {
-                    Instruction::AssignValue(AssignValue {
-                        to: u16::from(*to),
-                        operand: Value::decode(
-                            (self.0, value).encode(instructive).as_slice(),
-                            instructive,
-                        )
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                    })
-                    .encode(instructive)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AssignValue {
+                    to: u16::from(*to),
+                    operand: {
+                        Value::decode((self.0, value).encode(instructive).as_slice(), instructive)
+                            .map_or_else(
+                                || unreachable!("all IR values are valid values"),
+                                |(value, _)| value,
+                            )
+                    },
                 }
+                .encode(instructive),
             },
             IrInstruction::Push(value) => match value.kind() {
-                ValueOrLocation::At(Location::Register(operand)) => {
-                    Instruction::PushRegister(PushRegister {
-                        operand: u16::from(*operand),
-                    })
-                    .encode(instructive)
+                ValueOrLocation::At(Location::Register(operand)) => Instruction::Push {
+                    operand: u16::from(*operand),
                 }
-                ValueOrLocation::Value(_) => Instruction::PushValue(PushValue {
+                .encode(instructive),
+                ValueOrLocation::Value(_) => Instruction::PushValue {
                     operand: Value::decode(
                         (self.0, value).encode(instructive).as_slice(),
                         instructive,
@@ -1502,56 +1495,52 @@ where
                         || panic!("all IR values are valid values"),
                         |(value, _)| value,
                     ),
-                })
+                }
                 .encode(instructive),
             },
             IrInstruction::Call { callee, arity, to } => match (to, callee.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(callee))) => {
-                    Instruction::CallRegister(CallRegister {
+                    Instruction::Call {
                         to: u16::from(*to),
                         arity: *arity,
                         callee: u16::from(*callee),
-                    })
+                    }
                     .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => {
-                    Instruction::CallValue(CallValue {
-                        to: u16::from(*to),
-                        arity: *arity,
-                        callee: Value::decode(
-                            (self.0, callee).encode(instructive).as_slice(),
-                            instructive,
-                        )
-                        .map_or_else(
-                            || panic!("all IR values are valid values"),
-                            |(value, _)| value,
-                        ),
-                    })
-                    .encode(instructive)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::CallValue {
+                    to: u16::from(*to),
+                    arity: *arity,
+                    callee: Value::decode(
+                        (self.0, callee).encode(instructive).as_slice(),
+                        instructive,
+                    )
+                    .map_or_else(
+                        || panic!("all IR values are valid values"),
+                        |(value, _)| value,
+                    ),
                 }
+                .encode(instructive),
             },
             IrInstruction::Access { index, of, to }
             | IrInstruction::TaggedAccess { index, of, to, .. } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(of))) => {
-                    Instruction::AccessRegister(AccessRegister {
+                    Instruction::Access {
                         to: u16::from(*to),
                         index: *index,
                         of: u16::from(*of),
-                    })
+                    }
                     .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => {
-                    Instruction::AccessValue(AccessValue {
-                        to: u16::from(*to),
-                        index: *index,
-                        of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
-                            .map_or_else(
-                                || panic!("all IR values are valid values"),
-                                |(value, _)| value,
-                            ),
-                    })
-                    .encode(instructive)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::AccessValue {
+                    to: u16::from(*to),
+                    index: *index,
+                    of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
                 }
+                .encode(instructive),
             },
             IrInstruction::AccessAssign { index, of, value }
             | IrInstruction::TaggedAccessAssign {
@@ -1560,14 +1549,14 @@ where
                 (
                     ValueOrLocation::At(Location::Register(to)),
                     ValueOrLocation::At(Location::Register(value)),
-                ) => Instruction::AccessAssignRegisterRegister(AccessAssignRegisterRegister {
+                ) => Instruction::AccessAssign {
                     index: *index,
                     to: u16::from(*to),
                     value: u16::from(*value),
-                })
+                }
                 .encode(instructive),
                 (ValueOrLocation::At(Location::Register(to)), ValueOrLocation::Value(_)) => {
-                    Instruction::AccessAssignRegisterValue(AccessAssignRegisterValue {
+                    Instruction::AccessAssignRegisterValue {
                         index: *index,
                         to: u16::from(*to),
                         value: Value::decode(
@@ -1578,11 +1567,11 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                    })
+                    }
                     .encode(instructive)
                 }
                 (ValueOrLocation::Value(_), ValueOrLocation::At(Location::Register(value))) => {
-                    Instruction::AccessAssignValueRegister(AccessAssignValueRegister {
+                    Instruction::AccessAssignValueRegister {
                         index: *index,
                         to: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
                             .map_or_else(
@@ -1590,11 +1579,11 @@ where
                                 |(value, _)| value,
                             ),
                         value: u16::from(*value),
-                    })
+                    }
                     .encode(instructive)
                 }
                 (ValueOrLocation::Value(_), ValueOrLocation::Value(_)) => {
-                    Instruction::AccessAssignValueValue(AccessAssignValueValue {
+                    Instruction::AccessAssignValueValue {
                         index: *index,
                         to: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
                             .map_or_else(
@@ -1609,48 +1598,44 @@ where
                             || panic!("all IR values are valid values"),
                             |(value, _)| value,
                         ),
-                    })
+                    }
                     .encode(instructive)
                 }
             },
             IrInstruction::GetTag { of, to } => match (to, of.kind()) {
                 (Location::Register(to), ValueOrLocation::At(Location::Register(operand))) => {
-                    Instruction::GetTagRegister(GetTagRegister {
+                    Instruction::GetTag {
                         to: u16::from(*to),
                         of: u16::from(*operand),
-                    })
+                    }
                     .encode(instructive)
                 }
-                (Location::Register(to), ValueOrLocation::Value(_)) => {
-                    Instruction::GetTagValue(GetTagValue {
-                        to: u16::from(*to),
-                        of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
-                            .map_or_else(
-                                || panic!("all IR values are valid values"),
-                                |(value, _)| value,
-                            ),
-                    })
-                    .encode(instructive)
+                (Location::Register(to), ValueOrLocation::Value(_)) => Instruction::GetTagValue {
+                    to: u16::from(*to),
+                    of: Value::decode((self.0, of).encode(instructive).as_slice(), instructive)
+                        .map_or_else(
+                            || panic!("all IR values are valid values"),
+                            |(value, _)| value,
+                        ),
                 }
+                .encode(instructive),
             },
-            IrInstruction::Jump(destination) => Instruction::Jump(Jump {
+            IrInstruction::Jump(destination) => Instruction::Jump {
                 destination: u32::from(*destination),
-            })
+            }
             .encode(instructive),
             IrInstruction::Branch {
                 condition,
                 when_true,
                 otherwise,
             } => match condition.kind() {
-                ValueOrLocation::At(Location::Register(condition)) => {
-                    Instruction::BranchRegister(BranchRegister {
-                        condition: u16::from(*condition),
-                        when_true: u32::from(*when_true),
-                        otherwise: u32::from(*otherwise),
-                    })
-                    .encode(instructive)
+                ValueOrLocation::At(Location::Register(condition)) => Instruction::Branch {
+                    condition: u16::from(*condition),
+                    when_true: u32::from(*when_true),
+                    otherwise: u32::from(*otherwise),
                 }
-                ValueOrLocation::Value(_) => Instruction::BranchValue(BranchValue {
+                .encode(instructive),
+                ValueOrLocation::Value(_) => Instruction::BranchValue {
                     condition: Value::decode(
                         (self.0, condition).encode(instructive).as_slice(),
                         instructive,
@@ -1661,17 +1646,15 @@ where
                     ),
                     when_true: u32::from(*when_true),
                     otherwise: u32::from(*otherwise),
-                })
+                }
                 .encode(instructive),
             },
             IrInstruction::Return(value) => match value.kind() {
-                ValueOrLocation::At(Location::Register(value)) => {
-                    Instruction::ReturnRegister(ReturnRegister {
-                        value: u16::from(*value),
-                    })
-                    .encode(instructive)
+                ValueOrLocation::At(Location::Register(value)) => Instruction::Return {
+                    value: u16::from(*value),
                 }
-                ValueOrLocation::Value(_) => Instruction::ReturnValue(ReturnValue {
+                .encode(instructive),
+                ValueOrLocation::Value(_) => Instruction::ReturnValue {
                     value: Value::decode(
                         (self.0, value).encode(instructive).as_slice(),
                         instructive,
@@ -1680,7 +1663,7 @@ where
                         || panic!("all IR values are valid values"),
                         |(value, _)| value,
                     ),
-                })
+                }
                 .encode(instructive),
             },
         }
@@ -1803,37 +1786,35 @@ where
     #[allow(clippy::too_many_lines)]
     fn encode(&self, instructive: &mut T) -> Self::Output {
         match self.1.0 {
-            IrValue::Never => Value::Never(Never).encode(instructive),
-            IrValue::U8(value) => Value::U8(U8 { value: *value }).encode(instructive),
-            IrValue::I8(value) => Value::I8(I8 { value: *value }).encode(instructive),
-            IrValue::U16(value) => Value::U16(U16 { value: *value }).encode(instructive),
-            IrValue::I16(value) => Value::I16(I16 { value: *value }).encode(instructive),
-            IrValue::U32(value) => Value::U32(U32 { value: *value }).encode(instructive),
-            IrValue::I32(value) => Value::I32(I32 { value: *value }).encode(instructive),
-            IrValue::U64(value) => Value::U64(U64 { value: *value }).encode(instructive),
-            IrValue::I64(value) => Value::I64(I64 { value: *value }).encode(instructive),
-            IrValue::F32(value) => Value::F32(F32 { value: *value }).encode(instructive),
-            IrValue::F64(value) => Value::F64(F64 { value: *value }).encode(instructive),
-            IrValue::Boolean(value) => {
-                Value::Boolean(Boolean { value: *value }).encode(instructive)
-            }
-            IrValue::Unit => Value::Unit(Unit).encode(instructive),
-            IrValue::String(text) => GarbageCollectedValue::ApartString(ApartString {
+            IrValue::Never => Value::Never.encode(instructive),
+            IrValue::U8(value) => Value::U8 { value: *value }.encode(instructive),
+            IrValue::I8(value) => Value::I8 { value: *value }.encode(instructive),
+            IrValue::U16(value) => Value::U16 { value: *value }.encode(instructive),
+            IrValue::I16(value) => Value::I16 { value: *value }.encode(instructive),
+            IrValue::U32(value) => Value::U32 { value: *value }.encode(instructive),
+            IrValue::I32(value) => Value::I32 { value: *value }.encode(instructive),
+            IrValue::U64(value) => Value::U64 { value: *value }.encode(instructive),
+            IrValue::I64(value) => Value::I64 { value: *value }.encode(instructive),
+            IrValue::F32(value) => Value::F32 { value: *value }.encode(instructive),
+            IrValue::F64(value) => Value::F64 { value: *value }.encode(instructive),
+            IrValue::Boolean(value) => Value::Boolean { value: *value }.encode(instructive),
+            IrValue::Unit => Value::Unit.encode(instructive),
+            IrValue::String(text) => GarbageCollectedValue::ApartString {
                 value: text.clone(),
-            })
+            }
             .encode(instructive),
             IrValue::Fn {
                 block_index,
                 max_register_count,
-            } => Value::ApartFn(ApartFn {
+            } => Value::ApartFn {
                 address: u32::from(*block_index),
                 max_register_count: *max_register_count,
-            })
+            }
             .encode(instructive),
             IrValue::NativeFn(native_fn) => {
-                Value::ApartNativeFn(ApartNativeFn { value: *native_fn }).encode(instructive)
+                Value::ApartNativeFn { value: *native_fn }.encode(instructive)
             }
-            IrValue::Compound(fields) => GarbageCollectedValue::Compound(Compound {
+            IrValue::Compound(fields) => GarbageCollectedValue::Compound {
                 field_count: u8::try_from(fields.len()).unwrap_or_else(|_| {
                     panic!("type checking guarantees the number of fields is valid")
                 }),
@@ -1846,29 +1827,24 @@ where
                     })
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
-            })
+            }
             .encode(instructive),
-            IrValue::TaggedCompound { tag, fields } => {
-                GarbageCollectedValue::TaggedCompound(TaggedCompound {
-                    tag: *tag,
-                    field_count: u8::try_from(fields.len()).unwrap_or_else(|_| {
-                        panic!("type checking guarantees the number of fields is valid")
-                    }),
-                    fields: fields
-                        .iter()
-                        .map(|field| {
-                            Value::decode(
-                                (self.0, field).encode(instructive).as_slice(),
-                                instructive,
-                            )
+            IrValue::TaggedCompound { tag, fields } => GarbageCollectedValue::TaggedCompound {
+                tag: *tag,
+                field_count: u8::try_from(fields.len()).unwrap_or_else(|_| {
+                    panic!("type checking guarantees the number of fields is valid")
+                }),
+                fields: fields
+                    .iter()
+                    .map(|field| {
+                        Value::decode((self.0, field).encode(instructive).as_slice(), instructive)
                             .unwrap_or_else(|| panic!("all IR values are valid"))
                             .0
-                        })
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                })
-                .encode(instructive)
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
             }
+            .encode(instructive),
         }
     }
 }
@@ -1890,7 +1866,7 @@ bytecode_macro::bytecode! (
         ApartFnLabel {
             fn_label: Box<FnLabel>,
         },
-        NotRegister {
+        Not {
             to: u16,
             operand: u16,
         },
@@ -1898,7 +1874,7 @@ bytecode_macro::bytecode! (
             to: u16,
             operand: Value,
         },
-        NegateRegister {
+        Negate {
             to: u16,
             operand: u16,
         },
@@ -1906,7 +1882,7 @@ bytecode_macro::bytecode! (
             to: u16,
             operand: Value,
         },
-        MultiplyRegisterRegister {
+        Multiply {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -1926,7 +1902,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        DivideRegisterRegister {
+        Divide {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -1946,7 +1922,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        RemainderRegisterRegister {
+        Remainder {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -1966,7 +1942,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        AddRegisterRegister {
+        Add {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -1986,7 +1962,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        SubtractRegisterRegister {
+        Subtract {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2006,7 +1982,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        LessRegisterRegister {
+        Less {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2026,7 +2002,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        GreaterRegisterRegister {
+        Greater {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2046,7 +2022,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        LessOrEqualRegisterRegister {
+        LessOrEqual {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2066,7 +2042,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        GreaterOrEqualRegisterRegister {
+        GreaterOrEqual {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2086,7 +2062,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        EqualRegisterRegister {
+        Equal {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2106,7 +2082,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        NotEqualRegisterRegister {
+        NotEqual {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2126,7 +2102,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        AndRegisterRegister {
+        And {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2146,7 +2122,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        OrRegisterRegister {
+        Or {
             to: u16,
             lhs: u16,
             rhs: u16,
@@ -2166,7 +2142,7 @@ bytecode_macro::bytecode! (
             lhs: Value,
             rhs: Value,
         },
-        AssignRegister {
+        Assign {
             to: u16,
             operand: u16,
         },
@@ -2174,13 +2150,13 @@ bytecode_macro::bytecode! (
             to: u16,
             operand: Value,
         },
-        PushRegister {
+        Push {
             operand: u16,
         },
         PushValue {
              operand: Value,
          },
-        AccessRegister {
+        Access {
             to: u16,
             index: u8,
             of: u16,
@@ -2190,7 +2166,7 @@ bytecode_macro::bytecode! (
             index: u8,
             of: Value,
         },
-        AccessAssignRegisterRegister {
+        AccessAssign {
             to: u16,
             index: u8,
             value: u16,
@@ -2210,7 +2186,7 @@ bytecode_macro::bytecode! (
             index: u8,
             value: Value,
         },
-        CallRegister {
+        Call {
             to: u16,
             arity: u8,
             callee: u16,
@@ -2220,7 +2196,7 @@ bytecode_macro::bytecode! (
             arity: u8,
             callee: Value,
         },
-        GetTagRegister {
+        GetTag {
             to: u16,
             of: u16,
         },
@@ -2231,7 +2207,7 @@ bytecode_macro::bytecode! (
         Jump {
             destination: u32,
         },
-        BranchRegister {
+        Branch {
             condition: u16,
             when_true: u32,
             otherwise: u32,
@@ -2241,7 +2217,7 @@ bytecode_macro::bytecode! (
             when_true: u32,
             otherwise: u32,
         },
-        ReturnRegister {
+        Return {
             value: u16,
         },
         ReturnValue {
@@ -2304,7 +2280,7 @@ bytecode_macro::bytecode! (
 
     garbage_collected = GarbageCollectedValue;
 
-    arena index = ValueIndex as u64;
+    arena_index = ValueIndex as u64;
 
     garbage_collected {
         Compound {

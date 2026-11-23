@@ -35,7 +35,7 @@ macro_rules! __bytecode {
 
         garbage_collected = $garbage_collected_name:ident;
 
-        arena index = $arena_index_name:ident as $arena_index_type:ty;
+        arena_index = $arena_index_name:ident as $arena_index_type:ty;
 
         garbage_collected {
             $($garbage_collected:ident $({
@@ -77,7 +77,7 @@ macro_rules! __bytecode {
 
             garbage_collected = $garbage_collected_name;
 
-            arena index = $arena_index_name as $arena_index_type;
+            arena_index = $arena_index_name as $arena_index_type;
 
             garbage_collected {
                 $($garbage_collected $({
@@ -126,7 +126,7 @@ macro_rules! __bytecode {
 
         garbage_collected = $garbage_collected_name:ident;
 
-        arena index = $arena_index_name:ident as $arena_index_type:ty;
+        arena_index = $arena_index_name:ident as $arena_index_type:ty;
 
         garbage_collected {
             $($garbage_collected:ident $({
@@ -140,20 +140,20 @@ macro_rules! __bytecode {
         $dollar:tt
     ) => {
         $v mod $prelude {
-            pub use super::{$instructive, $encode, $decode, $bytecode_name, $value_name, $arena_index_name, $garbage_collected_name, $opcode_constants, $value_constants, $($opcode,)* $($value,)* $($garbage_collected,)*};
+            pub use super::{$instructive, $encode, $decode, $bytecode_name, $value_name, $arena_index_name, $garbage_collected_name, $opcode_constants, $value_constants,};
         }
 
         #[allow(unused)]
         $v trait $instructive: Sized {
             fn ip_mut(&mut self) -> &mut usize;
 
-            fn constants_mut(&mut self) -> &mut Vec<$arena_index_name>;
+            fn literals_mut(&mut self) -> &mut Vec<$arena_index_name>;
 
             fn arena_mut(&mut self) -> &mut Vec<$garbage_collected_name>;
 
             fn ip(&self) -> usize;
 
-            fn constants(&self) -> &[$arena_index_name];
+            fn literals(&self) -> &[$arena_index_name];
 
             fn arena(&self) -> &[$garbage_collected_name];
         }
@@ -181,7 +181,7 @@ macro_rules! __bytecode {
         #[derive(Debug, Clone)]
         $v enum $bytecode_name {
             $(
-                $opcode ($opcode),
+                $opcode $({ $($opcode_field_name: $opcode_field_type, )+ })?,
             )+
         }
 
@@ -194,9 +194,9 @@ macro_rules! __bytecode {
             fn encode(&self, instructive: &mut T) -> Self::Output {
                 match self {
                     $(
-                        Self::$opcode(opcode) => [
+                        Self::$opcode $({ $($opcode_field_name,)+ })? => [
                             $opcode_constants::$opcode.encode(instructive),
-                            opcode.encode(instructive),
+                            $($($opcode_field_name.encode(instructive),)+)?
                         ].concat(),
                     )+
                 }
@@ -213,9 +213,25 @@ macro_rules! __bytecode {
                 match bytecode.get(..(std::mem::size_of::<$opcode_tag_type>())).and_then(|bytes| bytes.as_array::<{std::mem::size_of::<$opcode_tag_type>()}>()).and_then(|bytes| <$opcode_tag_type>::decode(bytes, instructive)) {
                     $(
                         Some(($opcode_constants::$opcode, opcode_tag_size)) => {
-                            let bytecode = &bytecode[opcode_tag_size..];
+                            let total_size = opcode_tag_size;
 
-                            $opcode::decode(bytecode, instructive).map(|(opcode, size)| (Self::$opcode(opcode), size + opcode_tag_size))
+                            $($(
+                                let Some(($opcode_field_name, opcode_field_size)) = <$opcode_field_type>::decode(&bytecode[total_size..], instructive)
+                                else {
+                                    panic!("{}'s \"{}\" was not a valid {}", stringify!($opcode), stringify!($opcode_field_name), stringify!($opcode_field_type));
+                                };
+
+                                #[allow(unused)]
+                                let total_size = total_size + opcode_field_size;
+                            )+)?
+
+                            let opcode = $bytecode_name::$opcode $({
+                                $($opcode_field_name,)+
+                            })?;
+
+                            let opcode_size = total_size;
+
+                            Some((opcode, opcode_size))
                         }
                     )+
                     _ => None,
@@ -226,9 +242,9 @@ macro_rules! __bytecode {
         #[derive(Debug, Clone, Copy)]
         $v enum $value_name {
             $(
-                $value ($value),
+                $value $({ $($value_field_name: $value_field_type, )+ })?,
             )+
-            $arena_index_name($arena_index_name),
+            $arena_index_name { index: $arena_index_name },
         }
 
         impl<T> $encode<T> for $value_name
@@ -240,12 +256,12 @@ macro_rules! __bytecode {
             fn encode(&self, instructive: &mut T) -> Self::Output {
                 match self {
                     $(
-                        Self::$value(value) => [
+                        Self::$value $({ $($value_field_name,)+ })? => [
                             $value_constants::$value.encode(instructive),
-                            value.encode(instructive),
+                            $($($value_field_name.encode(instructive),)+)?
                         ].concat(),
                     )+
-                    Self::$arena_index_name(value) => instructive.arena_mut()
+                    Self::$arena_index_name { index: value } => instructive.arena()
                         .get(usize::from(*value))
                         .cloned()
                         .map(|gc_value| gc_value.encode(instructive))
@@ -263,15 +279,27 @@ macro_rules! __bytecode {
         where
             T: $instructive,
         {
-            type Output = Self;
+            type Output = $value_name;
 
             fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
                 match bytecode.get(..(std::mem::size_of::<$value_tag_type>())).and_then(|bytes| bytes.as_array::<{std::mem::size_of::<$value_tag_type>()}>()).and_then(|bytes| <$value_tag_type>::decode(bytes, instructive)) {
                     $(
                         Some(($value_constants::$value, value_tag_size)) => {
-                            let bytecode = &bytecode[value_tag_size..];
+                            let total_size = value_tag_size;
 
-                            $value::decode(bytecode, instructive).map(|(value, size)| (Self::$value(value), size + value_tag_size))
+                            $($(
+                                let Some(($value_field_name, value_field_size)) = <$value_field_type>::decode(&bytecode[total_size..], instructive)
+                                else {
+                                    panic!("{}'s \"{}\" was not a valid {}", stringify!($value), stringify!($value_field_name), stringify!($value_field_type));
+                                };
+
+                                #[allow(unused)]
+                                let total_size = total_size + value_field_size;
+                            )+)?
+
+                            Some(($value_name::$value $({
+                                $($value_field_name,)+
+                            })?, total_size))
                         }
                     )+
                     $(
@@ -287,7 +315,7 @@ macro_rules! __bytecode {
         #[derive(Debug, Clone)]
         $v enum $garbage_collected_name {
             $(
-                $garbage_collected ($garbage_collected),
+                $garbage_collected $({ $($garbage_collected_field_name: $garbage_collected_field_type, )+ })?,
             )+
         }
 
@@ -300,9 +328,9 @@ macro_rules! __bytecode {
             fn encode(&self, instructive: &mut T) -> Self::Output {
                 match self {
                     $(
-                        Self::$garbage_collected(garbage_collected) => [
+                        Self::$garbage_collected $({ $($garbage_collected_field_name,)+ })? => [
                             $value_constants::$garbage_collected.encode(instructive),
-                            garbage_collected.encode(instructive),
+                            $($($garbage_collected_field_name.encode(instructive),)+)?
                         ].concat(),
                     )+
                 }
@@ -313,23 +341,39 @@ macro_rules! __bytecode {
         where
             T: $instructive,
         {
-            type Output = $value_name;
+            type Output = <$value_name as $decode<T>>::Output;
 
             fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
                 match bytecode.get(..(std::mem::size_of::<$value_tag_type>())).and_then(|bytes| bytes.as_array::<{std::mem::size_of::<$value_tag_type>()}>()).and_then(|bytes| <$value_tag_type>::decode(bytes, instructive)) {
                     $(
                         Some(($value_constants::$garbage_collected, garbage_collected_tag_size)) => {
-                            let bytecode = &bytecode[garbage_collected_tag_size..];
+                            let total_size = garbage_collected_tag_size;
 
-                            let (value, value_size) = $garbage_collected::decode(bytecode, instructive).map(|(garbage_collected, size)| (Self::$garbage_collected(garbage_collected), size + garbage_collected_tag_size))?;
+                            $($(
+                                let Some(($garbage_collected_field_name, garbage_collected_field_size)) = <$garbage_collected_field_type>::decode(&bytecode[total_size..], instructive)
+                                else {
+                                    panic!("{}'s \"{}\" was not a valid {}", stringify!($garbage_collected), stringify!($garbage_collected_field_name), stringify!($garbage_collected_field_type));
+                                };
 
-                            instructive.arena_mut().push(value);
+                                #[allow(unused)]
+                                let total_size = total_size + garbage_collected_field_size;
+                            )+)?
 
-                            let value_index = $arena_index_name { index: <$arena_index_type>::try_from(instructive.arena_mut().len() - 1).unwrap_or_else(|_| panic!("arena index was not a valid {}", stringify!($arena_index_type))) };
+                            let garbage_collected = $garbage_collected_name::$garbage_collected $({
+                                $($garbage_collected_field_name,)+
+                            })?;
 
-                            instructive.constants_mut().push(value_index);
+                            let garbage_collected_size = total_size;
 
-                            Some(($value_name::$arena_index_name(value_index), value_size))
+                            instructive.arena_mut().push(garbage_collected);
+
+                            let value_index = <$arena_index_name>::from(instructive.arena().len() - 1);
+
+                            instructive.literals_mut().push(value_index);
+
+                            let value_index = $value_name::$arena_index_name { index: value_index };
+
+                            Some((value_index, garbage_collected_size))
                         }
                     )+
                     _ => None,
@@ -422,8 +466,7 @@ macro_rules! __bytecode {
                 [
                     u64::try_from(self.len())
                         .unwrap_or_else(|_| panic!("length of vec was not a valid u64"))
-                        .to_le_bytes()
-                        .to_vec(),
+                        .encode(instructive),
                     self.iter()
                         .fold(vec![], |mut accum, value| {
                             accum.push(value.encode(instructive));
@@ -478,8 +521,7 @@ macro_rules! __bytecode {
                 [
                     u64::try_from(self.len())
                         .unwrap_or_else(|_| panic!("length of boxed slice was not a valid u64"))
-                        .to_le_bytes()
-                        .to_vec(),
+                        .encode(instructive),
                     self.iter()
                         .fold(vec![], |mut accum, value| {
                             accum.push(value.encode(instructive));
@@ -656,164 +698,6 @@ macro_rules! __bytecode {
             }
         }
 
-        macro_rules! opcode {
-            (
-                @CONSTANTS $dollar constants:ident
-                $dollar (#[$dollar attribute:meta])*
-                $dollar opcode:ident { } -> { $dollar ($dollar result_fields:tt)* }
-                [$dollar ($dollar field_name:ident : $dollar field_type:ty,)+]
-                @BACKPATCH [$dollar ($dollar address_field_name:ident,)*]
-            ) => {
-                $dollar (#[$dollar attribute])*
-                $v struct $dollar opcode {
-                    $dollar ($dollar result_fields)+
-                }
-
-                impl<T> $encode<T> for $dollar opcode
-                where
-                    T: $instructive,
-                {
-                    type Output = Vec<u8>;
-
-                    #[allow(clippy::unused_self)]
-                    fn encode(&self, instructive: &mut T) -> Self::Output {
-                        [
-                            $dollar (self.$dollar field_name.encode(instructive).to_vec(),)+
-                        ].concat()
-                    }
-                }
-
-                impl<T> $decode<T> for $dollar opcode
-                where
-                    T: $instructive,
-                {
-                    type Output = Self;
-
-                    #[allow(clippy::unnecessary_wraps)]
-                    fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
-                        let total_size = 0;
-
-                        $dollar (
-                            let Some(($dollar field_name, field_size)) = <$dollar field_type>::decode(&bytecode[total_size..], instructive)
-                            else {
-                                panic!("{}'s \"{}\" was not a valid {}", stringify!($dollar opcode), stringify!($dollar field_name), stringify!($dollar field_type));
-                            };
-
-                            #[allow(unused)]
-                            let total_size = total_size + field_size;
-                        )+
-
-                        Some(($dollar opcode {
-                            $dollar ($dollar field_name,)+
-                        }, total_size))
-                    }
-                }
-            };
-
-            // (
-            //     @CONSTANTS $dollar constants:ident
-            //     $dollar (#[$dollar attribute:meta])*
-            //     $dollar opcode:ident {
-            //         #[address]
-            //         $dollar field_name:ident : u32,
-            //         $dollar ($dollar rest_of_fields:tt)*
-            //     } -> { $dollar ($dollar result_fields:tt)* }
-            //     [$dollar ($dollar original_field_name:ident : $dollar original_field_type:ty,)+]
-            //     @BACKPATCH [$dollar ($dollar address_field_name:ident,)*]
-            // ) => {
-            //     opcode! {
-            //         @CONSTANTS $dollar constants
-            //         $dollar (#[$dollar attribute])*
-            //         $dollar opcode { $dollar ($dollar rest_of_fields)* } -> {
-            //             $dollar ($dollar result_fields)*
-            //             pub $dollar field_name : u32,
-            //         }
-            //         [$dollar ($dollar original_field_name : $dollar original_field_type,)+]
-            //         @BACKPATCH [$dollar ($dollar address_field_name,)* $dollar field_name,]
-            //     }
-            // };
-
-            (
-                @CONSTANTS $dollar constants:ident
-                $dollar (#[$dollar attribute:meta])*
-                $dollar opcode:ident {
-                    $dollar field_name:ident : $dollar field_type:ty,
-                    $dollar ($dollar rest_of_fields:tt)*
-                } -> { $dollar ($dollar result_fields:tt)* }
-                [$dollar ($dollar original_field_name:ident : $dollar original_field_type:ty,)+]
-                @BACKPATCH [$dollar ($dollar address_field_name:ident,)*]
-            ) => {
-                opcode! {
-                    @CONSTANTS $dollar constants
-                    $dollar (#[$dollar attribute])*
-                    $dollar opcode { $dollar ($dollar rest_of_fields)* } -> {
-                        $dollar ($dollar result_fields)*
-                        pub $dollar field_name : $dollar field_type,
-                    }
-                    [$dollar ($dollar original_field_name : $dollar original_field_type,)+]
-                    @BACKPATCH [$dollar ($dollar address_field_name,)*]
-                }
-            };
-
-            (
-                @CONSTANTS $dollar constants:ident
-                $dollar (#[$dollar attribute:meta])*
-                $dollar opcode:ident {
-                    $dollar (
-                        // $dollar (#[address] $dollar ($dollar field_is_address:lifetime)?)?
-                        $dollar field_name:ident : $dollar field_type:ty,
-                    )+
-                } -> { }
-                [ ]
-                @BACKPATCH []
-            ) => {
-                opcode! {
-                    @CONSTANTS $dollar constants
-                    $dollar (#[$dollar attribute])*
-                    $dollar opcode {
-                        $dollar (
-                            // $dollar (#[address] $dollar ($dollar field_is_address:lifetime)?)?
-                            $dollar field_name : $dollar field_type,
-                        )+
-                    } -> { }
-                    [$dollar ($dollar field_name : $dollar field_type,)+]
-                    @BACKPATCH []
-                }
-            };
-
-            (
-                @CONSTANTS $dollar constants:ident
-                $dollar (#[$dollar attribute:meta])*
-                $dollar opcode:ident
-            ) => {
-                $dollar (#[$dollar attribute])*
-                $v struct $dollar opcode;
-
-                impl<T> $encode<T> for $dollar opcode
-                where
-                    T: $instructive,
-                {
-                    type Output = Vec<u8>;
-
-                    #[allow(clippy::unused_self)]
-                    fn encode(&self, _: &mut T) -> Self::Output {
-                        vec![]
-                    }
-                }
-
-                impl<T> $decode<T> for $dollar opcode
-                where
-                    T: $instructive,
-                {
-                    type Output = Self;
-
-                    fn decode(_: &[u8], _: &mut T) -> Option<(Self::Output, usize)> {
-                        Some(($dollar opcode, 0))
-                    }
-                }
-            };
-        }
-
         macro_rules! enumerate {
             (
                 @CONSTANTS $dollar constants:ident
@@ -858,58 +742,36 @@ macro_rules! __bytecode {
             };
         }
 
-        $(opcode! {
-            @CONSTANTS $opcode_constants
-            #[allow(unused)]
-            #[derive(Debug, Clone)]
-            $opcode $({
-                $(
-                    // $(#[address] $($opcode_field_is_address)?)?
-                    $opcode_field_name : $opcode_field_type,
-                )+
-            } -> {}
-            []
-            @BACKPATCH [])?
-        })+
-
-        $(opcode! {
-            @CONSTANTS $value_constants
-            #[allow(unused)]
-            #[derive(Debug, Clone, Copy)]
-            $value $({
-                $(
-                    // $(#[address] $($value_field_is_address)?)?
-                    $value_field_name : $value_field_type,
-                )+
-            } -> {}
-            []
-            @BACKPATCH [])?
-        })+
-
-        opcode! {
-            @CONSTANTS $value_constants
-            #[allow(unused)]
-            #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-            $arena_index_name {
-                index : $arena_index_type,
-            } -> {}
-            []
-            @BACKPATCH []
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        $v struct $arena_index_name {
+            index: $arena_index_type,
         }
 
-        $(opcode! {
-            @CONSTANTS $value_constants
-            #[allow(unused)]
-            #[derive(Debug, Clone)]
-            $garbage_collected $({
-                $(
-                    // $(#[address] $($garbage_collected_field_is_address)?)?
-                    $garbage_collected_field_name : $garbage_collected_field_type,
-                )+
-            } -> {}
-            []
-            @BACKPATCH [])?
-        })*
+        impl<T> $encode<T> for $arena_index_name
+        where
+            T: $instructive,
+        {
+            type Output = Vec<u8>;
+
+            fn encode(&self, instructive: &mut T) -> Self::Output {
+                self.index.encode(instructive)
+            }
+        }
+
+        impl<T> $decode<T> for $arena_index_name
+        where
+            T: $instructive,
+        {
+            type Output = Self;
+
+            fn decode(bytecode: &[u8], instructive: &mut T) -> Option<(Self::Output, usize)> {
+                let Some(($value_name::$arena_index_name { index: arena_index }, value_size)) = $value_name::decode(bytecode, instructive) else {
+                    unreachable!("values always decode to arena");
+                };
+
+                Some((arena_index, value_size))
+            }
+        }
 
         enumerate! {
             @CONSTANTS $opcode_constants
