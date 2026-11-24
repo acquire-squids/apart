@@ -351,22 +351,32 @@ impl From<Register> for u16 {
 pub struct FnLabel {
     file_name: String,
     function_label: String,
+    type_index: TypeIndex,
 }
 
 impl FnLabel {
-    pub const fn new(file_name: String, function_label: String) -> Self {
+    #[must_use]
+    pub const fn new(file_name: String, function_label: String, type_index: TypeIndex) -> Self {
         Self {
             file_name,
             function_label,
+            type_index,
         }
     }
 
+    #[must_use]
     pub const fn file_name(&self) -> &str {
         self.file_name.as_str()
     }
 
+    #[must_use]
     pub const fn function_label(&self) -> &str {
         self.function_label.as_str()
+    }
+
+    #[must_use]
+    pub const fn type_index(&self) -> TypeIndex {
+        self.type_index
     }
 }
 
@@ -463,9 +473,11 @@ fn lower_instruction(
         IrInstruction::FnLabel {
             file_name,
             function_label,
+            type_index,
         } => Instruction::FnLabel(Box::new(FnLabel {
             file_name: file_name.clone(),
             function_label: function_label.clone(),
+            type_index: *type_index,
         })),
         IrInstruction::Unary {
             op,

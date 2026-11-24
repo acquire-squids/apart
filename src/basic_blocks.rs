@@ -430,6 +430,7 @@ pub enum Instruction {
     FnLabel {
         file_name: String,
         function_label: String,
+        type_index: TypeIndex,
     },
     NoOp,
     Unary {
@@ -634,6 +635,7 @@ impl<'a> Translator<'a> {
                     self.push_instruction(Instruction::FnLabel {
                         file_name,
                         function_label,
+                        type_index: types[name.span()],
                     });
 
                     self.label.pop();

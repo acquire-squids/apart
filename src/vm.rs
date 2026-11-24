@@ -1,6 +1,6 @@
 use crate::{
-    middle_ir::{FnLabel, NativeFn},
-    targets::vm::{Instructive, ValueIndex, prelude::*},
+    middle_ir::NativeFn,
+    targets::vm::{ApartFnLabel, Instructive, ValueIndex, prelude::*},
 };
 
 use std::{
@@ -21,7 +21,7 @@ struct Vm {
     allocated: usize,
     next_gc: usize,
     call_frames: Vec<CallFrame>,
-    function_labels: Vec<FnLabel>,
+    function_labels: Vec<ApartFnLabel>,
     literals: Vec<ValueIndex>,
     ip: usize,
     sp: Option<usize>,
@@ -459,7 +459,7 @@ impl Vm {
             Instruction::NoOp | Instruction::Label => Ok(()),
             Instruction::Panic => self.panic(out, None),
             Instruction::ApartFnLabel { fn_label } => {
-                self.function_labels.push(FnLabel::new(
+                self.function_labels.push(ApartFnLabel::new(
                     fn_label.file_name().to_string(),
                     fn_label.function_label().to_string(),
                 ));

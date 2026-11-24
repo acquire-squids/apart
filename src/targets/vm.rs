@@ -3,7 +3,7 @@ pub mod bytecode_macro;
 use crate::{
     ApartOptions, CompileSuccess,
     middle_ir::{
-        BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Typed, UnaryOp,
+        BinaryOp, Block, Instruction as IrInstruction, Location, NativeFn, Typed, UnaryOp,
         Value as IrValue, ValueOrLocation,
     },
     type_check::TypeIndex,
@@ -621,10 +621,10 @@ where
             IrInstruction::NoOp => vec![],
             IrInstruction::Panic => Instruction::Panic.encode(instructive),
             IrInstruction::FnLabel(fn_label) => Instruction::ApartFnLabel {
-                fn_label: Box::new(FnLabel::new(
-                    fn_label.file_name().to_string(),
-                    fn_label.function_label().to_string(),
-                )),
+                fn_label: Box::new(ApartFnLabel {
+                    file_name: fn_label.file_name().to_string(),
+                    function_label: fn_label.function_label().to_string(),
+                }),
             }
             .encode(instructive),
             IrInstruction::Unary {
@@ -1703,7 +1703,33 @@ where
     }
 }
 
-impl<T> Encode<T> for Box<FnLabel>
+#[derive(Debug, Clone)]
+pub struct ApartFnLabel {
+    file_name: String,
+    function_label: String,
+}
+
+impl ApartFnLabel {
+    #[must_use]
+    pub const fn new(file_name: String, function_label: String) -> Self {
+        Self {
+            file_name,
+            function_label,
+        }
+    }
+
+    #[must_use]
+    pub const fn file_name(&self) -> &str {
+        self.file_name.as_str()
+    }
+
+    #[must_use]
+    pub const fn function_label(&self) -> &str {
+        self.function_label.as_str()
+    }
+}
+
+impl<T> Encode<T> for Box<ApartFnLabel>
 where
     T: Instructive,
 {
@@ -1718,7 +1744,7 @@ where
     }
 }
 
-impl<T> Decode<T> for Box<FnLabel>
+impl<T> Decode<T> for Box<ApartFnLabel>
 where
     T: Instructive,
 {
@@ -1737,7 +1763,10 @@ where
         };
 
         Some((
-            Self::new(FnLabel::new(file_name, function_label)),
+            Self::new(ApartFnLabel {
+                file_name,
+                function_label,
+            }),
             file_name_size + function_label_size,
         ))
     }
@@ -1864,7 +1893,7 @@ bytecode_macro::bytecode! (
         NoOp,
         Label,
         ApartFnLabel {
-            fn_label: Box<FnLabel>,
+            fn_label: Box<ApartFnLabel>,
         },
         Not {
             to: u16,
