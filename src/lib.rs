@@ -3,7 +3,7 @@ mod basic_blocks;
 mod expand_macros;
 mod high_ir;
 mod lex;
-mod low_ir;
+mod middle_ir;
 mod name_resolve;
 mod optimize;
 mod parse;
@@ -17,7 +17,7 @@ pub use {
     allocate_registers::Error as AllocateRegistersError,
     basic_blocks::Error as BasicBlocksError,
     expand_macros::Error as MacroExpansionError,
-    low_ir::{
+    middle_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Ir, Location, NativeFn, Register,
         Typed as IrTyped, UnaryOp, Value as IrValue, ValueOrLocation,
     },
@@ -50,7 +50,7 @@ pub struct ApartOptions {
     pub print_ssa: PrintSsa,
     pub print_optimized: PrintOptimized,
     pub print_allocated: PrintAllocated,
-    pub print_lowir: PrintLowIr,
+    pub print_middle_ir: PrintMiddleIr,
     pub run: bool,
     pub strip_debug_info: bool,
     pub target: Target,
@@ -81,7 +81,7 @@ pub enum PrintAllocated {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PrintLowIr {
+pub enum PrintMiddleIr {
     No,
     Yes,
 }
@@ -362,17 +362,20 @@ pub fn compile<'a>(
         result: ssa,
     };
 
-    let low_ir = low_ir::lower(options, &types, &compiled);
+    let middle_ir = middle_ir::lower(options, &types, &compiled);
 
-    if matches!(options.print_lowir, PrintLowIr::Yes) {
-        low_ir.debug_print(options.debug_print_filter.as_str());
+    if matches!(options.print_middle_ir, PrintMiddleIr::Yes) {
+        middle_ir.debug_print(options.debug_print_filter.as_str());
 
         println!("---------");
     }
 
     Ok(Compiled {
         sources_with_core: compiled.sources().to_vec(),
-        result: CompileSuccessResult { ir: low_ir, types },
+        result: CompileSuccessResult {
+            ir: middle_ir,
+            types,
+        },
     })
 }
 
@@ -392,7 +395,7 @@ macro_rules! __test_vm_output_single_function {
                 print_ssa: $crate::PrintSsa::No,
                 print_optimized: $crate::PrintOptimized::No,
                 print_allocated: $crate::PrintAllocated::No,
-                print_lowir: $crate::PrintLowIr::No,
+                print_middle_ir: $crate::PrintMiddleIr::No,
                 run: true,
                 strip_debug_info: true,
                 target: $crate::Target::Vm,
@@ -505,7 +508,7 @@ macro_rules! __test_compilation_errors {
                         print_ssa: $crate::PrintSsa::No,
                         print_optimized: $crate::PrintOptimized::No,
                         print_allocated: $crate::PrintAllocated::No,
-                        print_lowir: $crate::PrintLowIr::No,
+                        print_middle_ir: $crate::PrintMiddleIr::No,
                         run: true,
                         strip_debug_info: true,
                         target: $crate::Target::Vm,

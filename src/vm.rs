@@ -1,5 +1,5 @@
 use crate::{
-    low_ir::{FnLabel, NativeFn},
+    middle_ir::{FnLabel, NativeFn},
     targets::vm::{Instructive, ValueIndex, prelude::*},
 };
 
@@ -2035,7 +2035,7 @@ macro_rules! native_fn_print_debug {
         fn $name<O>(
             &mut self,
             call_arguments: &[$crate::targets::vm::Value],
-            native_fn: $crate::low_ir::NativeFn,
+            native_fn: $crate::middle_ir::NativeFn,
             out: &mut O,
         ) -> Result<$crate::targets::vm::Value, $crate::vm::Interrupt>
         where

@@ -1,7 +1,7 @@
 use crate::{
     ApartOptions, CompileSuccess,
     basic_blocks::BlockIndex,
-    low_ir::{
+    middle_ir::{
         BinaryOp, Block, Instruction as IrInstruction, Location, NativeFn, Register,
         Typed as IrTyped, UnaryOp, Value as IrValue, ValueOrLocation,
     },

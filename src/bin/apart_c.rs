@@ -257,7 +257,7 @@ const IR_STAGES: &str = concat!(
     ssa
     optimized
     allocated
-    lowir"
+    middle_ir"
 );
 
 #[allow(clippy::too_many_lines)]
@@ -270,7 +270,7 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
         print_ssa: apart::PrintSsa::No,
         print_optimized: apart::PrintOptimized::No,
         print_allocated: apart::PrintAllocated::No,
-        print_lowir: apart::PrintLowIr::No,
+        print_middle_ir: apart::PrintMiddleIr::No,
         run: false,
         strip_debug_info: false,
         target: Target::Vm,
@@ -307,8 +307,8 @@ fn parse_options(arguments: &mut iter::Peekable<env::Args>) -> Result<ApartOptio
                             "allocated" => {
                                 options.print_allocated = apart::PrintAllocated::Yes;
                             }
-                            "lowir" => {
-                                options.print_lowir = apart::PrintLowIr::Yes;
+                            "middle_ir" => {
+                                options.print_middle_ir = apart::PrintMiddleIr::Yes;
                             }
                             _ => {
                                 eprintln!(

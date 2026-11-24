@@ -2,7 +2,7 @@ pub mod bytecode_macro;
 
 use crate::{
     ApartOptions, CompileSuccess,
-    low_ir::{
+    middle_ir::{
         BinaryOp, Block, FnLabel, Instruction as IrInstruction, Location, NativeFn, Typed, UnaryOp,
         Value as IrValue, ValueOrLocation,
     },
